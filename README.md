@@ -87,7 +87,7 @@ The project is broken down into five distinct phases, moving from core functiona
 ## 🎨 Concept Art: Tab-Based Design
 
 The application will use a **tab-based design** to allow for future expansion, such as the "Task Design" features. The initial view is the "Architecture Validation" tab.
-![](/Media/Concept Art.png "Concept Art")
+![](/Media/Concept_Art.png "Concept Art")
 
 ### Architecture Validation Tab Layout
 
