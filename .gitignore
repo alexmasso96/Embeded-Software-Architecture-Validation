@@ -1,0 +1,24 @@
+# IDE folders
+.idea/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+.ENV/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test results
+*.log
+
+# Others
+*.swp

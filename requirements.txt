@@ -1,0 +1,6 @@
+   PySide6>=6.6.0
+   pyelftools>=0.30
+   pandas>=2.1.0
+   fuzzywuzzy>=0.18.0
+   python-Levenshtein>=0.21.0
+   PyInstaller>=6.0.0
