@@ -214,7 +214,28 @@ class ELFParser:
         logger.info(f"Found {len(variables)} global variables")
         return variables
 
-    def search_symbol(self, name: str, exact: bool = True) -> List[Symbol]:
+    def search_function(self, name:str, exact: bool = False) -> List[Function]:
+        """
+        Search for a function by name.
+
+        Args:
+            name: Function name to search for.
+            exact: If True, match exact name. If false, match substring.
+
+        Returns:
+            List of matching functions.
+        """
+        if not self.functions:
+            self.extract_functions()
+        if exact:
+            return [fnc for fnc in self.functions if fnc.name == name]
+        else:
+            results = [fnc for fnc in self.functions if name.lower() in fnc.name.lower()]
+            # Prioritize exact matches
+            results.sort(key=lambda fnc: fnc.name != name)
+            return results
+
+    def search_symbol(self, name: str, exact: bool = False) -> List[Symbol]:
         """
         Search for symbols by name.
 
@@ -231,7 +252,9 @@ class ELFParser:
         if exact:
             return [sym for sym in self.symbols if sym.name == name]
         else:
-            return [sym for sym in self.symbols if name.lower() in sym.name.lower()]
+            results = [sym for sym in self.symbols if name.lower() in sym.name.lower()]
+            results.sort(key=lambda sym_obj: sym_obj.name != name)
+            return results
 
     def get_symbol_by_address(self, address: int) -> Optional[Symbol]:
         """
@@ -335,21 +358,46 @@ def main():
         for key, value in stats.items():
             print(f"{key:20s}: {value}")
 
-        #Display first 10 global variables
-        functions = parser.get_function_names()
-        print(f"\nFirst 10 Functions (out of {len(functions)}): ")
-        for func_name in functions[:10]:
-            print(f" - {func_name}")
+        tmp_eval = True
+        while tmp_eval:
+            print("\n" + "=" * 60)
+            print("Do you want to test the search functions? (Y/n): ")
+            user_src = input("\n> ")
+            print("="*60)
+            if user_src == "y" or user_src == "Y" or user_src == "":
+                    print("Please enter the name of a function or parameter to search for: ")
+                    usr_fct = input("> ")
+                    print("\n" + "=" * 60)
+                    print(f"Found symbols: \n")
+                    results = parser.search_symbol(usr_fct)
+                    for result in results:
+                        print(f"\n{result}")
+                    print(f"Found functions: \n")
+                    results = parser.search_function(usr_fct)
+                    for result in results:
+                        print(f"\n{result}")
+            elif user_src == "n" or user_src == "N":
+                print("\n" + "=" * 60)
+                print("Continuing with default Test Case!")
+                print("\n" + "=" * 60)
+                #Display first 10 global variables
+                functions = parser.get_function_names()
+                print(f"\nFirst 10 Functions (out of {len(functions)}): ")
+                for func_name in functions[:10]:
+                    print(f" - {func_name}")
 
-        #Display first 10 global variables
-        variables = parser.get_global_variables()
-        print(f"\nFirst 10 Global Variables (out of {len(variables)}): ")
-        for var in variables[:10]:
-            print(f" - {var.name}(size: {var.size} bytes)")
+                #Display first 10 global variables
+                variables = parser.get_global_variables()
+                print(f"\nFirst 10 Global Variables (out of {len(variables)}): ")
+                for var in variables[:10]:
+                    print(f" - {var.name}(size: {var.size} bytes)")
 
-        print("\n" + "="*60)
-        print("Parsing completed successfully!")
-        print("="*60)
+                print("\n" + "="*60)
+                print("Parsing completed successfully!")
+                print("="*60)
+
+                tmp_eval = False
+
 
     except Exception as e:
         logger.error(f"Error parsing ELF file: {e}")
