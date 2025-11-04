@@ -9,6 +9,7 @@ from typing import List, Dict, Optional, Set
 from dataclasses import dataclass
 from pathlib import Path
 import logging
+import collections
 
 try:
     from elftools.elf.elffile import ELFFile
@@ -182,6 +183,64 @@ class ELFParser:
                 self.functions.append(func)
         logger.info(f"Found {len(self.functions)} functions")
         return self.functions
+
+    def extract_function_parameters(self) -> dict[str, List[str]]:
+        """
+        Extracts function parameter names from DWARF debug info and updates Function objects.
+
+        This method parses DWARF data for each Compilation Unit (CU) and iterates over
+        Debugging Information Entries (DIEs) to find functions and their parameters.
+        """
+        func_params = {}
+        if not self.elf_file.has_dwarf_info():
+            logger.info("No DWARF debug info found in ELF file.")
+            return func_params
+
+        dwarfinfo = self.elf_file.get_dwarf_info()
+        for CU in dwarfinfo.iter_CUs(): # Iterate over Compilation Units (source files)
+            for DIE in CU.iter_DIEs(): # Iterate over Debugging Information Entries
+                # Look for function DIEs
+                if DIE.tag == 'DW_TAG_subprogram' and 'DW_AT_name' in DIE.attributes:
+                    func_name = DIE.attributes['DW_AT_name'].value.decode()
+                    params = []
+                    # Iterate over children DIEs to find parameters
+                    for child in DIE.iter_children():
+                        if child.tag == 'DW_TAG_formal_parameter' and 'DW_AT_name' in child.attributes:
+                            param_name = child.attributes['DW_AT_name'].value.decode()
+                            params.append(param_name)
+                    # Update the corresponding Function object
+                    for func in self.functions:
+                        if func.name == func_name:
+                            func.parameters = params
+        return func_params
+
+    def extract_structures(self) -> Dict[str, List[str]]:
+        """
+        Extracts structure names and member fields from DWARF debug info.
+
+        This method parses DWARF data for each Compilation Unit (CU) and iterates over
+        Debugging Information Entries (DIEs) to find functions and their parameters.
+
+        Returns:
+            Dictionary mapping struct names to a list of their field names.
+        """
+        structures = {}
+        if not self.elf_file.has_dwarf_info():
+            logger.info("No DWARF debug info found in ELF file.")
+            return structures
+
+        dwarfinfo = self.elf_file.get_dwarf_info()
+        for CU in dwarfinfo.iter_CUs():
+            for DIE in CU.iter_DIEs():
+                if DIE.tag == 'DW_TAG_structure_type' and 'DW_AT_name' in DIE.attributes:
+                    struct_name = DIE.attributes['DW_AT_name'].value.decode()
+                    fields = []
+                    for child in DIE.iter_children():
+                        if child.tag == 'DW_TAG_field' and 'DW_AT_name' in child.attributes:
+                            field_name = child.attributes['DW_AT_name'].value.decode()
+                            fields.append(field_name)
+                        structures[struct_name] = fields
+        return structures
 
     def get_function_names(self) -> List[Function]:
         """
@@ -372,10 +431,30 @@ def main():
                     results = parser.search_symbol(usr_fct)
                     for result in results:
                         print(f"\n{result}")
+                    # Display found funcitons with 1-based indices
                     print(f"Found functions: \n")
                     results = parser.search_function(usr_fct)
-                    for result in results:
-                        print(f"\n{result}")
+
+                    for idx, result in enumerate(results, 1):
+                        print(f"\n{idx}: {result}")
+
+                    # Prompt user for DWARF details
+                    if results:
+                        print ("\nEnter the index of a function to show DWARF parameter details (or 0 to skip): ")
+                        try:
+                            idx = int(input("> ").strip())
+                            if 1 <= idx <= len(results):
+                                parser.extract_function_parameters()
+                                selected_func = results[idx - 1]
+                                # Find updated function info
+                                for func in parser.functions:
+                                    if func.name == selected_func.name:
+                                        print(f"\nDWARF details for {func.name}: {func}")
+
+                        except ValueError:
+                            print("Invalid Input")
+                        except Exception as e:
+                            print(f"Error: {e}")
             elif user_src == "n" or user_src == "N":
                 print("\n" + "=" * 60)
                 print("Continuing with default Test Case!")
