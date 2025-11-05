@@ -20,6 +20,7 @@ The application is built to fulfill the following ten core requirements:
 8.  **Difference Detection:** Must look for differences against a baseline upon user request and **color the differences**, allowing the user to approve or reject the changes.
 9.  **Platform:** Must be able to run on **Windows**, with platform independence being a desirable bonus.
 10. **Packaging:** Must be easily packaged into a simple distribution (all files in the same folder with a **`.bat` file for launching**).
+11. **TestCases done by review:** The ability to easily configure test cases which normally are done by manually by review and provide a report in **`.html` format**
 
 ---
 
