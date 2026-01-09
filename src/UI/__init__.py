@@ -1,0 +1,4 @@
+from .MainWindow import Ui_MainWindow
+from .win_new_project_dialogue import Ui_win_new_project_dialogue
+from .win_help_new_project import Ui_win_help_new_project
+from .win_simple_loading import Ui_Standard_Loading
