@@ -1,40 +1,9 @@
-import logging
-
 from core.elf_parser import ELFParser
-from PyQt6.QtWidgets import QDialog, QMainWindow, QApplication, QFileDialog, QMessageBox
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtWidgets import QMainWindow, QFileDialog, QMessageBox
+
 import UI
 import os
-import sys
-from .Logging_Handler import Signaller, QtLoggingHandler
 from .Logic_Loading_Window import LoadingDialog
-
-class ParsingWorker (QThread):
-    """
-    Worker thread to handle heavy ELF/JSON parsing without freezing the UI.
-    """
-    finished = pyqtSignal(object) # Sends the parser back
-    error = pyqtSignal (str)
-
-    def __init__(self, mode, file_path):
-        super().__init__()
-        self.mode = mode # 'ELF' or 'JSON'
-        self.file_path = file_path
-
-    def run(self):
-        try:
-            parser = ELFParser()
-            if self.mode == 'ELF':
-                parser.load_elf(self.file_path)
-            else:
-                parser. load_cache(self.file_path)
-
-            parser.extract_all()
-            self.finished.emit(parser)
-
-        except Exception as e:
-            self.error.emit(str(e))
-
 
 class NewProjectController (QMainWindow):
     def __init__(self):
@@ -48,66 +17,48 @@ class NewProjectController (QMainWindow):
         self.ui.btn_Load_json.clicked.connect(self.open_json_handler)
 
         self.parser = None
-        self.loading_win = None
-        self.log_handler = None
 
-    def start_parsing_task(self, mode, file_path):
+    def _parse_logic(self, mode, file_path):
         """
-        Sets up the UI redirection and starts the background worker.
+        This function runs on the background thread
         """
-        self.loading_win =LoadingDialog(self)
-        signaller = Signaller()
-        signaller.text_received.connect(self.loading_win.append_log)
+        parser = ELFParser()
+        if mode == 'ELF':
+            parser.load_elf(file_path)
+            # Only extract all if we are loading a new elf
+            parser.extract_all()
+        else:
+            # load_cache already populates lists from JSON
+            success = parser.load_cache(file_path)
+            if not success:
+                raise ValueError("Failed to load JSON cache file.")
 
-        #redirect Logging and Stdout
-        self.log_handler = QtLoggingHandler(signaller)
-        self.log_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
-        logging.getLogger().addHandler(self.log_handler)
-        self.old_stdout = sys.stdout
-        sys.stdout = signaller
-
-        #setup Worker
-        self.worker = ParsingWorker(mode, file_path)
-        self.worker.finished.connect(self.on_parsing_finished)
-        self.worker.error.connect(self.on_parsing_error)
-
-        self.loading_win.show()
-        self.worker.start()
-
-    def cleanup_ui(self):
-        """
-        Restores stdout and removes logging handler.
-        """
-        if hasattr(self, 'old_stdout') :
-            sys.stdout = self.old_stdout
-        if self.log_handler:
-            logging.getLogger().removeHandler(self.log_handler)
-        if self.loading_win:
-            self.loading_win.close()
-
-    def on_parsing_finished(self, parser):
-        self.parser = parser
-        self.cleanup_ui()
-
-        stats = self.parser.get_statistics()
-        QMessageBox.information(self, "Success",
-                                f"Successfully loaded {os.path.basename(self.parser.elf_path)}\n"
-                                f"Functions: {stats['functions']}")
-        self.close()
-
-    def on_parsing_error(self, error_message):
-        self.cleanup_ui()
-        QMessageBox.critical(self, "Error", f"Parsing Error: \n{error_message}")
+        return parser
 
     def open_elf_handler (self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Open ELF File", "", "ELF Files (*.elf);; All Files (*)")
         if file_path:
-            self.start_parsing_task('ELF', file_path)
+            loader = LoadingDialog(self)
+            if loader.run_task(self._parse_logic, 'ELF', file_path):
+                self.parser = loader.result
+                stats = self.parser.get_statistics()
+                QMessageBox.information(self, "Success",
+                                        f"Successfully parsed ELF: {os.path.basename(file_path)}\n"
+                                        f"Functions found: {stats['functions']}")
+                self.close()
+            else:
+                QMessageBox.critical(self, "Error", f"Failed: {loader.error_msg}")
 
     def open_json_handler (self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Open JSON File", "", "JSON Files (*.json) ;; All Files (*)")
         if file_path:
-            self.start_parsing_task('JSON', file_path)
+            loader = LoadingDialog(self)
+            if loader.run_task(self._parse_logic, 'JSON', file_path):
+                self.parser = loader.result
+                QMessageBox.information(self, "Success", f"Loaded JSON database: {os.path.basename(file_path)}")
+                self.close()
+            else:
+                QMessageBox.critical(self, "Error", f" Failed: {loader.error_msg}")
 
     def HelpNewProject(self):
         self.help_window = QMainWindow(self)
