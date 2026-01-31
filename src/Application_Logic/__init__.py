@@ -1,3 +1,6 @@
 from .Logic_New_Project import NewProjectController
 from .Logging_Handler import Signaller
 from .Logic_Loading_Window import LoadingDialog
+from .Logic_Architecture_Table import ArchitectureTabController
+from .Logic_Symbol_Matcher import SymbolMatcher
+from .Logic_Column_Customizer import ColumnCustomizer

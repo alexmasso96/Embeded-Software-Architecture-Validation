@@ -1,5 +1,6 @@
 from core.elf_parser import ELFParser
 from PyQt6.QtWidgets import QMainWindow, QFileDialog, QMessageBox
+from PyQt6.QtCore import Qt
 
 import UI
 import os
@@ -8,6 +9,7 @@ from .Logic_Loading_Window import LoadingDialog
 class NewProjectController (QMainWindow):
     def __init__(self):
         super().__init__()
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.ui = UI.win_new_project_dialogue.Ui_win_new_project_dialogue()
         self.ui.setupUi(self)
 
@@ -72,10 +74,14 @@ class NewProjectController (QMainWindow):
     def exec(self):
         """
         Shims the QDialog.exec() behavior for QMainWindow
+        Blocks until the window is closed or destroyed.
         """
         self.show()
         import PyQt6.QtCore
         loop = PyQt6.QtCore.QEventLoop()
+        # Ensure the loop quits when the window is closed or hidden
         self.destroyed.connect(loop.quit)
+        # Run the nested event loop
         loop.exec()
+        # Return True only if we actually got a parser
         return self.parser is not None
