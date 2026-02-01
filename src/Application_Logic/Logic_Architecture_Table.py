@@ -47,22 +47,18 @@ class ArchitectureTabController:
         """
         config = getattr(self, 'active_config', [])
         self.active_columns = []
-        needs_init = False
+
 
         for name, logic_key in config:
             logic_cls = self.available_logics.get(logic_key, TableColumn)
             self.active_columns.append(logic_cls(name))
 
             if "Search" in logic_key:
-                result_col = TableColumn(f"{name} (Match)", width=200)
-                self.active_columns.append(result_col)
-                # If we have Port or Function search, we might need the Init toggle
+                # Add the Result/Match column
+                self.active_columns.append(TableColumn(f"{name} (Match)", width=200))
+                # Add the init column specifically for Port/Function types
                 if "Port" in logic_key or "Function" in logic_key:
-                    needs_init = True
-
-                # Internal injection: Add Init column if needed, but it's not in the user's config
-            if needs_init:
-                self.active_columns.append(InitColumn("Init", width=60))
+                    self.active_columns.append(InitColumn(f"{name} (Init)", width=70))
 
     def _setup_table_style(self):
         self.table.setAlternatingRowColors(True)
@@ -92,38 +88,36 @@ class ArchitectureTabController:
 
     def refresh_init_column_state(self):
         """
-        Scans all search results and toggles visibility of the Init column.
+        Decouples Init columns: each Init column is visible only if its associated search column contains 'init'.
         """
-        init_idx = self.get_column_index_by_type("Init")
-        if init_idx == -1: return
-
-        any_init_found = False
         self.table.blockSignals(True)
+        init_mappings = [i for i, obj in enumerate(self.active_columns) if isinstance(obj, InitColumn)]
 
-        for row in range(self.table.rowCount()):
-            row_has_init = False
-
-            # Check all columns in this row for search widgets
-            for col in range(self.table.columnCount()):
-                widget = self.table.cellWidget(row, col)
+        for ini_idx in init_mappings:
+            res_idx = ini_idx - 1  # The associated Match/Search column
+            any_init_found = False
+            for row in range(self.table.rowCount()):
+                widget = self.table.cellWidget(row, res_idx)
+                is_init = False
                 if isinstance(widget, QtWidgets.QComboBox):
-                    # Use currentText() to catch both 'DSU_init (90%)' and cleaned 'DSU_init'
                     if "init" in widget.currentText().lower():
-                        row_has_init = True
+                        is_init = True
                         any_init_found = True
-                        break
 
-            # Update cell value
-            val = "1" if row_has_init else "0"
-            self.table.setItem(row, init_idx, QtWidgets.QTableWidgetItem(val))
-            # Center the text for better visibility
-            self.table.item(row, init_idx).setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+                # Update/Create the cell item for Init column
+                val = "1" if is_init else "0"
+                item = self.table.item(row, ini_idx)
+                if not item:
+                    item = QtWidgets.QTableWidgetItem(val)
+                    item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+                    self.table.setItem(row, ini_idx, item)
+                else:
+                    item.setText(val)
+
+            # Show this Init column only if 'init' is found in its associated search column
+            self.table.setColumnHidden(ini_idx, not any_init_found)
 
         self.table.blockSignals(False)
-        # Toggle global visibility of the column
-        self.table.setColumnHidden(init_idx, not any_init_found)
-
-
 
     def _initialize_row_widgets(self, row):
         """Ensures widgets like the Review dropdown are created for a new row."""
@@ -217,13 +211,10 @@ class ArchitectureTabController:
 
         self.table.blockSignals(True)
         try:
-            # CHANGE: Instead of just calling one strategy,
-            # we notify ALL columns in this row that something changed.
-            for i, strategy in enumerate(self.active_columns):
-                # Pass the text if it's the edited column, otherwise empty string
-                # The strategies (Review/Init) will check table.item() themselves.
-                val = text if i == col_idx else ""
-                strategy.on_change(self.table, row, i, val, self)
+            # Only notify the specific strategy that belongs to the edited column
+            if col_idx < len(self.active_columns):
+                strategy = self.active_columns[col_idx]
+                strategy.on_change(self.table, row, col_idx, text, self)
 
             # Auto-add new row logic
             if row == self.table.rowCount() - 1 and text != "":
