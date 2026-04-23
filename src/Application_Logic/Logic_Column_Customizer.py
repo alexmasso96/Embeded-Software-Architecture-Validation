@@ -1,6 +1,93 @@
 from PyQt6  import QtWidgets, QtCore, QtGui
 
 
+class CustomListWidget(QtWidgets.QListWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.DragDrop)
+        self.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
+
+    def dropEvent(self, event):
+        super().dropEvent(event)
+        self.enforce_constraints()
+
+    def enforce_constraints(self):
+        items = []
+        while self.count() > 0:
+            items.append(self.takeItem(0))
+
+        tc_id_item = None
+        leaders = []
+        dependents_map = {}
+
+        def get_item_info(item):
+            text = item.text()
+            parts = text.split(" | ")
+            return parts[0].strip(), parts[1]
+
+        for item in items:
+            name, l_type = get_item_info(item)
+
+            if name == "TC. ID":
+                tc_id_item = item
+                continue
+
+            # Fix: Treat Port State as a dependent of Review Status
+            if name == "Port State":
+                if "Review Status" not in dependents_map:
+                    dependents_map["Review Status"] = []
+                dependents_map["Review Status"].append(item)
+                continue
+
+            is_dependent = False
+            base_name = name
+            for suffix in [" (Match)", " (Init)", " (Cyclic)"]:
+                if name.endswith(suffix):
+                    is_dependent = True
+                    base_name = name[:-len(suffix)]
+                    break
+
+            if is_dependent:
+                if base_name not in dependents_map:
+                    dependents_map[base_name] = []
+                dependents_map[base_name].append(item)
+            else:
+                leaders.append(item)
+
+        if tc_id_item:
+            self.addItem(tc_id_item)
+            tc_id_item.setFlags(tc_id_item.flags() & ~QtCore.Qt.ItemFlag.ItemIsDragEnabled)
+
+        for leader in leaders:
+            self.addItem(leader)
+            name, l_type = get_item_info(leader)
+
+            if name in dependents_map:
+                deps = dependents_map[name]
+                def sort_key(i):
+                    n, _ = get_item_info(i)
+                    if n.endswith(" (Match)"): return 0
+                    if n.endswith(" (Init)"): return 1
+                    if n.endswith(" (Cyclic)"): return 2
+                    if n == "Port State": return 3
+                    return 3
+                deps.sort(key=sort_key)
+
+                for dep in deps:
+                    self.addItem(dep)
+                    dep.setFlags(dep.flags() & ~QtCore.Qt.ItemFlag.ItemIsDragEnabled)
+
+                del dependents_map[name]
+
+        for base_name, deps in dependents_map.items():
+             for dep in deps:
+                 self.addItem(dep)
+                 dep.setFlags(dep.flags() & ~QtCore.Qt.ItemFlag.ItemIsDragEnabled)
+
+
 class ColumnCustomizer(QtWidgets.QDialog):
     def __init__(self, current_config, logic_options, locked_columns=None, parent=None):
         super().__init__(parent)
@@ -40,6 +127,9 @@ class ColumnCustomizer(QtWidgets.QDialog):
             
             self._add_list_item(name, l_type, visible)
 
+        # Enforce constraints on initial load
+        self.active_list.enforce_constraints()
+
         list_layout.addWidget(QtWidgets.QLabel("Active Columns:"))
         list_layout.addWidget(self.active_list)
         layout.addLayout(list_layout)
@@ -57,13 +147,7 @@ class ColumnCustomizer(QtWidgets.QDialog):
         layout.addWidget(buttons)
 
     def _create_drag_list(self):
-        l = QtWidgets.QListWidget()
-        l.setDragEnabled(True)
-        l.setAcceptDrops(True)
-        l.setDropIndicatorShown(True)
-        # Move mode allows dragging items between lists
-        l.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.DragDrop)
-        l.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
+        l = CustomListWidget()
         return l
 
     def _add_side_buttons(self, layout):
@@ -77,11 +161,44 @@ class ColumnCustomizer(QtWidgets.QDialog):
         del_btn.clicked.connect(self._delete_selected_item)
         btn_layout.addWidget(del_btn)
         
+        # New: Default Cyclicity Input
+        btn_layout.addSpacing(20)
+        btn_layout.addWidget(QtWidgets.QLabel("Default Cyclicity:"))
+        self.cyclicity_input = QtWidgets.QLineEdit()
+        self.cyclicity_input.setPlaceholderText("e.g. 10")
+        self.cyclicity_input.setText("10") # Default value
+        btn_layout.addWidget(self.cyclicity_input)
+        
+        # New: Port State Filters
+        btn_layout.addSpacing(20)
+        btn_layout.addWidget(QtWidgets.QLabel("Port State Visibility:"))
+        self.chk_show_retired = QtWidgets.QCheckBox("Show Retired")
+        self.chk_show_retired.setChecked(True)
+        btn_layout.addWidget(self.chk_show_retired)
+        
+        self.chk_show_deleted = QtWidgets.QCheckBox("Show Deleted")
+        self.chk_show_deleted.setChecked(True)
+        btn_layout.addWidget(self.chk_show_deleted)
+        
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
     def _add_list_item(self, name, l_type, visible=None):
-        item = QtWidgets.QListWidgetItem(f"{name} | {l_type}")
+        # Issue: Indent dependent columns to show hierarchy
+        display_name = name
+        is_dependent = False
+        for suffix in [" (Match)", " (Init)", " (Cyclic)"]:
+            if name.endswith(suffix):
+                is_dependent = True
+                display_name = "    " + name # Add indentation
+                break
+        
+        # Fix: Indent Port State to show it belongs to Review Status
+        if name == "Port State":
+            is_dependent = True
+            display_name = "    " + name
+
+        item = QtWidgets.QListWidgetItem(f"{display_name} | {l_type}")
         item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
         
         # Issue 2: Init and Cyclic columns follow default behavior (Auto) unless overwritten.
@@ -101,6 +218,10 @@ class ColumnCustomizer(QtWidgets.QDialog):
             check_state = QtCore.Qt.CheckState.Checked if (visible is None or visible is True) else QtCore.Qt.CheckState.Unchecked
             item.setCheckState(check_state)
 
+        # Issue 1 & 2: Lock TC. ID and Dependents
+        if name == "TC. ID" or is_dependent:
+             item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsDragEnabled)
+
         self.active_list.addItem(item)
 
     def _get_unique_name(self, base_name):
@@ -109,7 +230,7 @@ class ColumnCustomizer(QtWidgets.QDialog):
         for i in range(self.active_list.count()):
             text = self.active_list.item(i).text()
             if " | " in text:
-                existing_names.add(text.split(" | ")[0])
+                existing_names.add(text.split(" | ")[0].strip())
         
         if base_name not in existing_names:
             return base_name
@@ -147,6 +268,7 @@ class ColumnCustomizer(QtWidgets.QDialog):
         item = self.active_list.item(row)
         text = item.text()
         old_name, l_type = text.split(" | ")
+        old_name = old_name.strip() # Remove indentation if present
         
         # Constraint 2: Review Status cannot be renamed
         if l_type == "Review Status":
@@ -168,6 +290,11 @@ class ColumnCustomizer(QtWidgets.QDialog):
         
         if is_dependent:
              QtWidgets.QMessageBox.warning(self, "Cannot Rename", "Dependent columns (Match, Init, Cyclic) cannot be renamed directly.\nPlease rename the parent Search column instead.")
+             return
+             
+        # Fix: Prevent renaming Port State
+        if old_name == "Port State":
+             QtWidgets.QMessageBox.warning(self, "Cannot Rename", "The 'Port State' column cannot be renamed.")
              return
 
         # Prompt for new name
@@ -191,19 +318,21 @@ class ColumnCustomizer(QtWidgets.QDialog):
             other_item = self.active_list.item(i)
             other_text = other_item.text()
             other_name, other_type = other_text.split(" | ")
+            other_name_clean = other_name.strip()
             
             for suffix in suffixes:
-                if other_name == f"{old_name}{suffix}":
+                if other_name_clean == f"{old_name}{suffix}":
                     # Found a dependent, rename it to match new parent
                     new_dep_name = f"{new_name}{suffix}"
-                    other_item.setText(f"{new_dep_name} | {other_type}")
+                    # Add indentation back
+                    other_item.setText(f"    {new_dep_name} | {other_type}")
 
     def _delete_selected_item(self):
         row = self.active_list.currentRow()
         if row < 0: return
         
         item = self.active_list.item(row)
-        name = item.text().split(" | ")[0]
+        name = item.text().split(" | ")[0].strip()
         
         suffixes = [" (Match)", " (Init)", " (Cyclic)"]
 
@@ -213,6 +342,12 @@ class ColumnCustomizer(QtWidgets.QDialog):
                 QtWidgets.QMessageBox.warning(self, "Cannot Delete", 
                     f"The column '{name}' cannot be deleted directly.\nPlease delete the parent Search column instead.")
                 return
+        
+        # Fix: Prevent deleting Port State directly
+        if name == "Port State":
+             QtWidgets.QMessageBox.warning(self, "Cannot Delete", 
+                f"The column '{name}' cannot be deleted directly.\nPlease delete the parent 'Review Status' column instead.")
+             return
         
         # Issue 2: Prevent deletion if column is locked (contains Reviewed data)
         if name in self.locked_columns:
@@ -234,12 +369,16 @@ class ColumnCustomizer(QtWidgets.QDialog):
         rows_to_delete = []
         for i in range(self.active_list.count()):
             other_item = self.active_list.item(i)
-            other_name = other_item.text().split(" | ")[0]
+            other_name = other_item.text().split(" | ")[0].strip()
             
             for suffix in suffixes:
                 if other_name == f"{name}{suffix}":
                     rows_to_delete.append(i)
                     break
+            
+            # Fix: If deleting Review Status, also delete Port State
+            if name == "Review Status" and other_name == "Port State":
+                rows_to_delete.append(i)
         
         # Delete in reverse order to preserve indices
         for r in sorted(rows_to_delete, reverse=True):
@@ -251,6 +390,8 @@ class ColumnCustomizer(QtWidgets.QDialog):
             item = self.active_list.item(i)
             text = item.text()
             name, l_type = text.split(" | ")
+            name = name.strip() # Remove indentation
+            l_type = l_type.strip() # Remove leading/trailing spaces
             
             # Determine visibility override
             # Issue 2: Map Tristate back to None/True/False
@@ -264,3 +405,13 @@ class ColumnCustomizer(QtWidgets.QDialog):
             
             config.append((name, l_type, is_visible))
         return config
+
+    def get_default_cyclicity(self):
+        return self.cyclicity_input.text().strip()
+
+    def set_filter_states(self, show_retired, show_deleted):
+        self.chk_show_retired.setChecked(show_retired)
+        self.chk_show_deleted.setChecked(show_deleted)
+
+    def get_filter_states(self):
+        return self.chk_show_retired.isChecked(), self.chk_show_deleted.isChecked()

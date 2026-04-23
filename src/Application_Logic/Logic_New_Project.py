@@ -1,9 +1,12 @@
+
 from core.elf_parser import ELFParser
-from PyQt6.QtWidgets import QMainWindow, QFileDialog, QMessageBox
+from PyQt6.QtWidgets import QDialog, QFileDialog, QMessageBox, QInputDialog, QMainWindow
+from PyQt6 import QtWidgets, QtCore
 from PyQt6.QtCore import Qt
 
 import UI
 import os
+import json
 from .Logic_Loading_Window import LoadingDialog
 
 class NewProjectController (QMainWindow):
@@ -19,6 +22,7 @@ class NewProjectController (QMainWindow):
         self.ui.btn_Load_json.clicked.connect(self.open_json_handler)
 
         self.parser = None
+        self.release_name = None
 
     def _parse_logic(self, mode, file_path):
         """
@@ -40,9 +44,15 @@ class NewProjectController (QMainWindow):
     def open_elf_handler (self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Open ELF File", "", "ELF Files (*.elf);; All Files (*)")
         if file_path:
+            # Prompt for Release Name (Requirements 1 & Clarification)
+            release_name, ok = QtWidgets.QInputDialog.getText(self, "Release Version", "Enter Release Version/Name (e.g. R1.0):")
+            if not ok or not release_name.strip():
+                return
+
             loader = LoadingDialog(self)
             if loader.run_task(self._parse_logic, 'ELF', file_path):
                 self.parser = loader.result
+                self.release_name = release_name # Store for Controller
                 stats = self.parser.get_statistics()
                 QMessageBox.information(self, "Success",
                                         f"Successfully parsed ELF: {os.path.basename(file_path)}\n"
@@ -54,9 +64,15 @@ class NewProjectController (QMainWindow):
     def open_json_handler (self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Open JSON File", "", "JSON Files (*.json) ;; All Files (*)")
         if file_path:
+            # Prompt for Release Name
+            release_name, ok = QtWidgets.QInputDialog.getText(self, "Release Version", "Enter Release Version/Name (e.g. R1.0):")
+            if not ok or not release_name.strip():
+                return
+
             loader = LoadingDialog(self)
             if loader.run_task(self._parse_logic, 'JSON', file_path):
                 self.parser = loader.result
+                self.release_name = release_name # Store for Controller
                 QMessageBox.information(self, "Success", f"Loaded JSON database: {os.path.basename(file_path)}")
                 self.close()
             else:
