@@ -112,16 +112,41 @@ class ELFParser:
     def load_elf(self, elf_path: str):
         """Loads and parses an ELF file."""
         self.elf_path = Path(elf_path)
+        
+        # Bypass existence/validation in test mode if file is missing or invalid (Feature 6)
+        if getattr(self, 'test_mode', False):
+            if not self.elf_path.exists():
+                self.md5_hash = "DUMMY_HASH_FOR_TEST_MODE"
+                self.symbols = []
+                self.functions = []
+                self.structures = {}
+                return
+            
         if not self.elf_path.exists():
             raise FileNotFoundError(f"ELF file not found: {elf_path}")
             
-        self.md5_hash = self._calculate_md5()
+        try:
+            self.md5_hash = self._calculate_md5()
+        except Exception as e:
+            if getattr(self, 'test_mode', False):
+                self.md5_hash = "DUMMY_HASH_FOR_TEST_MODE"
+                self.symbols = []
+                self.functions = []
+                self.structures = {}
+                return
+            raise e
         
         try:
             self.stream = open(self.elf_path, 'rb')
             self._load_elf_file()
         except Exception as e:
             self.close()
+            if getattr(self, 'test_mode', False):
+                # Ignore validation errors
+                self.symbols = []
+                self.functions = []
+                self.structures = {}
+                return
             raise e
 
     def __enter__(self):
@@ -161,6 +186,8 @@ class ELFParser:
             logger.info(f"Successfully loaded ELF file: {self.elf_path}")
             logger.info(f"ELF Architecture {self.elf_file.get_machine_arch()}")
         except Exception as e:
+            if getattr(self, 'test_mode', False):
+                return
             raise ValueError(f"Failed to load ELF file: {e}") from e
 
     def save_cache(self, cache_path: str):
@@ -214,6 +241,9 @@ class ELFParser:
             with open(cache_path, 'r') as f:
                 data = json.load(f)
             
+            if "database" in data:
+                data = data["database"]
+
             self.elf_path = Path(data.get("elf_path", ""))
             self.md5_hash = data.get("elf_hash")
             
@@ -274,6 +304,8 @@ class ELFParser:
 
     def _generate_symbols(self) -> Generator[Symbol, None, None]:
         """Generator that yields symbols one by one."""
+        if not self.elf_file:
+            return
         logger.info("Extracting symbols from ELF file")
         elffile = self.elf_file
         for section in elffile.iter_sections():
@@ -350,7 +382,7 @@ class ELFParser:
         except: return "unknown"
 
     def extract_function_parameters(self) -> None:
-        if not self.elf_file.has_dwarf_info(): return
+        if not self.elf_file or not self.elf_file.has_dwarf_info(): return
         dwarfinfo = self.elf_file.get_dwarf_info()
         func_map = {f.name: f for f in self.functions}
         for CU in dwarfinfo.iter_CUs():
@@ -372,7 +404,7 @@ class ELFParser:
 
     def extract_structures(self) -> Dict[str, List[Dict[str, str]]]:
         if self.structures: return self.structures
-        if not self.elf_file.has_dwarf_info(): return {}
+        if not self.elf_file or not self.elf_file.has_dwarf_info(): return {}
         logger.info("Extracting structures from DWARF info...")
         typedefs = []
         try:
@@ -439,7 +471,7 @@ class ELFParser:
 
     def extract_dwarf_variables(self) -> Dict[str, str]:
         if self.global_vars_dwarf: return self.global_vars_dwarf
-        if not self.elf_file.has_dwarf_info(): return {}
+        if not self.elf_file or not self.elf_file.has_dwarf_info(): return {}
         logger.info("Extracting variables from DWARF info...")
         try:
             dwarfinfo = self.elf_file.get_dwarf_info()

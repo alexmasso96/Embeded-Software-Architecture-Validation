@@ -17,6 +17,9 @@ class ReleaseModel:
     description: str = ""
     timestamp: str = "" # Creation timestamp
     elf_path: Optional[str] = None # Path to the ELF file associated with this release
+    elf_hash: Optional[str] = None # Unique MD5 hash of the ELF/JSON database
+    is_deleted: bool = False
+    deletion_comment: str = ""
     
     def to_dict(self, project_root=None):
         """
@@ -33,7 +36,10 @@ class ReleaseModel:
             "parent_release_name": self.parent_release_name,
             "description": self.description,
             "timestamp": self.timestamp,
-            "elf_path": self.elf_path
+            "elf_path": self.elf_path,
+            "elf_hash": self.elf_hash,
+            "is_deleted": self.is_deleted,
+            "deletion_comment": self.deletion_comment
         }
 
     @staticmethod
@@ -49,7 +55,10 @@ class ReleaseModel:
             parent_release_name=data.get("parent_release_name"),
             description=data.get("description", ""),
             timestamp=data.get("timestamp", ""),
-            elf_path=data.get("elf_path")
+            elf_path=data.get("elf_path"),
+            elf_hash=data.get("elf_hash"),
+            is_deleted=data.get("is_deleted", False),
+            deletion_comment=data.get("deletion_comment", "")
         )
 
 class ReleaseManager:
@@ -71,14 +80,16 @@ class ReleaseManager:
             self.load_registry()
 
     def set_project_path(self, new_path):
+        old_path = self.project_path
         self.project_path = new_path
         if new_path:
             self._ensure_directories()
             
             # Smart Save/Load
             if self.releases:
-                # We have in-memory releases (New Project scenario), save them to correct path
+                # We have in-memory releases, save/migrate them to the correct path
                 for r in self.releases:
+                    old_file_path = r.file_path
                     if not r.file_path:
                         filename = f"{r.name.replace(' ', '_')}.json"
                         r.file_path = os.path.join(self.project_path, self.releases_dir, filename)
@@ -89,9 +100,28 @@ class ReleaseManager:
                              name_part, ext = os.path.splitext(base_path)
                              r.file_path = f"{name_part}_{counter}{ext}"
                              counter += 1
+                    elif old_path and new_path != old_path:
+                        try:
+                            # Re-root the path to the new project path if it was inside the old project path
+                            abs_old_path = os.path.abspath(old_path)
+                            abs_old_file_path = os.path.abspath(old_file_path)
+                            if abs_old_file_path.startswith(abs_old_path):
+                                rel_p = os.path.relpath(abs_old_file_path, abs_old_path)
+                                r.file_path = os.path.join(new_path, rel_p)
+                        except Exception as e:
+                            print(f"Error re-rooting release path: {e}")
+                    
+                    # Ensure parent directory for r.file_path exists
+                    if r.file_path:
+                        os.makedirs(os.path.dirname(r.file_path), exist_ok=True)
                     
                     if r.data_cache:
                         self._save_data(r, r.data_cache)
+                    elif old_file_path and os.path.exists(old_file_path) and old_path and new_path != old_path:
+                        try:
+                            shutil.copy2(old_file_path, r.file_path)
+                        except Exception as e:
+                            print(f"Error copying release file from {old_file_path} to {r.file_path}: {e}")
                         
                 self.save_registry()
             else:
@@ -150,7 +180,7 @@ class ReleaseManager:
         except Exception as e:
             print(f"Error saving releases registry: {e}")
 
-    def create_release(self, name, description="", copy_from_active=False, elf_path=None):
+    def create_release(self, name, description="", copy_from_active=False, elf_path=None, elf_hash=None, elf_data=None):
         """Creates a new Software Release."""
         # Validation: Name must be unique among ALL releases
         if any(r.name == name for r in self.releases):
@@ -176,7 +206,8 @@ class ReleaseManager:
             is_baseline=False,
             description=description,
             timestamp=datetime.datetime.now().isoformat(),
-            elf_path=elf_path
+            elf_path=elf_path,
+            elf_hash=elf_hash
         )
         
         # Initialize Data
@@ -185,6 +216,9 @@ class ReleaseManager:
             active = self.get_active_release()
             if active:
                 data = self._load_data(active)
+        
+        if elf_data:
+            data["database"] = elf_data
         
         new_release.data_cache = data
         self._save_data(new_release, data)
@@ -195,11 +229,23 @@ class ReleaseManager:
         
         return new_release
 
-    def create_baseline(self, release_index):
+    def create_baseline(self, release_index, baseline_name, layout_data=None, active_model_data=None):
         """
         Creates a snapshot of the specified release.
-        Stores it in the Baselines folder.
+        Stores it in the Baselines/[baseline_name]/ folder.
         """
+        if not self.project_path:
+            raise ValueError("No active project path.")
+            
+        if not baseline_name or not baseline_name.strip():
+            raise ValueError("Baseline name cannot be empty.")
+            
+        baseline_name = baseline_name.strip()
+        
+        # Validation: Name must be unique among ALL active releases/baselines
+        if any(r.name == baseline_name and not r.is_deleted for r in self.releases):
+            raise ValueError(f"A release or baseline named '{baseline_name}' already exists.")
+
         if not (0 <= release_index < len(self.releases)):
             raise ValueError("Invalid release index")
             
@@ -207,27 +253,88 @@ class ReleaseManager:
         if src_release.is_baseline:
              raise ValueError("Cannot create a baseline from a baseline.")
              
-        # Generate Baseline Name
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        baseline_name = f"{src_release.name}_Baseline_{timestamp}"
+        baseline_dir = os.path.join(self.project_path, self.baselines_dir, baseline_name)
+        # Ensure unique baseline folder name in the file system (to prevent overwriting soft-deleted baselines)
+        counter = 1
+        base_dir = baseline_dir
+        while os.path.exists(baseline_dir):
+            baseline_dir = f"{base_dir}_{counter}"
+            counter += 1
+        os.makedirs(baseline_dir, exist_ok=True)
         
-        filename = f"{baseline_name}.json"
-        file_path = os.path.join(self.project_path, self.baselines_dir, filename)
+        # File paths inside baseline dir
+        table_data_path = os.path.join(baseline_dir, "table_data.json")
+        layout_path = os.path.join(baseline_dir, "layout.json")
+        metrics_path = os.path.join(baseline_dir, "metrics.json")
         
-        # Copy Data
-        data = self._load_data(src_release)
+        # Load ELF parser database from the source release
+        src_data = self._load_data(src_release)
+        
+        if active_model_data is None:
+            active_model_data = {}
+            
+        # Assemble frozen baseline table data (incorporating rows, results, and database)
+        table_data = {
+            "rows": active_model_data.get("rows", []),
+            "column_metadata": active_model_data.get("column_metadata", {}),
+            "release_results": active_model_data.get("release_results", {}),
+            "database": src_data
+        }
+        
+        # Save files inside baseline dir
+        with open(table_data_path, 'w') as f:
+            json.dump(table_data, f, indent=4)
+            
+        if layout_data is None:
+            layout_data = {}
+        with open(layout_path, 'w') as f:
+            json.dump(layout_data, f, indent=4)
+
+        # Copy all active models and their registry for robust multi-model baseline support
+        src_registry = os.path.join(self.project_path, "architecture_models_registry.json")
+        if os.path.exists(src_registry):
+            try:
+                with open(src_registry, 'r') as f:
+                    registry_data = json.load(f)
+                
+                # Filter out deleted models
+                active_models = [m for m in registry_data.get("models", []) if not m.get("is_deleted", False)]
+                
+                # Copy active models' JSON files
+                for model_info in active_models:
+                    filename = model_info.get("filename")
+                    if filename:
+                        src_model_path = os.path.join(self.project_path, filename)
+                        dst_model_path = os.path.join(baseline_dir, filename)
+                        if os.path.exists(src_model_path):
+                            shutil.copy2(src_model_path, dst_model_path)
+                
+                # Save filtered registry copy
+                registry_data["models"] = active_models
+                dst_registry = os.path.join(baseline_dir, "architecture_models_registry.json")
+                with open(dst_registry, 'w') as f:
+                    json.dump(registry_data, f, indent=4)
+            except Exception as e:
+                print(f"Warning: Failed to copy multi-model registry to baseline: {e}")
+            
+        metrics_data = {
+            "TODO": "Metrics dashboard features are not yet implemented. This file will store the generated metrics dashboard data for this release.",
+            "metrics": {}
+        }
+        with open(metrics_path, 'w') as f:
+            json.dump(metrics_data, f, indent=4)
         
         new_baseline = ReleaseModel(
             name=baseline_name,
-            file_path=file_path,
+            file_path=table_data_path,
             is_baseline=True,
             parent_release_name=src_release.name,
             description=f"Snapshot of {src_release.name}",
             timestamp=datetime.datetime.now().isoformat(),
-            data_cache=data
+            data_cache=table_data,
+            elf_path=src_release.elf_path,
+            elf_hash=src_release.elf_hash
         )
-        
-        self._save_data(new_baseline, data)
         
         # Baselines usually added to list? User said: "In the release selection window... option to create a baseline"
         # "12. If a release is baselined it should be clearly marked in relesae view"
@@ -252,20 +359,26 @@ class ReleaseManager:
         self.save_registry()
         return True, "Success"
 
-    def delete_release(self, index):
+    def delete_release(self, index, deletion_comment=""):
         if not (0 <= index < len(self.releases)):
-            return False
+            return False, "Invalid index"
             
         model = self.releases[index]
         
-        # "3.1 The behavior should be inhibited if for that specific software release a result baseline was created"
-        # Check if any baseline points to this
+        # Check if any active baseline points to this
         if not model.is_baseline:
-            has_baseline = any(r.is_baseline and r.parent_release_name == model.name for r in self.releases)
+            has_baseline = any(r.is_baseline and not r.is_deleted and r.parent_release_name == model.name for r in self.releases)
             if has_baseline:
-                return False, "Cannot delete release that has baselines."
+                return False, "Cannot delete release that has active baselines."
         
-        # Delete file
+        if model.is_baseline:
+            # Soft delete baseline
+            model.is_deleted = True
+            model.deletion_comment = deletion_comment
+            self.save_registry()
+            return True, "Soft-deleted"
+            
+        # Permanent delete normal release
         if model.file_path and os.path.exists(model.file_path):
             try:
                 os.remove(model.file_path)
@@ -405,7 +518,7 @@ class ReleaseListModel(QAbstractListModel):
                 
         elif role == Qt.ItemDataRole.ForegroundRole:
             if index.row() == self.manager.active_release_index:
-                return QColor("white") if role == Qt.ItemDataRole.BackgroundRole and False else QColor("#2a82da")
+                return QColor("white")
             
         elif role == Qt.ItemDataRole.FontRole:
             if index.row() == self.manager.active_release_index:

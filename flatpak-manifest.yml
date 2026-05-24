@@ -1,0 +1,27 @@
+app-id: com.architecturevalidator.ArchitectureValidatorPro
+runtime: org.freedesktop.Platform
+runtime-version: '23.08'
+sdk: org.freedesktop.Sdk
+command: architecture-validator-pro
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=x11
+  - --socket=wayland
+  - --filesystem=home
+  - --device=dri
+
+modules:
+  - name: architecture-validator-pro
+    buildsystem: simple
+    sources:
+      - type: dir
+        path: dist/ArchitectureValidatorPro
+    build-commands:
+      - install -d /app/lib/architecture-validator-pro
+      - cp -r . /app/lib/architecture-validator-pro/
+      - chmod +x /app/lib/architecture-validator-pro/ArchitectureValidatorPro
+      - install -d /app/bin
+      - "printf '#!/bin/sh\\nexec /app/lib/architecture-validator-pro/ArchitectureValidatorPro \"$@\"\\n' > /app/bin/architecture-validator-pro"
+      - chmod +x /app/bin/architecture-validator-pro

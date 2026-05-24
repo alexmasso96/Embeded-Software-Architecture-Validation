@@ -44,13 +44,13 @@ def verify_logic():
     # Delete (Soft)
     mgr.soft_delete_model(0) # Delete Default
     assert mgr.models[0].is_deleted is True
-    assert len(mgr.get_visible_models()) == 2
+    assert len([m for m in mgr.models if not m.is_deleted]) == 2
     print("Test 4: Soft Delete Passed")
     
     # Restore
     mgr.restore_model(0)
     assert mgr.models[0].is_deleted is False
-    assert len(mgr.get_visible_models()) == 3
+    assert len([m for m in mgr.models if not m.is_deleted]) == 3
     print("Test 5: Restore Passed")
     
     # Move

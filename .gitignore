@@ -22,3 +22,16 @@ Thumbs.db
 
 # Others
 *.swp
+
+# Agent and IDE/Workspace configurations
+.claude/
+.agent/
+
+# PyInstaller build directories
+build/
+dist/
+
+# Test cache and local temporary project directories
+.pytest_cache/
+.tmp_*/
+scratch/

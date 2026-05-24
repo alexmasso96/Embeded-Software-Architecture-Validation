@@ -10,14 +10,15 @@ import json
 from .Logic_Loading_Window import LoadingDialog
 
 class NewProjectController (QMainWindow):
-    def __init__(self):
+    def __init__(self, main_window=None):
         super().__init__()
+        self.main_window = main_window
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.ui = UI.win_new_project_dialogue.Ui_win_new_project_dialogue()
         self.ui.setupUi(self)
 
         #Connect Internal Dialogue
-        self.ui.btn_help_new_project.clicked.connect(self.HelpNewProject)
+        self.ui.btn_help_new_project.clicked.connect(self.help_new_project)
         self.ui.btn_new_elf.clicked.connect(self.open_elf_handler)
         self.ui.btn_Load_json.clicked.connect(self.open_json_handler)
 
@@ -29,6 +30,9 @@ class NewProjectController (QMainWindow):
         This function runs on the background thread
         """
         parser = ELFParser()
+        if self.main_window and getattr(self.main_window, 'test_mode', False):
+            parser.test_mode = True
+
         if mode == 'ELF':
             parser.load_elf(file_path)
             # Only extract all if we are loading a new elf
@@ -78,7 +82,7 @@ class NewProjectController (QMainWindow):
             else:
                 QMessageBox.critical(self, "Error", f" Failed: {loader.error_msg}")
 
-    def HelpNewProject(self):
+    def help_new_project(self):
         self.help_window = QMainWindow(self)
         self.help_ui = UI.win_help_new_project.Ui_win_help_new_project()
         self.help_ui.setupUi(self.help_window)

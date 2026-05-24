@@ -1,8 +1,10 @@
 import json
 import os
+import hashlib
 from PyQt6 import QtWidgets
 from core.elf_parser import ELFParser
 from dataclasses import asdict
+from .Logic_History import HistoryManager
 
 class ProjectSaver:
     """
@@ -11,6 +13,32 @@ class ProjectSaver:
     1. Table Data (Configuration, Settings, Rows)
     2. ELF Data (Cache of the loaded ELF/JSON)
     """
+
+    @staticmethod
+    def compute_integrity_hash(project_path: str) -> str:
+        hasher = hashlib.sha256()
+        
+        files_to_hash = []
+        for root, dirs, files in os.walk(project_path):
+            for file in files:
+                # Exclude .lock and .integrity
+                if file in (".lock", ".integrity"):
+                    continue
+                abs_path = os.path.join(root, file)
+                rel_path = os.path.relpath(abs_path, project_path)
+                files_to_hash.append((rel_path, abs_path))
+                
+        # Sort alphabetically by relative path for determinism
+        files_to_hash.sort(key=lambda x: x[0])
+        
+        for rel_path, abs_path in files_to_hash:
+            try:
+                with open(abs_path, 'rb') as f:
+                    hasher.update(f.read())
+            except Exception:
+                pass
+                
+        return hasher.hexdigest()
 
     @staticmethod
     def get_temp_path(file_path):
@@ -47,14 +75,18 @@ class ProjectSaver:
     @staticmethod
     def cleanup_temp(original_path):
         """
-        Removes the temporary file if it exists.
+        Removes the temporary file or directory if it exists.
         """
         if not original_path:
             return
         temp_path = ProjectSaver.get_temp_path(original_path)
         if os.path.exists(temp_path):
             try:
-                os.remove(temp_path)
+                if os.path.isdir(temp_path):
+                    import shutil
+                    shutil.rmtree(temp_path)
+                else:
+                    os.remove(temp_path)
             except OSError:
                 pass # Best effort
 
@@ -64,6 +96,8 @@ class ProjectSaver:
 
     @staticmethod
     def save_project(main_window, path, is_temp=False):
+        if not getattr(main_window, 'edit_mode', True):
+            return False, "Saving is disabled in View-Only mode."
         try:
             # Handle Path: If it refers to an existing FILE, we must remove it to create a directory
             if os.path.isfile(path):
@@ -110,11 +144,26 @@ class ProjectSaver:
             # 3. Save Files
             
             # layout.json (Configuration & Settings)
+            test_case_json = {}
+            if hasattr(main_window, 'test_case_controller'):
+                test_case_json = {
+                    "project_title": main_window.test_case_controller.get_project_title(),
+                    "design_template": main_window.test_case_controller.get_design_template()
+                }
+
+            # Update settings_data with auto_save_interval
+            settings_data["auto_save_interval"] = getattr(main_window, 'auto_save_interval', 'immediate')
+
             layout_json = {
                 "version": "2.0",
                 "layout": layout_data,
-                "settings": settings_data
+                "settings": settings_data,
+                "test_case_design": test_case_json
             }
+            master_hash = getattr(main_window, 'master_password_hash', None)
+            if master_hash:
+                layout_json["master_password_hash"] = master_hash
+
             with open(os.path.join(path, "layout.json"), 'w') as f:
                 json.dump(layout_json, f, indent=4)
                 
@@ -129,38 +178,33 @@ class ProjectSaver:
                  except: pass
 
             # 4. Architecture Models (New System)
-            # CRITICAL: Flush current table data to the active model's cache/file BEFORE saving.
-            # set_project_path() triggers flush only if path changes, which it might not.
             main_window.arch_controller.flush_current_data_to_model()
 
-            # Update controller with path (this triggers manager to update paths)
-            main_window.arch_controller.set_project_path(path)
-            
-            # Save Registry
-            main_window.arch_controller.model_manager.save_registry()
-            # So we are covered.
-            
-            # 5. Save ELF Data into Active Release (Moved from database.json)
-            active_release = main_window.arch_controller.release_manager.get_active_release()
-            if active_release and elf_data:
-                if active_release.data_cache is None:
-                     active_release.data_cache = {}
-                
-                active_release.data_cache["database"] = elf_data
-                
-                # Save the Release File
-                main_window.arch_controller.release_manager._save_data(active_release, active_release.data_cache)
-            
-            # CRITICAL FIX: Save ALL models to disk.
-            # When doing "Save As" (or first save), set_project_path updates internal paths,
-            # but we must explicitly write the content of inactive models to these new files.
-            for model in main_window.arch_controller.model_manager.models:
-                if model.data_cache and model.file_path:
-                    try:
-                        with open(model.file_path, 'w') as f:
-                            json.dump(model.data_cache, f, indent=4)
-                    except Exception as e:
-                        print(f"Failed to auto-save model {model.name}: {e}")
+            if not is_temp:
+                # Update controller with path (this triggers manager to update paths)
+                main_window.arch_controller.set_project_path(path)
+                main_window.arch_controller.model_manager.save_registry()
+
+                # 5. Save Table & ELF Data into Active Release
+                active_release = main_window.arch_controller.release_manager.get_active_release()
+                if active_release:
+                    if elf_data:
+                        if active_release.data_cache is None:
+                            active_release.data_cache = {}
+                        active_release.data_cache["database"] = elf_data
+                        if not active_release.elf_hash and "elf_hash" in elf_data:
+                            active_release.elf_hash = elf_data["elf_hash"]
+                    if active_release.data_cache:
+                        main_window.arch_controller.release_manager._save_data(active_release, active_release.data_cache)
+
+                # Save ALL models to disk (needed for Save As / first save path migration)
+                for model in main_window.arch_controller.model_manager.models:
+                    if model.data_cache and model.file_path:
+                        try:
+                            with open(model.file_path, 'w') as f:
+                                json.dump(model.data_cache, f, indent=4)
+                        except Exception as e:
+                            print(f"Failed to auto-save model {model.name}: {e}")
             
             # Legacy: Remove table_data.json if it exists to avoid confusion, or keep as backup?
             # Let's clean it up to enforce new structure.
@@ -170,9 +214,22 @@ class ProjectSaver:
                      os.remove(legacy_data_path)
                  except: pass # Ignore
 
+            # Save History if not is_temp
+            if not is_temp:
+                if not hasattr(main_window, 'history_manager') or not main_window.history_manager:
+                    main_window.history_manager = HistoryManager(path)
+                else:
+                    main_window.history_manager.project_path = path
+                main_window.history_manager.save_history()
+
             # Cleanup temp if needed
             if not is_temp:
                  ProjectSaver.cleanup_temp(path)
+                 
+                 # Save integrity hash (Feature 3)
+                 integrity_hash = ProjectSaver.compute_integrity_hash(path)
+                 with open(os.path.join(path, ".integrity"), 'w') as f:
+                     f.write(integrity_hash)
                  
             return True, "Project saved successfully." + (" (Temp)" if is_temp else "")
 
@@ -182,13 +239,41 @@ class ProjectSaver:
     @staticmethod
     def load_project(main_window, path):
         try:
+            # Set is_loading flag and call reset_controller
+            main_window.arch_controller.is_loading = True
+            main_window.arch_controller.reset_controller()
+
+            # Integrity check (Feature 3)
+            integrity_mismatch = False
+            integrity_file = os.path.join(path, ".integrity")
+            if os.path.exists(integrity_file):
+                with open(integrity_file, 'r') as f:
+                    stored_hash = f.read().strip()
+                computed_hash = ProjectSaver.compute_integrity_hash(path)
+                if computed_hash != stored_hash:
+                    integrity_mismatch = True
+            else:
+                # If there's no .integrity file, but layout.json exists, it means it's a legacy or tampered project
+                if os.path.exists(os.path.join(path, "layout.json")):
+                    integrity_mismatch = True
+            
+            main_window.integrity_mismatch = integrity_mismatch
+
+            # Initialize HistoryManager and load history (Feature 5)
+            main_window.history_manager = HistoryManager(path)
+
             # Enforce Directory Format
             if os.path.isdir(path):
-                return ProjectSaver._load_directory_project(main_window, path)
+                success, msg = ProjectSaver._load_directory_project(main_window, path)
+                main_window.arch_controller.is_loading = False
+                return success, msg
             else:
+                main_window.arch_controller.is_loading = False
                 return False, "Selected path is not a valid project directory."
 
         except Exception as e:
+            if hasattr(main_window, 'arch_controller'):
+                main_window.arch_controller.is_loading = False
             return False, f"Failed to load project: {str(e)}"
 
     @staticmethod
@@ -204,15 +289,17 @@ class ProjectSaver:
             layout_path = os.path.join(dir_path, "layout.json")
             layout_config = []
             settings_config = {}
+            test_case_data = {}
             if os.path.exists(layout_path):
                 with open(layout_path, 'r') as f:
                     layout_json = json.load(f)
                 layout_config = layout_json.get("layout", [])
                 settings_config = layout_json.get("settings", {})
+                test_case_data = layout_json.get("test_case_design", {})
 
             # 3. Load Architecture Models (Now Releases)
-            # First, set the path so the manager activates
-            main_window.arch_controller.set_project_path(dir_path)
+            # First, set the path so the manager activates (do not flush)
+            main_window.arch_controller.set_project_path(dir_path, flush=False)
             
             # CRITICAL: We must explicit LOAD the registry from disk
             mgr = main_window.arch_controller.model_manager
@@ -236,9 +323,37 @@ class ProjectSaver:
                  # Ensure data is loaded
                  if active_release.data_cache is None:
                       active_release.data_cache = rel_mgr._load_data(active_release)
-                      
+                       
                  if active_release.data_cache:
-                      elf_data = active_release.data_cache.get("database", {})
+                      if active_release.is_baseline:
+                           # Baseline release data cache is table_data.json.
+                           # We also read layout.json from baseline folder.
+                           baseline_dir = os.path.dirname(active_release.file_path)
+                           layout_path = os.path.join(baseline_dir, "layout.json")
+                           
+                           layout_config = []
+                           settings_config = {}
+                           if os.path.exists(layout_path):
+                               with open(layout_path, 'r') as f:
+                                   layout_json = json.load(f)
+                               layout_config = layout_json.get("layout", [])
+                               settings_config = layout_json.get("settings", {})
+                               test_case_data = layout_json.get("test_case_design", {})
+                               
+                           data_to_load = {
+                               "config": layout_config,
+                               "settings": settings_config,
+                               "rows": active_release.data_cache.get("rows", [])
+                           }
+                           main_window.arch_controller.load_project_data(data_to_load)
+                           
+                           if test_case_data and hasattr(main_window, 'test_case_controller'):
+                               main_window.test_case_controller.load_data(test_case_data)
+                               
+                           elf_data = active_release.data_cache.get("database", {})
+                      else:
+                           elf_data = active_release.data_cache.get("database", {})
+
                       if elf_data:
                            print(f"Loading ELF Data from Release: {active_release.name}")
                            ProjectSaver._populate_parser(main_window, elf_data)
@@ -290,12 +405,15 @@ class ProjectSaver:
             main_window.arch_controller._rebuild_column_objects()
             main_window.arch_controller.current_default_cyclicity = settings_config.get("default_cyclicity", "10")
             main_window.arch_controller.show_retired = settings_config.get("show_retired", True)
-            main_window.arch_controller.show_deleted = settings_config.get("show_deleted", True)
+            main_window.arch_controller.show_deleted = settings_config.get("show_deleted", False)
             main_window.arch_controller._setup_table_style()
             
             # Now reload rows from model (which uses the new column config)
             main_window.arch_controller.load_active_model_to_table()
 
+            # 7. Load Test Case Design template
+            if test_case_data and hasattr(main_window, 'test_case_controller'):
+                main_window.test_case_controller.load_data(test_case_data)
             
             return True, "Project loaded successfully."
             

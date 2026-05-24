@@ -65,7 +65,7 @@ class LoadingDialog (QDialog):
             self.ui.lbl_icon_loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         else:
             # Fallback to a generic information icon if the theme is not found
-            icon = QIcon.fromTheme(QIcon.ThemeIcon.Information)
+            icon = QIcon.fromTheme(QIcon.ThemeIcon.DialogInformation)
             pixmap = icon.pixmap(self.ui.lbl_icon_loading.size())
             self.ui.lbl_icon_loading.setPixmap(pixmap)
 

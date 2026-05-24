@@ -192,13 +192,8 @@ class ArchitectureManager:
             return self.models[self.active_model_index]
         return None
 
-    def set_active_model(self, index):
-        """Sets the active model index."""
-        if 0 <= index < len(self.models):
-            self.active_model_index = index
-            self.save_registry()
-            return self.models[index]
-        return None
+
+
 
     def get_real_index_from_visible(self, visible_index):
         """Maps a visual row index (skipping deleted items) to the actual index in self.models"""
@@ -211,9 +206,9 @@ class ArchitectureManager:
         return -1
 
     def set_active_model(self, index):
-        real_index = self.get_real_index_from_visible(index) if index != -1 else -1 # Logic mismatch risk here
-        # Actually caller passes real index usually?
-        # Let's assume index is REAL index here
+        """
+        Sets the active model. Callers must pass real (storage-list) indices.
+        """
         if 0 <= index < len(self.models):
             self.active_model_index = index
             self.save_registry()

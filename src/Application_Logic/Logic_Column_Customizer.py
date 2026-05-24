@@ -177,7 +177,7 @@ class ColumnCustomizer(QtWidgets.QDialog):
         btn_layout.addWidget(self.chk_show_retired)
         
         self.chk_show_deleted = QtWidgets.QCheckBox("Show Deleted")
-        self.chk_show_deleted.setChecked(True)
+        self.chk_show_deleted.setChecked(False)
         btn_layout.addWidget(self.chk_show_deleted)
         
         btn_layout.addStretch()
@@ -246,6 +246,33 @@ class ColumnCustomizer(QtWidgets.QDialog):
         name = self.new_name_input.text().strip()
         l_type = self.type_combo.currentText()
         if name:
+            if l_type == "Link":
+                has_link = False
+                for i in range(self.active_list.count()):
+                    item = self.active_list.item(i)
+                    if " | " in item.text():
+                        _, item_type = item.text().split(" | ")
+                        if item_type.strip() == "Link":
+                            has_link = True
+                            break
+                if has_link:
+                    QtWidgets.QMessageBox.warning(self, "Duplicate Column", "There can only be one Link column type per architecture model.")
+                    return
+
+            if l_type == "Last Result":
+                has_last_result = False
+                for i in range(self.active_list.count()):
+                    item = self.active_list.item(i)
+                    if " | " in item.text():
+                        _, item_type = item.text().split(" | ")
+                        if item_type.strip() == "Last Result":
+                            has_last_result = True
+                            break
+                if has_last_result:
+                    QtWidgets.QMessageBox.warning(self, "Duplicate Column", "There can only be one Last Result column type per architecture model.")
+                    return
+
+
             # Issue 1: Ensure unique name
             name = self._get_unique_name(name)
 

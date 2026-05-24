@@ -1,0 +1,242 @@
+name: Build and Release Multi-Platform App
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag Name (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+      release_title:
+        description: 'Release Title (e.g. Release v1.0.0)'
+        required: true
+        default: 'Release v1.0.0'
+      draft:
+        description: 'Create Draft Release?'
+        required: true
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Is this a Pre-Release?'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller ArchitectureValidatorPro.spec
+
+      - name: Compress Directory (ZIP)
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/ArchitectureValidatorPro -DestinationPath architecture-validator-pro-windows.zip
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifact
+          path: architecture-validator-pro-windows.zip
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller ArchitectureValidatorPro.spec
+
+      - name: Compress macOS Bundle (ZIP)
+        run: |
+          cd dist
+          zip -r ../architecture-validator-pro-macos.zip ArchitectureValidatorPro.app
+          cd ..
+
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifact
+          path: architecture-validator-pro-macos.zip
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install System Packaging Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y alien rpm build-essential
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller ArchitectureValidatorPro.spec
+
+      - name: Package DEB and RPM
+        run: |
+          # 1. Structure the DEB layout
+          mkdir -p debian-pkg/DEBIAN
+          mkdir -p debian-pkg/usr/bin
+          mkdir -p debian-pkg/usr/share/architecture-validator-pro
+          mkdir -p debian-pkg/usr/share/applications
+          
+          # Copy compiled binary files
+          cp -r dist/ArchitectureValidatorPro/* debian-pkg/usr/share/architecture-validator-pro/
+          
+          # Create launcher shell script
+          cat << 'EOF' > debian-pkg/usr/bin/architecture-validator-pro
+          #!/bin/sh
+          exec /usr/share/architecture-validator-pro/ArchitectureValidatorPro "$@"
+          EOF
+          chmod +x debian-pkg/usr/bin/architecture-validator-pro
+          
+          # Create desktop application file
+          cat << 'EOF' > debian-pkg/usr/share/applications/architecture-validator-pro.desktop
+          [Desktop Entry]
+          Type=Application
+          Name=Architecture Validator Pro
+          Comment=Automates the testing and verification of software architecture
+          Exec=architecture-validator-pro
+          Icon=architecture-validator-pro
+          Terminal=false
+          Categories=Development;Utility;
+          EOF
+          
+          # Handle Debian versioning (strip 'v' prefix if present for compliance)
+          RAW_VERSION="${{ github.event.inputs.tag_name }}"
+          VERSION="${RAW_VERSION#v}"
+          
+          # Create Debian control metadata file
+          cat << EOF > debian-pkg/DEBIAN/control
+          Package: architecture-validator-pro
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Alex Masso <alexmasso96@github.com>
+          Description: Architecture Validator Pro desktop application.
+          Depends: libc6, libgl1
+          EOF
+          
+          # 2. Build the DEB package
+          dpkg-deb --build debian-pkg architecture-validator-pro-linux.deb
+          
+          # 3. Convert the DEB package to RPM package using alien
+          sudo alien --to-rpm --scripts architecture-validator-pro-linux.deb
+          
+          # Rename generated RPM to a predictable filename
+          mv architecture-validator-pro-*.rpm architecture-validator-pro-linux.rpm
+
+      - name: Upload Linux DEB Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb-artifact
+          path: architecture-validator-pro-linux.deb
+
+      - name: Upload Linux RPM Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-rpm-artifact
+          path: architecture-validator-pro-linux.rpm
+
+      - name: Build Flatpak
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: architecture-validator-pro-linux.flatpak
+          manifest-path: flatpak-manifest.yml
+          cache-key: flatpak-builder-${{ hashFiles('flatpak-manifest.yml') }}
+
+      - name: Upload Linux Flatpak Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-flatpak-artifact
+          path: architecture-validator-pro-linux.flatpak
+
+  create-release:
+    runs-on: ubuntu-latest
+    needs: [build-windows, build-macos, build-linux]
+    steps:
+      - name: Download Windows Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-artifact
+
+      - name: Download macOS Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-artifact
+
+      - name: Download Linux DEB Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-deb-artifact
+
+      - name: Download Linux RPM Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-rpm-artifact
+
+      - name: Download Linux Flatpak Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-flatpak-artifact
+
+      - name: Create GitHub Release and Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag_name }}
+          name: ${{ github.event.inputs.release_title }}
+          draft: ${{ github.event.inputs.draft == 'true' }}
+          prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+          generate_release_notes: true
+          files: |
+            architecture-validator-pro-windows.zip
+            architecture-validator-pro-macos.zip
+            architecture-validator-pro-linux.deb
+            architecture-validator-pro-linux.rpm
+            architecture-validator-pro-linux.flatpak

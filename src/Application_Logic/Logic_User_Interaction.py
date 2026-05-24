@@ -1,3 +1,14 @@
+"""  
+User Interaction Logic Module
+=============================
+Manages per-cell metadata for tracking manual overrides, conflict states,
+and function associations using Qt's UserRole data system.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Optional
+
 from PyQt6 import QtWidgets, QtCore, QtGui
 
 class UserInteractionLogic:
@@ -65,7 +76,7 @@ class UserInteractionLogic:
         return item.data(UserInteractionLogic.USER_CHANGE_ROLE) is True
 
     @staticmethod
-    def get_review_status(table, row, controller):
+    def get_review_status(table: QtWidgets.QTableWidget, row: int, controller: object) -> Optional[str]:
         """Helper to find the review status text for a given row."""
         review_col_idx = controller.get_column_index_by_type("ReviewColumn")
         if review_col_idx != -1:
@@ -75,7 +86,7 @@ class UserInteractionLogic:
         return None
 
     @staticmethod
-    def reset_review_status(table, row, controller):
+    def reset_review_status(table: QtWidgets.QTableWidget, row: int, controller: object) -> None:
         """Resets the review status to 'Not Reviewed' if it isn't already."""
         review_col_idx = controller.get_column_index_by_type("ReviewColumn")
         if review_col_idx != -1:

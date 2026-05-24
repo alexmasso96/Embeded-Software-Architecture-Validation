@@ -1,7 +1,64 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Optional, List, Tuple
+
 from PyQt6 import QtWidgets, QtCore, QtGui
+from PyQt6.QtWidgets import QTableWidget, QComboBox, QTableWidgetItem
 import re
 from fuzzywuzzy import process, fuzz
 from .Logic_User_Interaction import UserInteractionLogic
+
+if TYPE_CHECKING:
+    from .interfaces import IArchitectureController
+
+def is_baseline_mode(controller) -> bool:
+    """Helper to determine if the table is currently in baseline (read-only) view."""
+    return bool(controller and hasattr(controller, 'btn_exit_baseline') and not controller.btn_exit_baseline.isHidden())
+
+
+def row_has_content(table: QTableWidget, row: int, controller) -> bool:
+    """
+    Determines if a row has meaningful content.
+    Returns True if either 'TC. ID' or 'Input Port' is populated.
+    If neither column exists, falls back to checking if any cell is populated.
+    """
+    if not controller or not hasattr(controller, 'active_columns'):
+        return False
+        
+    tc_id_col = -1
+    input_port_col = -1
+    for i, col_obj in enumerate(controller.active_columns):
+        if col_obj.name == "TC. ID":
+            tc_id_col = i
+        elif col_obj.name == "Input Port":
+            input_port_col = i
+            
+    # Check TC. ID
+    if tc_id_col != -1:
+        item = table.item(row, tc_id_col)
+        if item and item.text().strip():
+            return True
+            
+    # Check Input Port
+    if input_port_col != -1:
+        widget = table.cellWidget(row, input_port_col)
+        if isinstance(widget, QtWidgets.QComboBox) and widget.currentText().strip():
+            return True
+        item = table.item(row, input_port_col)
+        if item and item.text().strip():
+            return True
+            
+    # Fallback if both columns are missing from layout
+    if tc_id_col == -1 and input_port_col == -1:
+        for c in range(table.columnCount()):
+            item = table.item(row, c)
+            if item and item.text().strip():
+                return True
+            widget = table.cellWidget(row, c)
+            if isinstance(widget, QtWidgets.QComboBox) and widget.currentText().strip():
+                return True
+                
+    return False
 
 class LazyComboBox(QtWidgets.QComboBox):
     def __init__(self, controller, search_func, parent=None):
@@ -64,21 +121,23 @@ class LazyComboBox(QtWidgets.QComboBox):
 class TableColumn:
     """Base class for all table column behaviors."""
 
-    def __init__(self, name, width=100):
-        self.name = name
-        self.width = width
-        self.user_visible = None  # None = Auto/Default, True = Force Show, False = Force Hide
+    def __init__(self, name: str, width: int = 100) -> None:
+        self.name: str = name
+        self.width: int = width
+        self.user_visible: Optional[bool] = None  # None = Auto/Default, True = Force Show, False = Force Hide
 
-    def on_change(self, table, row, col, text, controller, lazy=False):
+    def on_change(self, table: QTableWidget, row: int, col: int, text: str,
+                  controller: IArchitectureController, lazy: bool = False) -> None:
         pass
 
 
 class PortSearchColumn(TableColumn):
     """Generic Search logic that triggers a match across ALL symbols."""
-    def __init__(self, name, width=250):
+    def __init__(self, name: str, width: int = 250) -> None:
         super().__init__(name, width)
 
-    def on_change(self, table, row, col, text, controller, lazy=False):
+    def on_change(self, table: QTableWidget, row: int, col: int, text: str,
+                  controller: IArchitectureController, lazy: bool = False) -> None:
         if not text: return
         
         # Optimization: Lazy Load
@@ -108,6 +167,8 @@ class PortSearchColumn(TableColumn):
              UserInteractionLogic.reset_review_status(table, row, controller)
         ))
         
+        if is_baseline_mode(controller):
+            combo.setEnabled(False)
         table.setCellWidget(row, target_col, combo)
 
     def _update_dropdown(self, table, row, target_col, text, controller, matches):
@@ -138,7 +199,8 @@ class PortSearchColumn(TableColumn):
                 color = "#483d8b"
 
             combo.setStyleSheet(f"background-color: {color}; color: white;")
-            combo.setStyleSheet(f"background-color: {color}; color: white;")
+            if is_baseline_mode(controller):
+                combo.setEnabled(False)
             table.setCellWidget(row, target_col, combo)
 
 
@@ -148,7 +210,8 @@ class FunctionSearchColumn(TableColumn):
     def __init__(self, name, width=250):
         super().__init__(name, width)
 
-    def on_change(self, table, row, col, text, controller, lazy=False):
+    def on_change(self, table: QTableWidget, row: int, col: int, text: str,
+                  controller: IArchitectureController, lazy: bool = False) -> None:
         if not text: return
         
         if lazy:
@@ -166,6 +229,8 @@ class FunctionSearchColumn(TableColumn):
                     controller.refresh_cyclic_column_state(),
                     UserInteractionLogic.reset_review_status(table, row, controller)
                  ))
+                 if is_baseline_mode(controller):
+                     combo.setEnabled(False)
                  table.setCellWidget(row, col + 1, combo)
              return
 
@@ -200,7 +265,8 @@ class FunctionSearchColumn(TableColumn):
                 color = "#483d8b"
 
             combo.setStyleSheet(f"background-color: {color}; color: white;")
-            combo.setStyleSheet(f"background-color: {color}; color: white;")
+            if is_baseline_mode(controller):
+                combo.setEnabled(False)
             table.setCellWidget(row, target_col, combo)
 
 class VariableSearchColumn(TableColumn):
@@ -209,7 +275,8 @@ class VariableSearchColumn(TableColumn):
     def __init__(self, name, width=250):
         super().__init__(name, width)
 
-    def on_change(self, table, row, col, text, controller, lazy=False):
+    def on_change(self, table: QTableWidget, row: int, col: int, text: str,
+                  controller: IArchitectureController, lazy: bool = False) -> None:
         if not text: return
         
         if lazy:
@@ -223,6 +290,8 @@ class VariableSearchColumn(TableColumn):
                  combo.setCurrentText(text)
                  
                  combo.currentIndexChanged.connect(lambda: UserInteractionLogic.reset_review_status(table, row, controller))
+                 if is_baseline_mode(controller):
+                     combo.setEnabled(False)
                  table.setCellWidget(row, col + 1, combo)
              return
 
@@ -253,6 +322,8 @@ class VariableSearchColumn(TableColumn):
                 color = "#483d8b"
 
             combo.setStyleSheet(f"background-color: {color}; color: white;")
+            if is_baseline_mode(controller):
+                combo.setEnabled(False)
             table.setCellWidget(row, target_col, combo)
 
 class ReviewColumn(TableColumn):
@@ -272,20 +343,22 @@ class ReviewColumn(TableColumn):
             "Broken Link": "#483d8b"  # Dark Slate Blue
         }
 
-    def on_change(self, table, row, col, text, controller, lazy=False):
-        # Determine if row has any content (text in any cell)
-        has_content = False
-        for c in range(table.columnCount()):
-            item = table.item(row, c)
-            if item and item.text().strip():
-                has_content = True
-                break
+    def on_change(self, table: QTableWidget, row: int, col: int, text: str,
+                  controller: IArchitectureController, lazy: bool = False) -> None:
+        # Store controller reference for use in signal handlers
+        self._controller = controller
+
+        has_content = row_has_content(table, row, controller)
 
         current_widget = table.cellWidget(row, col)
 
         if not has_content:
             if current_widget:
                 table.removeCellWidget(row, col)
+            item = table.item(row, col)
+            if item:
+                item.setText("")
+                item.setBackground(QtGui.QColor("#353535"))
             return
 
         # If we have content but no widget, create it
@@ -296,8 +369,13 @@ class ReviewColumn(TableColumn):
 
             # Default to Not Reviewed
             combo.currentTextChanged.connect(lambda t, r=row, c=col: self._handle_status_change(table, r, c, t))
+            if is_baseline_mode(controller):
+                combo.setEnabled(False)
             table.setCellWidget(row, col, combo)
             combo.setStyleSheet(f"background-color: {self.status_map['Not Reviewed']}; color: white;")
+        else:
+            if is_baseline_mode(controller):
+                current_widget.setEnabled(False)
 
 
     def _handle_status_change(self, table, row, col, status):
@@ -320,6 +398,13 @@ class ReviewColumn(TableColumn):
         for c in range(table.columnCount()):
             other_widget = table.cellWidget(row, c)
             if isinstance(other_widget, QtWidgets.QComboBox) and other_widget != widget:
+                # Skip PortStateColumn and ReviewColumn widgets — they manage their own colors
+                if hasattr(self, '_controller') and self._controller:
+                    active_cols = getattr(self._controller, 'active_columns', [])
+                    if c < len(active_cols):
+                        col_obj = active_cols[c]
+                        if isinstance(col_obj, (PortStateColumn, ReviewColumn, LinkColumn, ReleaseResultColumn, LastResultColumn)):
+                            continue
 
                 if status == "Reviewed":
                     other_widget.setStyleSheet("background-color: #2e8b57; color: white;") # Dark Green
@@ -371,7 +456,8 @@ class InitColumn(TableColumn):
     def __init__(self, name, width=60):
         super().__init__(name, width)
 
-    def on_change(self, table, row, col, text, controller, lazy=False):
+    def on_change(self, table: QTableWidget, row: int, col: int, text: str,
+                  controller: IArchitectureController, lazy: bool = False) -> None:
         """
         Handles user interaction with the Init cell.
         """
@@ -439,7 +525,8 @@ class CyclicColumn(TableColumn):
             
         return "0"
 
-    def on_change(self, table, row, col, text, controller, lazy=False):
+    def on_change(self, table: QTableWidget, row: int, col: int, text: str,
+                  controller: IArchitectureController, lazy: bool = False) -> None:
         item = table.item(row, col)
         if not item:
             item = QtWidgets.QTableWidgetItem()
@@ -489,24 +576,9 @@ class PortStateColumn(TableColumn):
             "Deleted": "#8b0000"    # Dark Red
         }
 
-    def on_change(self, table, row, col, text, controller, lazy=False):
-        # Check if row has any content (text or widget selection)
-        has_content = False
-        for c in range(table.columnCount()):
-            if c == col: continue
-            
-            # Check Item Text
-            item = table.item(row, c)
-            if item and item.text().strip():
-                has_content = True
-                break
-            
-            # Check Widget Text
-            widget = table.cellWidget(row, c)
-            if isinstance(widget, QtWidgets.QComboBox):
-                if widget.currentText().strip():
-                    has_content = True
-                    break
+    def on_change(self, table: QTableWidget, row: int, col: int, text: str,
+                  controller: IArchitectureController, lazy: bool = False) -> None:
+        has_content = row_has_content(table, row, controller)
 
         # Ensure widget exists
         current_widget = table.cellWidget(row, col)
@@ -514,6 +586,10 @@ class PortStateColumn(TableColumn):
         if not has_content:
             if current_widget:
                 table.removeCellWidget(row, col)
+            item = table.item(row, col)
+            if item:
+                item.setText("")
+                item.setBackground(QtGui.QColor("#353535"))
             return
 
         if not current_widget:
@@ -524,9 +600,13 @@ class PortStateColumn(TableColumn):
             # Connect signal
             combo.currentTextChanged.connect(lambda t, r=row, c=col: self._handle_state_change(table, r, c, t, controller))
             
+            if is_baseline_mode(controller):
+                combo.setEnabled(False)
             table.setCellWidget(row, col, combo)
             self._handle_state_change(table, row, col, "In Work", controller)
         else:
+             if is_baseline_mode(controller):
+                 current_widget.setEnabled(False)
              # If widget exists, ensure visual state is correct (e.g. after scroll/restore)
              self._handle_state_change(table, row, col, current_widget.currentText(), controller)
 
@@ -542,22 +622,29 @@ class PortStateColumn(TableColumn):
         
         # Handle "Deleted" timer logic
         if state == "Deleted":
-            QtCore.QTimer.singleShot(5000, lambda: self._hide_deleted_row(table, row, controller))
+            QtCore.QTimer.singleShot(10000, lambda: self._hide_deleted_row(table, row, controller))
 
     def _apply_row_visuals(self, table, row, state, controller):
+        is_baseline = is_baseline_mode(controller)
         # Iterate over all items/widgets in the row
         for c in range(table.columnCount()):
             # Handle Widgets (ComboBoxes)
             widget = table.cellWidget(row, c)
             if widget:
-                # Issue: If this is a ReleaseResultColumn with "No Result", we removed the widget.
-                # But here we are iterating widgets. If widget exists, it's not "No Result".
-                if state == "Retired":
-                    widget.setEnabled(False)
-                elif state == "Deleted":
+                if is_baseline:
                     widget.setEnabled(False)
                 else:
-                    widget.setEnabled(True)
+                    # Skip the PortStateColumn's own widget so users can always change the state back
+                    if c < len(controller.active_columns) and isinstance(controller.active_columns[c], PortStateColumn):
+                        continue
+                    # Issue: If this is a ReleaseResultColumn with "No Result", we removed the widget.
+                    # But here we are iterating widgets. If widget exists, it's not "No Result".
+                    if state == "Retired":
+                        widget.setEnabled(False)
+                    elif state == "Deleted":
+                        widget.setEnabled(False)
+                    else:
+                        widget.setEnabled(True)
 
             # Handle Items (Static Text, Init, Cyclic)
             item = table.item(row, c)
@@ -565,6 +652,9 @@ class PortStateColumn(TableColumn):
                 item = QtWidgets.QTableWidgetItem()
                 table.setItem(row, c, item)
             
+            if is_baseline:
+                item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
+
             # Check if this column is a ReleaseResultColumn and has "No Result"
             is_no_result_static = False
             if c < len(controller.active_columns):
@@ -599,18 +689,11 @@ class PortStateColumn(TableColumn):
             item.setFont(font)
 
     def _hide_deleted_row(self, table, row, controller):
-        # Check if state is still Deleted (user might have changed it back quickly)
-        # We need to find the Port State column index again as it might have moved? 
-        # Actually, we have 'col' from closure but let's be safe.
-        # However, 'row' index might shift if other rows are deleted. 
-        # This is tricky with QTableWidget row indices.
-        # A safer way is to check the item at the specific cell if we can track it.
-        # For now, we will re-check the widget at the row.
-        
-        # Note: If rows are inserted/removed, 'row' index becomes stale.
-        # A robust solution requires persistent row objects or searching.
-        # Given the constraints, we will check if the row still exists and has "Deleted" state.
-        
+        # If show_deleted is enabled, don't hide the row
+        if getattr(controller, 'show_deleted', False):
+            return
+
+        # Check if state is still Deleted (user might have changed it back)
         if row < table.rowCount():
             # Find the Port State column index dynamically
             state_col_idx = -1
@@ -635,12 +718,13 @@ class LastResultColumn(TableColumn):
             "Passed": "#2e8b57",   # Sea Green
             "Failed": "#8b0000",   # Dark Red
             "Block": "#b8860b",    # Dark Goldenrod
-            "Block": "#b8860b",    # Dark Goldenrod
             "Not Run": "#4a90e2",  # Blue
             "No Result": "#808080" # Grey
         }
 
-    def on_change(self, table, row, col, text, controller, lazy=False):
+    def on_change(self, table: QTableWidget, row: int, col: int, text: str,
+                  controller: IArchitectureController, lazy: bool = False) -> None:
+        has_content = row_has_content(table, row, controller)
         # Read-Only logic
         item = table.item(row, col)
         if not item:
@@ -649,14 +733,87 @@ class LastResultColumn(TableColumn):
             
         item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
         
+        if not has_content:
+            item.setText("")
+            item.setBackground(QtGui.QColor("#353535"))
+            item.setForeground(QtGui.QColor("white"))
+            return
+            
         # Apply Color
         if text in self.state_colors:
             item.setBackground(QtGui.QColor(self.state_colors[text]))
             item.setForeground(QtGui.QColor("white"))
         else:
             # Clear or Default
+            item.setText("")
             item.setBackground(QtGui.QColor("#353535")) # Default background
             item.setForeground(QtGui.QColor("white"))
+
+    def _update_last_result(self, table, row, controller):
+        """Updates the Last Result column based on all release columns."""
+        last_res_idx = -1
+        for i, col_obj in enumerate(controller.active_columns):
+            if isinstance(col_obj, LastResultColumn):
+                last_res_idx = i
+                break
+        
+        if last_res_idx != -1:
+            latest_status = "Not Run"
+            found_any = False
+            
+            # Check for linked release column in active model
+            linked_col_name = None
+            current_model = controller.model_manager.get_active_model()
+            if current_model and current_model.data_cache:
+                linked_col_name = current_model.data_cache.get("linked_release_column")
+            
+            linked_col_idx = -1
+            if linked_col_name:
+                for i, col_obj in enumerate(controller.active_columns):
+                    if col_obj.name == linked_col_name:
+                        linked_col_idx = i
+                        break
+            
+            if linked_col_idx != -1:
+                # Use the linked column specifically
+                w = table.cellWidget(row, linked_col_idx)
+                if w and isinstance(w, QtWidgets.QComboBox):
+                    latest_status = w.currentText()
+                    found_any = True
+                else:
+                    it = table.item(row, linked_col_idx)
+                    if it and it.text():
+                        latest_status = it.text()
+                        found_any = True
+            else:
+                # Fall back to existing behavior (last release column in the table)
+                for c in range(table.columnCount()):
+                    if c < len(controller.active_columns):
+                        col_def = controller.active_columns[c]
+                        if isinstance(col_def, ReleaseResultColumn):
+                            # Check Widget
+                            w = table.cellWidget(row, c)
+                            if w and isinstance(w, QtWidgets.QComboBox):
+                                latest_status = w.currentText()
+                                found_any = True
+                            else:
+                                # Check Item (for No Result)
+                                it = table.item(row, c)
+                                if it and it.text() == "No Result":
+                                    pass
+
+            if found_any:
+                item = table.item(row, last_res_idx)
+                if not item:
+                    item = QtWidgets.QTableWidgetItem()
+                    table.setItem(row, last_res_idx, item)
+                item.setText(latest_status)
+                controller.active_columns[last_res_idx].on_change(table, row, last_res_idx, latest_status, controller)
+            else:
+                item = table.item(row, last_res_idx)
+                if item:
+                    item.setText("")
+                    item.setBackground(QtGui.QColor("#353535"))
 
 
 class ReleaseResultColumn(TableColumn):
@@ -675,19 +832,9 @@ class ReleaseResultColumn(TableColumn):
         }
         self.is_initialized = False # Req 8: Track initialization status
 
-    def on_change(self, table, row, col, text, controller, lazy=False):
-        # Determine if row has content
-        has_content = False
-        for c in range(table.columnCount()):
-            if c == col: continue
-            item = table.item(row, c)
-            if item and item.text().strip():
-                has_content = True
-                break
-            widget = table.cellWidget(row, c)
-            if isinstance(widget, QtWidgets.QComboBox) and widget.currentText().strip():
-                has_content = True
-                break
+    def on_change(self, table: QTableWidget, row: int, col: int, text: str,
+                  controller: IArchitectureController, lazy: bool = False) -> None:
+        has_content = row_has_content(table, row, controller)
 
         current_widget = table.cellWidget(row, col)
         
@@ -695,6 +842,11 @@ class ReleaseResultColumn(TableColumn):
         if not has_content:
             if current_widget:
                 table.removeCellWidget(row, col)
+            item = table.item(row, col)
+            if item:
+                item.setText("")
+                item.setBackground(QtGui.QColor("#353535"))
+            self._update_last_result(table, row, controller)
             return
 
         # 2. Logic Initialization / Default
@@ -765,6 +917,39 @@ class ReleaseResultColumn(TableColumn):
                  current_widget.blockSignals(False)
                  self._handle_state_change(table, row, col, text, controller)
 
+        # Enforce dynamic locking: editable only if matching loaded ELF and not baselined
+        col_name = self.name
+        release_name = ""
+        if col_name.startswith("Release_") and col_name.endswith("_Result"):
+            release_name = col_name[len("Release_"):-len("_Result")]
+
+        is_active = False
+        is_baselined = False
+        if hasattr(controller, 'release_manager') and controller.release_manager:
+            active_rel = controller.release_manager.get_active_release()
+            if active_rel:
+                is_active = (active_rel.name == release_name)
+            is_baselined = any(r.is_baseline and not r.is_deleted and r.parent_release_name == release_name 
+                               for r in controller.release_manager.releases)
+
+        is_baseline_view = is_baseline_mode(controller)
+        should_lock = (not is_active) or is_baselined or is_baseline_view
+
+        # Apply locking to cell widgets and items
+        widget = table.cellWidget(row, col)
+        if widget:
+            widget.blockSignals(True)
+            widget.setEnabled(not should_lock)
+            widget.blockSignals(False)
+        
+        item = table.item(row, col)
+        if item:
+            if should_lock:
+                item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
+            else:
+                if text != "No Result":
+                    item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsEditable)
+
     def _handle_state_change(self, table, row, col, state, controller):
         widget = table.cellWidget(row, col)
         if widget:
@@ -774,44 +959,65 @@ class ReleaseResultColumn(TableColumn):
         self._update_last_result(table, row, controller)
 
     def _update_last_result(self, table, row, controller):
-        """Updates the Last Result column based on all release columns."""
-        last_res_idx = -1
-        for i, col_obj in enumerate(controller.active_columns):
+        for col_obj in controller.active_columns:
             if isinstance(col_obj, LastResultColumn):
-                last_res_idx = i
+                col_obj._update_last_result(table, row, controller)
                 break
-        
-        if last_res_idx != -1:
-            latest_status = "Not Run"
-            found_any = False
-            
-            for c in range(table.columnCount()):
-                if c < len(controller.active_columns):
-                    col_def = controller.active_columns[c]
-                    if isinstance(col_def, ReleaseResultColumn):
-                        # Check Widget
-                        w = table.cellWidget(row, c)
-                        if w and isinstance(w, QtWidgets.QComboBox):
-                            latest_status = w.currentText()
-                            found_any = True
-                        else:
-                            # Check Item (for No Result)
-                            it = table.item(row, c)
-                            if it and it.text() == "No Result":
-                                # If validation has "No Result", does it affect Last Result?
-                                # Usually we ignore it or take the last valid one?
-                                # User spec says: "No Result"
-                                # Let's assume No Result overrides? Or is ignored?
-                                # Current logic was overwriting latest_status.
-                                # If we encounter a "No Result", should we treat it as valid status?
-                                # If all are No Result -> No Result.
-                                # If mixed -> probably last non-NoResult?
-                                pass
 
-            if found_any:
-                item = table.item(row, last_res_idx)
-                if not item:
-                    item = QtWidgets.QTableWidgetItem()
-                    table.setItem(row, last_res_idx, item)
-                item.setText(latest_status)
-                controller.active_columns[last_res_idx].on_change(table, row, last_res_idx, latest_status, controller)
+
+class LinkColumn(TableColumn):
+    """
+    Column indicating if a port has a test case.
+    Options: Yes (Green), No (Red).
+    """
+    def __init__(self, name="Link", width=100):
+        super().__init__(name, width)
+        self.colors = {
+            "Yes": "#2e8b57",  # Sea Green
+            "No": "#8b0000"   # Dark Red
+        }
+
+    def on_change(self, table: QtWidgets.QTableWidget, row: int, col: int, text: str,
+                  controller, lazy: bool = False) -> None:
+        has_content = row_has_content(table, row, controller)
+
+        current_widget = table.cellWidget(row, col)
+        
+        if not has_content:
+            if current_widget:
+                table.removeCellWidget(row, col)
+            item = table.item(row, col)
+            if item:
+                item.setText("")
+                item.setBackground(QtGui.QColor("#353535"))
+            return
+
+        if not current_widget:
+            combo = QtWidgets.QComboBox()
+            combo.addItems(["Yes", "No"])
+            if text in ["Yes", "No"]:
+                combo.setCurrentText(text)
+            else:
+                combo.setCurrentText("No") # Default
+            
+            # Connect signal
+            combo.currentTextChanged.connect(lambda t, r=row, c=col: self._handle_change(table, r, c, t, controller))
+            
+            if is_baseline_mode(controller):
+                combo.setEnabled(False)
+            table.setCellWidget(row, col, combo)
+            self._handle_change(table, row, col, combo.currentText(), controller)
+        else:
+            if text in ["Yes", "No"]:
+                current_widget.blockSignals(True)
+                current_widget.setCurrentText(text)
+                current_widget.blockSignals(False)
+            if is_baseline_mode(controller):
+                current_widget.setEnabled(False)
+            self._handle_change(table, row, col, current_widget.currentText(), controller)
+
+    def _handle_change(self, table, row, col, text, controller):
+        widget = table.cellWidget(row, col)
+        if widget:
+            color = self.colors.get(text, "#353535")
+            widget.setStyleSheet(f"background-color: {color}; color: white;")

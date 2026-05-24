@@ -5,3 +5,4 @@ fuzzywuzzy>=0.18.0
 python-Levenshtein>=0.21.0
 PyInstaller>=6.0.0
 capstone>=4.0.2
+bcrypt>=4.0.0
