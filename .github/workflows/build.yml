@@ -188,11 +188,11 @@ jobs:
           path: architecture-validator-pro-linux.rpm
 
       - name: Build Flatpak
-        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
-        with:
-          bundle: architecture-validator-pro-linux.flatpak
-          manifest-path: flatpak-manifest.yml
-          cache-key: flatpak-builder-${{ hashFiles('flatpak-manifest.yml') }}
+        run: |
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak --user remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak-builder --user --install-deps-from=flathub --repo=flatpak-repo --force-clean builddir-flatpak flatpak-manifest.yml
+          flatpak build-bundle flatpak-repo architecture-validator-pro-linux.flatpak com.architecturevalidator.ArchitectureValidatorPro --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
 
       - name: Upload Linux Flatpak Artifact
         uses: actions/upload-artifact@v4
