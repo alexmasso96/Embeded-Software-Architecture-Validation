@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 import sys
 import os
+from PyInstaller.utils.hooks import collect_data_files
 
 block_cipher = None
 
@@ -8,15 +9,22 @@ a = Analysis(
     ['src/main.py'],
     pathex=['src'],
     binaries=[],
-    datas=[],
+    datas=collect_data_files('PyQt6'),
     hiddenimports=[
         'PyQt6',
+        'PyQt6.QtWidgets',
+        'PyQt6.QtCore',
+        'PyQt6.QtGui',
+        'PyQt6.QtNetwork',
+        'PyQt6.sip',
         'pyelftools',
+        'elftools',
+        'elftools.elf.elffile',
         'pandas',
         'fuzzywuzzy',
         'Levenshtein',
         'capstone',
-        'bcrypt'
+        'bcrypt',
     ],
     hookspath=[],
     hooksconfig={},
