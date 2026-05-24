@@ -25,6 +25,12 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -106,7 +112,7 @@ jobs:
       - name: Install System Packaging Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y alien rpm build-essential
+          sudo apt-get install -y alien rpm build-essential xvfb
 
       - name: Install Dependencies
         run: |
