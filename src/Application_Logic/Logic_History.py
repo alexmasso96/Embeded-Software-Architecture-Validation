@@ -1,50 +1,33 @@
-import os
-import json
-import base64
 import datetime
+import logging
 from .Logic_File_Locking import FileLockManager
 
+logger = logging.getLogger(__name__)
+
+
 class HistoryManager:
-    def __init__(self, project_path=None):
-        self.project_path = project_path
+    def __init__(self, db=None):
+        self._db = db
         self.history = []
-        if project_path:
+        if db and db.is_open:
             self.load_history()
 
-    def get_history_file_path(self) -> str:
-        return os.path.join(self.project_path, "history.json")
+    def set_db(self, db):
+        self._db = db
+        if db and db.is_open:
+            self.load_history()
 
     def load_history(self):
         self.history = []
-        if not self.project_path:
+        if not self._db or not self._db.is_open:
             return
-        
-        path = self.get_history_file_path()
-        if os.path.exists(path):
-            try:
-                with open(path, 'rb') as f:
-                    obfuscated_data = f.read()
-                decoded_data = base64.b64decode(obfuscated_data).decode('utf-8')
-                self.history = json.loads(decoded_data)
-            except Exception as e:
-                print(f"Failed to load history: {e}")
-                self.history = []
+        try:
+            self.history = self._db.get_history()
+        except Exception as e:
+            logger.exception("Failed to load history")
 
     def save_history(self):
-        if not self.project_path:
-            return
-        
-        path = self.get_history_file_path()
-        try:
-            # We want to create directories if they don't exist, but .arch directory must exist since project is saved
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            
-            data_str = json.dumps(self.history, indent=4)
-            obfuscated_data = base64.b64encode(data_str.encode('utf-8'))
-            with open(path, 'wb') as f:
-                f.write(obfuscated_data)
-        except Exception as e:
-            print(f"Failed to save history: {e}")
+        pass  # No-op: entries written immediately via add_entry()
 
     def add_entry(self, description: str, model_name: str = ""):
         entry = {
@@ -54,4 +37,12 @@ class HistoryManager:
             "description": description
         }
         self.history.append(entry)
-        self.save_history()
+        if self._db and self._db.is_open:
+            try:
+                self._db.add_history_entry(
+                    description=description,
+                    model_name=model_name,
+                    username=entry["user"]
+                )
+            except Exception as e:
+                logger.exception("Failed to persist history entry")

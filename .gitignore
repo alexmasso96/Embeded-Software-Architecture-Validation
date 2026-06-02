@@ -11,6 +11,7 @@ venv/
 env/
 ENV/
 .venv/
+.venv-win/
 .ENV/
 
 # OS files
@@ -35,3 +36,15 @@ dist/
 .pytest_cache/
 .tmp_*/
 scratch/
+
+# Coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Local-only real test data (not for distribution)
+ForTesting/
+
+# Windows build script: distribute the app via Releases; to build, pull/fork.
+build_windows.bat

@@ -4,6 +4,9 @@ import socket
 import sys
 import datetime
 import getpass
+import logging
+
+logger = logging.getLogger(__name__)
 
 LOCK_HEARTBEAT_INTERVAL_SECONDS = 60
 LOCK_STALE_THRESHOLD_SECONDS = 600
@@ -87,8 +90,8 @@ class FileLockManager:
 
     @staticmethod
     def get_lock_file_path(project_path: str) -> str:
-        """Returns the absolute path to the lock file within the project directory."""
-        return os.path.join(project_path, ".lock")
+        """Returns the absolute path to the sidecar lock file for the project."""
+        return project_path + ".lock"
 
     @staticmethod
     def check_lock(project_path: str) -> dict:
@@ -152,8 +155,8 @@ class FileLockManager:
         If lock is held by someone else, returns (False, error_msg).
         If acquired or already held by us, returns (True, success_msg).
         """
-        if not project_path or not os.path.isdir(project_path):
-            return False, "Invalid project directory."
+        if not project_path or not os.path.exists(project_path):
+            return False, "Invalid project path."
             
         lock_status = FileLockManager.check_lock(project_path)
         if lock_status["status"] == "locked_by_other":
@@ -162,7 +165,6 @@ class FileLockManager:
             timestamp = lock_status["timestamp"]
             return False, f"Project is locked by {user} on {hostname} since {timestamp}"
             
-        # Unlocked or locked by me: write/overwrite lock file
         lock_file = FileLockManager.get_lock_file_path(project_path)
         _now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         lock_data = {
@@ -172,13 +174,53 @@ class FileLockManager:
             "last_seen": _now,
             "pid": os.getpid()
         }
-        
-        try:
-            with open(lock_file, 'w') as f:
-                json.dump(lock_data, f, indent=4)
-            return True, "Lock acquired successfully."
-        except Exception as e:
-            return False, f"Failed to write lock file: {str(e)}"
+
+        if lock_status["status"] == "locked_by_me":
+            # We already own the lock — safe to overwrite via temp+replace.
+            try:
+                temp_lock = f"{lock_file}.{os.getpid()}.tmp"
+                with open(temp_lock, 'w') as f:
+                    json.dump(lock_data, f, indent=4)
+                os.replace(temp_lock, lock_file)
+                return True, "Lock acquired successfully."
+            except Exception as e:
+                try:
+                    if os.path.exists(temp_lock):
+                        os.remove(temp_lock)
+                except Exception:
+                    pass
+                return False, f"Failed to write lock file: {str(e)}"
+
+        # Lock is unlocked — use O_CREAT|O_EXCL for an atomic create.
+        # This prevents the TOCTOU race where two processes both see "unlocked"
+        # and both succeed with temp+replace.
+        for _attempt in range(2):
+            try:
+                flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+                if sys.platform == "win32":
+                    flags |= os.O_BINARY
+                fd = os.open(lock_file, flags, 0o644)
+                with os.fdopen(fd, 'w') as f:
+                    json.dump(lock_data, f, indent=4)
+                return True, "Lock acquired successfully."
+            except FileExistsError:
+                # Another process beat us — re-read and check staleness.
+                recheck = FileLockManager.check_lock(project_path)
+                if recheck["status"] == "unlocked":
+                    # Stale lock was just cleaned up by check_lock; retry once.
+                    try:
+                        os.unlink(lock_file)
+                    except OSError:
+                        pass
+                    continue
+                # Genuinely held by someone else.
+                user = recheck.get("user", "unknown")
+                hostname = recheck.get("hostname", "unknown")
+                timestamp = recheck.get("timestamp", "")
+                return False, f"Project is locked by {user} on {hostname} since {timestamp}"
+            except Exception as e:
+                return False, f"Failed to write lock file: {str(e)}"
+        return False, "Failed to acquire lock after retry."
 
     @staticmethod
     def release_lock(project_path: str) -> bool:
@@ -186,7 +228,7 @@ class FileLockManager:
         Releases the lock file if it is held by us (or if it is stale).
         Returns True if released, False otherwise.
         """
-        if not project_path or not os.path.isdir(project_path):
+        if not project_path or not os.path.exists(project_path):
             return False
             
         lock_file = FileLockManager.get_lock_file_path(project_path)
@@ -219,5 +261,5 @@ class FileLockManager:
                 with open(lock_file, 'w') as f:
                     json.dump(data, f, indent=4)
         except Exception as e:
-            print(f"Failed to write lock heartbeat: {e}")
+            logger.exception("Failed to write lock heartbeat")
 

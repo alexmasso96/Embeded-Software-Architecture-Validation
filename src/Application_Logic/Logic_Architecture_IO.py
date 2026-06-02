@@ -3,14 +3,19 @@ Architecture Table — I/O Mixin
 Handles serialisation (get_project_data, flush_current_data_to_model)
 and deserialisation (_load_row_data, load_project_data, _restore_row_logic).
 """
-import json
+import os
+import time
+import logging
 
 from PyQt6 import QtWidgets
+
+_PERF_LOG = os.environ.get("ARCH_PERF_LOG", "0") == "1"
+_perf_logger = logging.getLogger("arch.perf")
 
 from .Logic_Column_Types import (
     ReleaseResultColumn, ReviewColumn,
     PortSearchColumn, FunctionSearchColumn, VariableSearchColumn,
-    PortStateColumn, LastResultColumn, LinkColumn,
+    PortStateColumn, LastResultColumn, LinkColumn, _match_style,
 )
 from .Logic_User_Interaction import UserInteractionLogic
 
@@ -30,6 +35,10 @@ class ArchitectureIOMixin:
             if i < len(self.active_config):
                 old_tuple = self.active_config[i]
                 visible = old_tuple[2] if len(old_tuple) > 2 else True
+                # Hidden columns report width 0 — keep their stored width so they
+                # don't reappear at zero width when later re-shown.
+                if width <= 0:
+                    width = old_tuple[3] if len(old_tuple) > 3 and old_tuple[3] else col_obj.width
                 updated_config.append((old_tuple[0], old_tuple[1], visible, width))
             else:
                 logic_key = reverse_logics.get(type(col_obj), "Static Text")
@@ -58,19 +67,18 @@ class ArchitectureIOMixin:
                     cell_info["last_func"] = UserInteractionLogic.get_last_function(item)
                 else:
                     cell_info["text"] = ""
-
                 widget = self.table.cellWidget(row, col_idx)
                 if isinstance(widget, QtWidgets.QComboBox):
                     cell_info["widget_text"] = widget.currentText()
                     cell_info["widget_style"] = widget.styleSheet()
-
                 row_data[col_obj.name] = cell_info
             project_data["rows"].append(row_data)
 
         return project_data
 
     def flush_current_data_to_model(self):
-        """Saves current table rows into the active ArchitectureModel's cache and file."""
+        """Saves current table rows into the active ArchitectureModel's cache and DB."""
+        _t0 = time.perf_counter() if _PERF_LOG else 0
         current_model = self.model_manager.get_active_model()
         if not current_model:
             return
@@ -84,31 +92,24 @@ class ArchitectureIOMixin:
             else {}
         )
         release_results = {}
-
         for col_idx, col_obj in enumerate(self.active_columns):
             if isinstance(col_obj, ReleaseResultColumn):
                 col_data = []
                 existing_col_data = existing_results.get(col_obj.name, [])
-
                 for row in range(self.table.rowCount()):
                     val = ""
                     widget = self.table.cellWidget(row, col_idx)
                     item = self.table.item(row, col_idx)
-
                     if widget and isinstance(widget, QtWidgets.QComboBox):
                         val = widget.currentText()
                     elif item:
                         val = item.text()
-
                     if val in ["No Result", "Not Run", "Block"] and row < len(existing_col_data):
                         prev_val = existing_col_data[row]
                         if prev_val in ["Passed", "Failed", "Warning"]:
-                            print(f"Preserving '{prev_val}' over '{val}' for {col_obj.name} Row {row}")
                             val = prev_val
-
                     col_data.append(val)
                 release_results[col_obj.name] = col_data
-
         full_data["release_results"] = release_results
 
         if "config" in full_data:
@@ -121,18 +122,30 @@ class ArchitectureIOMixin:
 
         current_model.data_cache = full_data
 
-        print(
-            f"DEBUG: Flushed data for '{current_model.name}' "
-            f"(File: {current_model.file_path}). Rows: {len(full_data.get('rows', []))}"
-        )
-
-        if current_model.file_path:
-            try:
-                with open(current_model.file_path, 'w') as f:
-                    json.dump(full_data, f, indent=4)
-                print(f"DEBUG: Successfully wrote file {current_model.file_path}")
-            except Exception as e:
-                print(f"Auto-save model failed: {e}")
+        # Persist to DB
+        db = getattr(self, '_db', None) or getattr(self.main_window, 'project_db', None)
+        if db and db.is_open and current_model.id is not None:
+            db.save_model_rows(current_model.id, full_data.get("rows", []))
+            # Persist model-specific metadata (column_metadata, release_results,
+            # linked_release_column) to the model_metadata table so it survives
+            # across sessions.  These keys are merged back into data_cache on load
+            # by _load_model_data().
+            meta_to_save = {}
+            col_meta = full_data.get("column_metadata", {})
+            if col_meta:
+                meta_to_save["column_metadata"] = col_meta
+            release_results = full_data.get("release_results", {})
+            if release_results:
+                meta_to_save["release_results"] = release_results
+            lrc = full_data.get("linked_release_column")
+            if lrc is not None:
+                meta_to_save["linked_release_column"] = lrc
+            db.save_model_metadata(current_model.id, meta_to_save)
+            db.commit()
+            if _PERF_LOG:
+                ms = (time.perf_counter() - _t0) * 1000
+                _perf_logger.info("[PERF] flush_current_data_to_model  model=%s rows=%d  %.1f ms",
+                                  current_model.name, len(full_data.get("rows", [])), ms)
 
     # ------------------------------------------------------------------
     # Restore / Deserialise
@@ -172,7 +185,6 @@ class ArchitectureIOMixin:
             self.table.setRowCount(len(rows))
 
             for row_idx, row_data in enumerate(rows):
-                # Pass 1: Restore item text and metadata
                 for col_idx, col_obj in enumerate(self.active_columns):
                     cell_info = row_data.get(col_obj.name, {})
                     text = cell_info.get("text", "")
@@ -180,7 +192,6 @@ class ArchitectureIOMixin:
                     if not item:
                         item = QtWidgets.QTableWidgetItem()
                         self.table.setItem(row_idx, col_idx, item)
-
                     item.setText(text)
                     if cell_info.get("user_changed"):
                         UserInteractionLogic.mark_manual_override(item)
@@ -190,10 +201,8 @@ class ArchitectureIOMixin:
                     if last_func:
                         UserInteractionLogic.set_last_function(item, last_func)
 
-                # Pass 2: Create widgets (lazy — skip expensive search logic)
                 self._initialize_row_widgets(row_idx, lazy=True, row_data=row_data)
 
-                # Pass 3: Restore widget selection and style
                 for col_idx, col_obj in enumerate(self.active_columns):
                     cell_info = row_data.get(col_obj.name, {})
                     widget_text = cell_info.get("widget_text")
@@ -210,7 +219,6 @@ class ArchitectureIOMixin:
                                 widget.setStyleSheet(widget_style)
                             widget.blockSignals(False)
 
-                # Pass 4: Re-trigger logic (colors, side-effects)
                 self._restore_row_logic(row_idx)
         finally:
             self.table.blockSignals(False)
@@ -227,15 +235,12 @@ class ArchitectureIOMixin:
             widget = self.table.cellWidget(row, col_idx)
             if not widget:
                 continue
-
             if isinstance(col_obj, ReviewColumn):
                 if isinstance(widget, QtWidgets.QComboBox):
                     col_obj._handle_status_change(self.table, row, col_idx, widget.currentText())
-
             elif isinstance(col_obj, PortStateColumn):
                 if isinstance(widget, QtWidgets.QComboBox):
                     col_obj._handle_state_change(self.table, row, col_idx, widget.currentText(), self)
-
             elif isinstance(col_obj, (PortSearchColumn, FunctionSearchColumn, VariableSearchColumn)):
                 if isinstance(widget, QtWidgets.QComboBox):
                     import re
@@ -243,20 +248,17 @@ class ArchitectureIOMixin:
                     match = re.search(r'\((\d+)%\)$', text)
                     if match:
                         score = int(match.group(1))
-                        color = "#2e8b57" if score >= 80 else "#b8860b" if score >= 60 else "#8b0000"
+                        color = _match_style(score)
                         status = UserInteractionLogic.get_review_status(self.table, row, self)
                         if status == "Reviewed":
                             color = "#2e8b57"
                         elif status == "Broken Link":
                             color = "#483d8b"
                         widget.setStyleSheet(f"color: {color}; font-weight: bold;")
-
             elif isinstance(col_obj, (ReleaseResultColumn, LastResultColumn)):
                 if isinstance(widget, QtWidgets.QComboBox):
                     col_obj._handle_state_change(self.table, row, col_idx, widget.currentText(), self)
-
             elif isinstance(col_obj, LinkColumn):
                 if isinstance(widget, QtWidgets.QComboBox):
                     col_obj._handle_change(self.table, row, col_idx, widget.currentText(), self)
-
         self.hook_comboboxes()

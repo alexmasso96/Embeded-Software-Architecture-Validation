@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Optional, List, Tuple
 from PyQt6 import QtWidgets, QtCore, QtGui
 from PyQt6.QtWidgets import QTableWidget, QComboBox, QTableWidgetItem
 import re
-from fuzzywuzzy import process, fuzz
+from rapidfuzz import process, fuzz
 from .Logic_User_Interaction import UserInteractionLogic
 
 if TYPE_CHECKING:
@@ -14,6 +14,14 @@ if TYPE_CHECKING:
 def is_baseline_mode(controller) -> bool:
     """Helper to determine if the table is currently in baseline (read-only) view."""
     return bool(controller and hasattr(controller, 'btn_exit_baseline') and not controller.btn_exit_baseline.isHidden())
+
+def _match_style(score: int) -> str:
+    """Calculates color based on the percentage score."""
+    if score >= 80:
+        return "#2e8b57"
+    elif score >= 60:
+        return "#b8860b"
+    return "#8b0000"
 
 
 def row_has_content(table: QTableWidget, row: int, controller) -> bool:
@@ -113,7 +121,7 @@ class LazyComboBox(QtWidgets.QComboBox):
         
         if match:
             score = int(match.group(1))
-            color = "#2e8b57" if score >= 80 else "#b8860b" if score >= 60 else "#8b0000"
+            color = _match_style(score)
         
         self.setStyleSheet(f"background-color: {color}; color: white;")
 
@@ -188,7 +196,7 @@ class PortSearchColumn(TableColumn):
             ))
 
             best_score = matches[0][1]
-            color = "#2e8b57" if best_score >= 80 else "#b8860b" if best_score >= 60 else "#8b0000"
+            color = _match_style(best_score)
 
             status = UserInteractionLogic.get_review_status(table, row, controller)
             if status == "Reviewed":
@@ -218,8 +226,7 @@ class FunctionSearchColumn(TableColumn):
              if col + 1 < table.columnCount():
                  def search_logic(text):
                      if not controller.matcher: return []
-                     return process.extractBests(text, controller.matcher.all_function_names,
-                                            scorer=fuzz.token_sort_ratio, limit=10)
+                     return controller.matcher.find_top_function_matches(text, limit=10)
                  
                  combo = LazyComboBox(controller, search_logic)
                  combo.setCurrentText(text)
@@ -235,8 +242,7 @@ class FunctionSearchColumn(TableColumn):
              return
 
         if not controller.matcher: return
-        matches = process.extractBests(text, controller.matcher.all_function_names,
-                                       scorer=fuzz.token_sort_ratio, limit=10)
+        matches = controller.matcher.find_top_function_matches(text, limit=10)
         self._update_dropdown(table, row, col + 1, text, controller, matches)
 
     def _update_dropdown(self, table, row, target_col, text, controller, matches):
@@ -254,7 +260,7 @@ class FunctionSearchColumn(TableColumn):
             ))
 
             best_score = matches[0][1]
-            color = "#2e8b57" if best_score >= 80 else "#b8860b" if best_score >= 60 else "#8b0000"
+            color = _match_style(best_score)
 
             status = UserInteractionLogic.get_review_status(table, row, controller)
             if status == "Reviewed":
@@ -283,8 +289,7 @@ class VariableSearchColumn(TableColumn):
              if col + 1 < table.columnCount():
                  def search_logic(text):
                      if not controller.matcher: return []
-                     return process.extractBests(text, controller.matcher.all_variable_names,
-                                            scorer=fuzz.token_sort_ratio, limit=10)
+                     return controller.matcher.find_top_variable_matches(text, limit=10)
                  
                  combo = LazyComboBox(controller, search_logic)
                  combo.setCurrentText(text)
@@ -296,8 +301,7 @@ class VariableSearchColumn(TableColumn):
              return
 
         if not controller.matcher: return
-        matches = process.extractBests(text, controller.matcher.all_variable_names,
-                                       scorer=fuzz.token_sort_ratio, limit=10)
+        matches = controller.matcher.find_top_variable_matches(text, limit=10)
         self._update_dropdown(table, row, col + 1, text, controller, matches)
 
     def _update_dropdown(self, table, row, target_col, text, controller, matches):
@@ -311,7 +315,7 @@ class VariableSearchColumn(TableColumn):
             combo.currentIndexChanged.connect(lambda: UserInteractionLogic.reset_review_status(table, row, controller))
 
             best_score = matches[0][1]
-            color = "#2e8b57" if best_score >= 80 else "#b8860b" if best_score >= 60 else "#8b0000"
+            color = _match_style(best_score)
             
             status = UserInteractionLogic.get_review_status(table, row, controller)
             if status == "Reviewed":
@@ -445,8 +449,7 @@ class ReviewColumn(TableColumn):
         match = re.search(r'\((\d+)%\)$', text)
         if match:
             score = int(match.group(1))
-            # Darker colors for better contrast with white text
-            color = "#2e8b57" if score >= 80 else "#b8860b" if score >= 60 else "#8b0000"
+            color = _match_style(score)
             combo.setStyleSheet(f"background-color: {color}; color: white;")
         else:
             combo.setStyleSheet("background-color: #353535; color: white;")

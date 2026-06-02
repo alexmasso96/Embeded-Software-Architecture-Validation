@@ -124,14 +124,13 @@ class ArchitectureManagerDialog(QDialog):
         
         if msg.exec() == QMessageBox.StandardButton.Yes:
             real_index = self.model.get_real_index(idx.row())
-            
-            # Ensure we are not disrupting the active model state in the main window uncontrollably
-            # The manager window allows deletion. The Controller will have to handle "Active Model Deleted" check later,
-            # or we handle it here by warning?
-            # User requirement 8: "There should be a button that allows the user to restore any deleted model"
-            # It's soft delete, so safe.
-            
+            was_active = (real_index == self.manager.active_model_index)
             self.manager.soft_delete_model(real_index)
+            if was_active:
+                for i, m in enumerate(self.manager.models):
+                    if not m.is_deleted:
+                        self.manager.active_model_index = i
+                        break
             self.model.refresh()
 
     def on_restore(self):

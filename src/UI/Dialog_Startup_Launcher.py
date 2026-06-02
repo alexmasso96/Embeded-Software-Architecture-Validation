@@ -75,24 +75,29 @@ class StartupLauncherDialog(QtWidgets.QDialog):
         
     def handle_new_project(self):
         self.accept()
-        self.main_window.new_project()
-        
+        # Defer to the next event loop tick so the dialog is fully closed first
+        QtCore.QTimer.singleShot(0, self.main_window.new_project)
+
     def handle_view_only(self):
-        # Prompt for folder selection
-        file_path = QtWidgets.QFileDialog.getExistingDirectory(self.main_window, "Open Project (View Only)", "")
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self.main_window, "Open Project (View Only)", "",
+            "Architecture Project (*.arch)"
+        )
         if file_path:
             self.accept()
-            self.main_window.load_project_with_mode(file_path, edit_mode=False)
-            
+            QtCore.QTimer.singleShot(0, lambda: self.main_window.load_project_with_mode(file_path, edit_mode=False))
+
     def handle_exclusive_edit(self):
-        # Prompt for folder selection
-        file_path = QtWidgets.QFileDialog.getExistingDirectory(self.main_window, "Open Project (Exclusive Edit)", "")
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self.main_window, "Open Project (Exclusive Edit)", "",
+            "Architecture Project (*.arch)"
+        )
         if file_path:
             from Application_Logic.Logic_File_Locking import FileLockManager
             success, lock_info = FileLockManager.acquire_lock(file_path)
             if success:
                 self.accept()
-                self.main_window.load_project_with_mode(file_path, edit_mode=True)
+                QtCore.QTimer.singleShot(0, lambda: self.main_window.load_project_with_mode(file_path, edit_mode=True))
             else:
                 QtWidgets.QMessageBox.critical(
                     self,

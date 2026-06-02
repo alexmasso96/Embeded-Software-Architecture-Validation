@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4a90e6"/>
+      <stop offset="0.55" stop-color="#3584e4"/>
+      <stop offset="1" stop-color="#1c3f6e"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.32" r="0.75">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="chip" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a3a3a"/>
+      <stop offset="1" stop-color="#1d1d1d"/>
+    </linearGradient>
+    <linearGradient id="pin" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe08a"/>
+      <stop offset="0.5" stop-color="#f3c14b"/>
+      <stop offset="1" stop-color="#b8862b"/>
+    </linearGradient>
+    <linearGradient id="badge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#57e389"/>
+      <stop offset="1" stop-color="#26a269"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background squircle -->
+  <rect x="0" y="0" width="1024" height="1024" rx="225" ry="225" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1024" height="1024" rx="225" ry="225" fill="url(#glow)"/>
+
+  <!-- Car silhouette (side profile) -->
+  <g fill="#ffffff" fill-opacity="0.16">
+    <path d="M 168 642
+             C 168 612 184 598 214 596
+             L 318 590
+             C 352 540 392 512 470 510
+             L 612 510
+             C 690 512 742 548 786 600
+             L 832 606
+             C 860 610 872 626 872 652
+             L 872 690
+             C 872 706 860 716 844 716
+             L 196 716
+             C 180 716 168 706 168 690
+             Z"/>
+  </g>
+  <!-- windows cut -->
+  <g fill="#ffffff" fill-opacity="0.10">
+    <path d="M 372 540 C 400 512 430 502 474 502 L 556 502 L 556 566 L 360 566 C 360 556 364 548 372 540 Z"/>
+    <path d="M 590 502 L 612 502 C 672 504 712 530 748 568 L 590 568 Z"/>
+  </g>
+  <!-- wheels -->
+  <g>
+    <circle cx="332" cy="716" r="74" fill="#1a1a1a"/>
+    <circle cx="332" cy="716" r="40" fill="#ffffff" fill-opacity="0.30"/>
+    <circle cx="712" cy="716" r="74" fill="#1a1a1a"/>
+    <circle cx="712" cy="716" r="40" fill="#ffffff" fill-opacity="0.30"/>
+  </g>
+
+  <!-- ECU module overlaid on top -->
+  <g>
+    <!-- connector pins left/right -->
+    <g fill="url(#pin)">
+      <rect x="300" y="318" width="44" height="26" rx="5"/>
+      <rect x="300" y="360" width="44" height="26" rx="5"/>
+      <rect x="300" y="402" width="44" height="26" rx="5"/>
+      <rect x="300" y="444" width="44" height="26" rx="5"/>
+      <rect x="680" y="318" width="44" height="26" rx="5"/>
+      <rect x="680" y="360" width="44" height="26" rx="5"/>
+      <rect x="680" y="402" width="44" height="26" rx="5"/>
+      <rect x="680" y="444" width="44" height="26" rx="5"/>
+    </g>
+    <!-- chip body -->
+    <rect x="332" y="288" width="360" height="232" rx="34" fill="url(#chip)" stroke="#0d0d0d" stroke-width="6"/>
+    <rect x="332" y="288" width="360" height="232" rx="34" fill="none" stroke="#5a5a5a" stroke-width="2" stroke-opacity="0.6"/>
+
+    <!-- circuit traces -->
+    <g stroke="#3584e4" stroke-width="7" fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.95">
+      <path d="M 372 344 L 430 344 L 430 400 L 506 400"/>
+      <path d="M 372 470 L 408 470 L 408 432 L 470 432"/>
+      <path d="M 652 472 L 600 472 L 600 416 L 540 416"/>
+    </g>
+    <g fill="#57e389">
+      <circle cx="506" cy="400" r="9"/>
+      <circle cx="470" cy="432" r="9"/>
+      <circle cx="540" cy="416" r="9"/>
+    </g>
+    <!-- central die -->
+    <rect x="452" y="356" width="120" height="96" rx="12" fill="#0f0f0f" stroke="#3584e4" stroke-width="4" stroke-opacity="0.7"/>
+    <g stroke="#5b9cf0" stroke-width="5" stroke-opacity="0.8">
+      <line x1="452" y1="384" x2="430" y2="384"/>
+      <line x1="452" y1="424" x2="430" y2="424"/>
+      <line x1="572" y1="384" x2="594" y2="384"/>
+      <line x1="572" y1="424" x2="594" y2="424"/>
+    </g>
+  </g>
+
+  <!-- Validation check badge -->
+  <g>
+    <circle cx="672" cy="492" r="86" fill="#13243a"/>
+    <circle cx="672" cy="492" r="74" fill="url(#badge)"/>
+    <path d="M 636 494 L 662 522 L 712 462"
+          fill="none" stroke="#ffffff" stroke-width="20"
+          stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

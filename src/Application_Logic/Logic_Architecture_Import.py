@@ -1,13 +1,16 @@
 """
 Architecture Table — Excel Import Mixin
 Handles import_architecture_excel and the word-similarity helper it relies on.
+Supports both legacy sheet-per-model Excel format and Rhapsody path-based exports.
 """
-import json
+import logging
 import os
 import re
 
+logger = logging.getLogger(__name__)
+
 from PyQt6 import QtWidgets
-from fuzzywuzzy import fuzz
+from rapidfuzz import fuzz
 
 from .Logic_Column_Types import PortSearchColumn, LinkColumn, PortStateColumn
 from .Logic_Project_Saving import ProjectSaver
@@ -25,7 +28,7 @@ class ArchitectureImportMixin:
         """
         Word-based similarity: splits camelCase/underscores/dashes and matches
         word-by-word.  Words ≤ 2 chars need an exact match; longer words use
-        fuzzywuzzy ratio with a threshold of 85.
+        rapidfuzz ratio with a threshold of 85.
         """
         def split_into_words(s):
             s_camel = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', s)
@@ -65,17 +68,34 @@ class ArchitectureImportMixin:
 
     def import_architecture_excel(self):
         """
-        Imports software architecture ports from an Excel file.
-        Runs a dialog state-machine (Mode → Manual → Confirm) then performs
-        the actual import into model caches.
+        Imports software architecture ports from an Excel or CSV file.
+        Auto-detects Rhapsody path-based exports and routes to a dedicated flow;
+        otherwise runs the legacy sheet-per-model dialog state-machine.
         """
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self.main_window, "Import Excel File", "", "Excel Files (*.xlsx)"
+            self.main_window, "Import Excel / CSV File", "",
+            "Excel / CSV Files (*.xlsx *.xls *.csv)"
         )
         if not file_path:
             return
 
         self.flush_current_data_to_model()
+
+        # -- Rhapsody path-based export detection --
+        from Application_Logic.Logic_Rhapsody_Import import detect_rhapsody_format
+        is_rhapsody, path_col = detect_rhapsody_format(file_path)
+        if is_rhapsody:
+            self._import_rhapsody(file_path, path_col)
+            return
+
+        # -- Legacy sheet-per-model Excel flow (unchanged) --
+        if file_path.lower().endswith('.csv'):
+            QtWidgets.QMessageBox.warning(
+                self.main_window, "Unsupported Format",
+                "CSV files are only supported for Rhapsody path-based exports.\n"
+                "The selected file does not appear to be in that format."
+            )
+            return
 
         try:
             import pandas as pd
@@ -205,7 +225,7 @@ class ArchitectureImportMixin:
             try:
                 df = pd.read_excel(file_path, sheet_name=sheet_name, header=None)
             except Exception as e:
-                print(f"Error reading sheet {sheet_name}: {e}")
+                logger.error("Error reading sheet %s: %s", sheet_name, e)
                 continue
 
             # Build dedup set from existing rows
@@ -273,14 +293,6 @@ class ArchitectureImportMixin:
 
             total_imported_ports += new_rows_count
 
-            if model.file_path:
-                try:
-                    os.makedirs(os.path.dirname(model.file_path), exist_ok=True)
-                    with open(model.file_path, 'w') as f:
-                        json.dump(model.data_cache, f, indent=4)
-                except Exception as e:
-                    print(f"Failed to write model file: {e}")
-
         self.list_model.refresh()
         self.load_active_model_to_table()
 
@@ -299,4 +311,183 @@ class ArchitectureImportMixin:
             self.main_window,
             "Import Completed",
             f"Import finished successfully.\nTotal new ports imported: {total_imported_ports}",
+        )
+
+    # ------------------------------------------------------------------
+    # Rhapsody path-based import
+    # ------------------------------------------------------------------
+
+    def _import_rhapsody(self, file_path: str, path_col: str):
+        """
+        Handles Rhapsody-exported CSV/XLSX files where architecture models are
+        derived from the full path column and only P10_SW_Arch_Public rows are
+        imported.  Multi-operation cells expand into one row per operation.
+        """
+        from Application_Logic.Logic_Rhapsody_Import import (
+            read_file, get_model_preview, build_import_data,
+            detect_required_interface_col,
+        )
+        from UI.Dialog_Rhapsody_Import import RhapsodyImportDialog
+
+        try:
+            columns, rows = read_file(file_path)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self.main_window, "Import Error",
+                f"Failed to read file:\n{e}"
+            )
+            return
+
+        # Detect the "Required Interface" source column so rows with a blank
+        # required interface (provided-port stubs) can be discarded on import.
+        required_col = detect_required_interface_col(columns, path_col)
+        model_preview = get_model_preview(rows, path_col, required_col)
+        if not model_preview:
+            QtWidgets.QMessageBox.warning(
+                self.main_window, "Import Warning",
+                "No P10_SW_Arch_Public rows found in this file."
+            )
+            return
+
+        # Auto-detect operations column: first non-path column with embedded newlines
+        ops_col = None
+        for col in columns:
+            if col == path_col:
+                continue
+            for row in rows[:30]:
+                val = str(row.get(col, ""))
+                if "\n" in val or "\r\n" in val:
+                    ops_col = col
+                    break
+            if ops_col:
+                break
+
+        existing_table_col_names = [col.name for col in self.active_columns]
+        existing_model_names = [m.name for m in self.model_manager.models if not m.is_deleted]
+
+        dialog = RhapsodyImportDialog(
+            file_path=file_path,
+            columns=columns,
+            rows=rows,
+            path_col=path_col,
+            ops_col=ops_col,
+            model_preview=model_preview,
+            existing_table_cols=existing_table_col_names,
+            existing_model_names=existing_model_names,
+            parent=self.main_window,
+        )
+        if not dialog.exec():
+            return
+
+        col_mapping = dialog.col_mapping
+        model_mapping = dialog.model_mapping
+        new_columns = dialog.new_columns
+
+        if not col_mapping:
+            QtWidgets.QMessageBox.warning(
+                self.main_window, "Import Warning",
+                "No columns were selected for import."
+            )
+            return
+
+        # 1. Create any new table columns
+        for col_name in new_columns:
+            if not any(c[0] == col_name for c in self.active_config):
+                self.active_config.append((col_name, "Static Text", True))
+        if new_columns:
+            self._rebuild_column_objects()
+            self._setup_table_style()
+
+        # 2. Build {model_name -> [row_dicts]}
+        # Determine which source column is the operations column (may have been
+        # remapped to any table column name, but source key is still ops_col).
+        import_data = build_import_data(rows, col_mapping, path_col, ops_col, required_col)
+
+        # 3. Store the ops table-column name on the DB so test case design can
+        #    find it for grouping later.
+        ops_tbl_col = col_mapping.get(ops_col) if ops_col else None
+        if ops_tbl_col and hasattr(self.main_window, 'project_db'):
+            db = self.main_window.project_db
+            if db and db.is_open:
+                db.set_meta("operations_column_name", ops_tbl_col)
+
+        total_imported = 0
+
+        for extracted_name, table_rows in import_data.items():
+            target_name = model_mapping.get(extracted_name, "<Create New>")
+
+            if target_name == "<Create New>":
+                existing_names = [m.name for m in self.model_manager.models]
+                unique_name = extracted_name
+                counter = 1
+                while unique_name in existing_names:
+                    unique_name = f"{extracted_name}_{counter}"
+                    counter += 1
+                model = self.model_manager.create_model(unique_name, "In Work")
+                if not model.data_cache:
+                    model.data_cache = {"rows": []}
+            else:
+                model = next(
+                    (m for m in self.model_manager.models if m.name == target_name), None
+                )
+                if not model:
+                    continue
+                if model == self.model_manager.get_active_model():
+                    self.flush_current_data_to_model()
+                if not model.data_cache:
+                    model.data_cache = {"rows": []}
+
+            # Build dedup set: (port_text, operation_text) pairs
+            port_col_name = next(
+                (c.name for c in self.active_columns if isinstance(c, PortSearchColumn)), None
+            )
+            existing_keys: set = set()
+            for existing_row in model.data_cache.get("rows", []):
+                port_val = existing_row.get(port_col_name, {}).get("text", "").strip().lower() if port_col_name else ""
+                op_val = existing_row.get(ops_tbl_col, {}).get("text", "").strip().lower() if ops_tbl_col else ""
+                existing_keys.add((port_val, op_val))
+
+            new_count = 0
+            for row_dict in table_rows:
+                port_val = row_dict.get(port_col_name, {}).get("text", "").strip().lower() if port_col_name else ""
+                op_val = row_dict.get(ops_tbl_col, {}).get("text", "").strip().lower() if ops_tbl_col else ""
+                if (port_val, op_val) in existing_keys:
+                    continue
+
+                # Fill columns not in the mapping with sensible defaults
+                full_row = {}
+                for col_obj in self.active_columns:
+                    if col_obj.name in row_dict:
+                        full_row[col_obj.name] = row_dict[col_obj.name]
+                    elif isinstance(col_obj, PortStateColumn):
+                        full_row[col_obj.name] = {"text": "In Work", "widget_text": "In Work"}
+                    elif isinstance(col_obj, LinkColumn):
+                        full_row[col_obj.name] = {"text": "No", "widget_text": "No"}
+                    else:
+                        full_row[col_obj.name] = {"text": ""}
+
+                model.data_cache["rows"].append(full_row)
+                existing_keys.add((port_val, op_val))
+                new_count += 1
+
+            total_imported += new_count
+
+        self.list_model.refresh()
+        self.load_active_model_to_table()
+
+        if self.main_window.current_project_file:
+            success, msg = ProjectSaver.save_project(
+                self.main_window, self.main_window.current_project_file
+            )
+            if not success:
+                QtWidgets.QMessageBox.warning(
+                    self.main_window, "Save Warning",
+                    f"Import completed but project could not be saved:\n{msg}"
+                )
+                return
+
+        QtWidgets.QMessageBox.information(
+            self.main_window,
+            "Import Completed",
+            f"Rhapsody import finished.\nTotal new rows imported: {total_imported}"
         )

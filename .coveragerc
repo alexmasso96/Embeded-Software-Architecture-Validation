@@ -1,0 +1,18 @@
+# Coverage configuration for the test suite.
+# Run with:  python -m coverage run -m pytest Tests/  &&  python -m coverage report
+[run]
+source = src
+branch = False
+
+[report]
+# Lines/files that are not meaningfully testable.
+omit =
+    # Pure typing contracts (Protocol definitions only).
+    src/Application_Logic/interfaces.py
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    \.\.\.
+show_missing = False
+skip_covered = False

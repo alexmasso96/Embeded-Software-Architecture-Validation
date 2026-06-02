@@ -1,13 +1,35 @@
 import sys
 import os
-import json
+import logging
 
 # Optional: Ensure local imports work if running directly from this folder
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+logger = logging.getLogger(__name__)
+
 from PyQt6.QtWidgets import QApplication, QMainWindow, QFileDialog, QMessageBox
 from PyQt6.QtCore import QTimer
-from PyQt6.QtGui import QPalette, QColor
+from PyQt6.QtGui import QPalette, QColor, QIcon
+
+
+def resource_path(rel_path):
+    """Resolve a bundled resource path for both dev and PyInstaller runs.
+
+    When frozen, PyInstaller unpacks data files under sys._MEIPASS; in a normal
+    source checkout we resolve relative to the project root (parent of src/).
+    """
+    base = getattr(sys, "_MEIPASS", None)
+    if base is None:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, rel_path)
+
+
+def app_icon():
+    """Return the application QIcon, or an empty QIcon if the asset is missing."""
+    icon_file = resource_path(os.path.join("Media", "icon", "icon_1024.png"))
+    if os.path.exists(icon_file):
+        return QIcon(icon_file)
+    return QIcon()
 from PyQt6 import QtWidgets, QtGui, QtCore
 import UI
 import Application_Logic as App_Logic
@@ -142,6 +164,10 @@ class ApplicationWindow(QMainWindow):
 
     def show_startup_launcher(self):
         """Displays the Startup Launcher dialog."""
+        import os
+        if os.environ.get("ARCH_NO_STARTUP_DIALOG"):
+            return
+            
         from UI.Dialog_Startup_Launcher import StartupLauncherDialog
         dialog = StartupLauncherDialog(self)
         dialog.exec()
@@ -218,6 +244,8 @@ class ApplicationWindow(QMainWindow):
         
         if hasattr(self.arch_controller, 'btn_create_baseline'):
             self.arch_controller.btn_create_baseline.setEnabled(edit_mode)
+        if hasattr(self.arch_controller, 'btn_load_baseline'):
+            self.arch_controller.btn_load_baseline.setEnabled(edit_mode)
             
         # 4. Enable/disable Table cells and custom widgets
         if edit_mode:
@@ -337,6 +365,14 @@ class ApplicationWindow(QMainWindow):
         """Calls FileLockManager.write_heartbeat if editing an open project."""
         if self.current_project_file and getattr(self, 'edit_mode', False):
             from Application_Logic.Logic_File_Locking import FileLockManager
+            status = FileLockManager.check_lock(self.current_project_file)
+            if status["status"] != "locked_by_me":
+                self.switchToViewOnly()
+                if hasattr(self, 'arch_controller'):
+                    self.arch_controller.discard_dirty_rows()
+                    self.arch_controller.load_architecture_table(rebuild_ui=True)
+                QMessageBox.warning(self, "Lock Lost", "Your exclusive lock was lost. Your unsaved changes have been discarded, and you have been switched to View Only mode.")
+                return
             FileLockManager.write_heartbeat(self.current_project_file)
 
     def handle_select_release(self):
@@ -359,42 +395,76 @@ class ApplicationWindow(QMainWindow):
             from Application_Logic.Logic_File_Locking import FileLockManager
             FileLockManager.release_lock(self.current_project_file)
 
-        dialog = App_Logic.NewProjectController(self)
+        # Step 1: Save location — establish the project file path first
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Create New Project", "", "Architecture Project (*.arch)"
+        )
+        if not file_path:
+            return
+        if not file_path.endswith(".arch"):
+            file_path += ".arch"
 
-        if dialog.exec():
-            # Prompt user to set a master password (Feature 1)
-            from Application_Logic.Logic_Security import MasterPasswordSetupDialog
-            pw_dialog = MasterPasswordSetupDialog(self)
-            if pw_dialog.exec():
-                password = pw_dialog.get_password()
-                from Application_Logic.Logic_Security import SecurityManager
-                self.master_password_hash = SecurityManager.hash_password(password)
-            else:
-                QMessageBox.warning(self, "Cancelled", "Project creation cancelled because a master password is required.")
-                return
+        # Step 2: Master password — set after the user has chosen where to save
+        from Application_Logic.Logic_Security import MasterPasswordSetupDialog, SecurityManager
+        pw_dialog = MasterPasswordSetupDialog(self)
+        if not pw_dialog.exec():
+            QMessageBox.warning(self, "Cancelled", "Project creation cancelled because a master password is required.")
+            return
+        password = pw_dialog.get_password()
+        self.master_password_hash = SecurityManager.hash_password(password)
 
-            # Reset existing controller state first!
-            self.arch_controller.is_loading = True
-            self.arch_controller.reset_controller()
-            ProjectSaver._cached_elf_data = None
-            ProjectSaver._cached_parser_hash = None
-            self.arch_controller.is_loading = False
+        from Application_Logic.Logic_File_Locking import FileLockManager
+        import sqlite3 as _sq
+        if not os.path.exists(file_path):
+            _sq.connect(file_path).close()
+        success, lock_info = FileLockManager.acquire_lock(file_path)
+        if not success:
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+            QMessageBox.critical(self, "Lock Error", f"Cannot lock project file: {lock_info}")
+            return
 
-            # if the user loaded a file, we grab the parser form dialog
-            self.parser = dialog.parser
-            self.ui.statusbar.showMessage("Project initialized successfully.")
+        from Application_Logic.Logic_Database import ProjectDatabase
+        project_db = ProjectDatabase()
+        project_db.open(file_path)
+        self.project_db = project_db
 
-            # Pass the data to the controller
-            # dialog.release_name is captured in Logic_New_Project
+        # Step 3: ELF / JSON import — parser streams directly to DB
+        dialog = App_Logic.NewProjectController(self, project_db=project_db)
+        if not dialog.exec():
+            project_db.close()
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+            FileLockManager.release_lock(file_path)
+            self.project_db = None
+            return
+
+        # Step 4: Wire up controller and save layout/registry/etc. to DB
+        self.arch_controller.is_loading = True
+        self.arch_controller.reset_controller()
+        ProjectSaver._cached_elf_data = None
+        ProjectSaver._cached_parser_hash = None
+        self.arch_controller.is_loading = False
+
+        self.arch_controller.set_project_db(project_db)
+        self.parser = dialog.parser
+        self.current_project_file = file_path
+        self._has_unsaved_new_project = False
+
+        if self.parser is not None:
             self.arch_controller.populate_from_parser(self.parser, release_name=dialog.release_name)
-            self.current_project_file = None
-            self._has_unsaved_new_project = True
+        self.set_app_mode(True)
 
-            # New projects are initialized in Edit Mode
-            self.set_app_mode(True)
-
-            # Ask where to save immediately so auto-save and dirty-tracking work from the start
-            self.save_project_as()
+        # Flush layout / release registry / master password to DB
+        success, msg = ProjectSaver.save_project(self, file_path)
+        if success:
+            self.ui.statusbar.showMessage("Project created successfully.")
+        else:
+            QMessageBox.critical(self, "Save Error", msg)
 
     def save_project(self):
         if self.current_project_file:
@@ -406,25 +476,32 @@ class ApplicationWindow(QMainWindow):
             self.save_project_as()
 
     def save_project_as(self):
-        # We ask for a "filename" which will become the Directory Name
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save Project (Creates Folder)", "", "Architecture Project (*.arch)")
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Project As", "", "Architecture Project (*.arch)"
+        )
         if file_path:
-            # We keep the .arch extension convention for the folder
             if not file_path.endswith(".arch"):
                 file_path += ".arch"
-            
-            os.makedirs(file_path, exist_ok=True)
-            
-            # If we already held a lock on a previous project, we do NOT release it yet,
-            # because we are saving the *current* state as a new project path.
-            # But the new project path must acquire a lock for us to continue in edit mode!
+
             from Application_Logic.Logic_File_Locking import FileLockManager
+            # Create a temporary placeholder so acquire_lock can check existence
+            # (SQLite will create the actual file)
+            import sqlite3 as _sq
+            if not os.path.exists(file_path):
+                _sq.connect(file_path).close()
+
             success, lock_info = FileLockManager.acquire_lock(file_path)
             if not success:
-                QMessageBox.critical(self, "Lock Error", f"Cannot acquire lock on new project path: {lock_info}")
+                try:
+                    os.remove(file_path)
+                except OSError:
+                    pass
+                QMessageBox.critical(
+                    self, "Lock Error",
+                    f"Cannot acquire lock on new project path: {lock_info}"
+                )
                 return
 
-            # Release previous project lock since we are transitioning to the new path
             if self.current_project_file and getattr(self, 'edit_mode', True):
                 FileLockManager.release_lock(self.current_project_file)
 
@@ -435,7 +512,6 @@ class ApplicationWindow(QMainWindow):
                 self._has_unsaved_new_project = False
                 self.set_app_mode(True)
             else:
-                # If save failed, release lock we just acquired on new path
                 FileLockManager.release_lock(file_path)
                 QMessageBox.critical(self, "Save Error", msg)
 
@@ -488,7 +564,9 @@ class ApplicationWindow(QMainWindow):
         if not self.check_unsaved_changes():
             return
             
-        file_path = QFileDialog.getExistingDirectory(self, "Load Project Folder", "")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load Project", "", "Architecture Project (*.arch)"
+        )
         if not file_path:
             return
 
@@ -532,18 +610,16 @@ class ApplicationWindow(QMainWindow):
             if getattr(self, 'integrity_mismatch', False):
                 # Prompt the user for master password (Feature 4)
                 from Application_Logic.Logic_Security import MasterPasswordPromptDialog, SecurityManager
-                
-                # Read stored password hash from layout.json
-                layout_path = os.path.join(file_path, "layout.json")
+
+                # Read stored password hash from DB
                 master_password_hash = None
-                if os.path.exists(layout_path):
+                db = getattr(self, 'project_db', None)
+                if db and db.is_open:
                     try:
-                        with open(layout_path, 'r') as f:
-                            layout_json = json.load(f)
-                        master_password_hash = layout_json.get("master_password_hash")
+                        master_password_hash = db.get_meta("master_password_hash")
                     except Exception:
                         pass
-                
+
                 if master_password_hash:
                     authenticated = False
                     for attempt in range(3):
@@ -574,26 +650,23 @@ class ApplicationWindow(QMainWindow):
                     # Show a warning and allow user to proceed
                     QMessageBox.warning(self, "Integrity Warning", 
                                         "Project integrity verification failed (missing hash/metadata) and no master password is set.\n"
-                                        "This may indicate a legacy project or possible tampering. Proceeding to open.")
+                                        "This may indicate a legacy project or possible corruption. Proceeding to open.")
             
             # If successfully opened, apply master_password_hash & auto_save_interval
             self.current_project_file = file_path
             self.set_app_mode(edit_mode)
             
-            # Read settings to apply master_password_hash & auto-save
-            layout_path = os.path.join(file_path, "layout.json")
-            if os.path.exists(layout_path):
+            # Read settings from DB
+            db = getattr(self, 'project_db', None)
+            if db and db.is_open:
                 try:
-                    with open(layout_path, 'r') as f:
-                        layout_json = json.load(f)
-                    self.master_password_hash = layout_json.get("master_password_hash")
-                    
-                    # Apply auto-save interval from layout.json settings if exists
-                    settings_conf = layout_json.get("settings", {})
-                    auto_save_val = settings_conf.get("auto_save_interval", "immediate")
+                    self.master_password_hash = db.get_meta("master_password_hash")
+                    auto_save_val = db.get_meta("auto_save_interval") or "immediate"
                     self.set_auto_save_interval(auto_save_val)
                 except Exception:
-                    pass
+                    self.set_auto_save_interval("immediate")
+            else:
+                self.set_auto_save_interval("immediate")
             self.ui.statusbar.showMessage(msg)
         else:
             QMessageBox.critical(self, "Load Error", msg)
@@ -698,6 +771,7 @@ class ApplicationWindow(QMainWindow):
     def update_lock_test_mode(self, active: bool):
         if not self.current_project_file:
             return
+        import json
         from Application_Logic.Logic_File_Locking import FileLockManager
         lock_file = FileLockManager.get_lock_file_path(self.current_project_file)
         if os.path.exists(lock_file):
@@ -711,7 +785,7 @@ class ApplicationWindow(QMainWindow):
                 with open(lock_file, 'w') as f:
                     json.dump(data, f, indent=4)
             except Exception as e:
-                print(f"Failed to update lock file: {e}")
+                logger.warning("Failed to update lock file: %s", e)
 
 def apply_adwaita_theme(app):
     """
@@ -770,7 +844,9 @@ def apply_adwaita_theme(app):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app.setWindowIcon(app_icon())
     apply_adwaita_theme(app)
     window = ApplicationWindow()
+    window.setWindowIcon(app_icon())
     window.show()
     sys.exit(app.exec())

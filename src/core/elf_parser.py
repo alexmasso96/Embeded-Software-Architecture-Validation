@@ -94,6 +94,9 @@ class Function:
 class ELFParser:
     """
     Parser for ELF binary files to extract symbols and functions.
+    Supports two modes:
+      - In-memory mode (legacy): symbols/functions lists populated as before.
+      - DB mode: data streamed directly to SQLite; lists stay empty after flush.
     """
 
     def __init__(self, elf_path: str = None):
@@ -104,10 +107,15 @@ class ELFParser:
         self.functions: List[Function] = []
         self.structures: Dict[str, List[Dict[str, str]]] = {}
         self.global_vars_dwarf: Dict[str, str] = {}
-        
+
         self._func_addr_map: Dict[int, Function] = {}
         self._sorted_func_addrs: List[int] = []
+        self._machine_arch: Optional[str] = None
         self.md5_hash = None
+
+        # DB-backed mode (set after flush_to_db or load_from_db)
+        self._db = None
+        self._active_elf_hash: Optional[str] = None
 
     def load_elf(self, elf_path: str):
         """Loads and parses an ELF file."""
@@ -157,6 +165,7 @@ class ELFParser:
 
     def close(self):
         """Closes the open file stream."""
+        self.elf_file = None
         if self.stream:
             self.stream.close()
             self.stream = None
@@ -164,6 +173,7 @@ class ELFParser:
         self.symbols = []
         self.functions = []
         self.structures = {}
+        self.global_vars_dwarf = {}
         self._func_addr_map = {}
         self._sorted_func_addrs = []
         gc.collect()
@@ -183,8 +193,9 @@ class ELFParser:
             self.elf_file = ELFFile(self.stream)
             if not self.elf_file:
                 raise ValueError(f"Invalid ELF file: {self.elf_path}")
+            self._machine_arch = self.elf_file.get_machine_arch()
             logger.info(f"Successfully loaded ELF file: {self.elf_path}")
-            logger.info(f"ELF Architecture {self.elf_file.get_machine_arch()}")
+            logger.info(f"ELF Architecture {self._machine_arch}")
         except Exception as e:
             if getattr(self, 'test_mode', False):
                 return
@@ -273,9 +284,23 @@ class ELFParser:
 
     def _normalize_address(self, address: int) -> int:
         """Normalizes an address for lookup, e.g., removing Thumb bit for ARM."""
-        if self.elf_file and self.elf_file.get_machine_arch() == 'ARM':
+        arch = self._machine_arch
+        if not arch and self.elf_file:
+            arch = self.elf_file.get_machine_arch()
+            self._machine_arch = arch
+        if arch == 'ARM':
             return address & ~1
         return address
+
+    def _ensure_elf_file_open(self) -> bool:
+        """Reopen the ELF lazily for operations that need section bytes/disassembly."""
+        if self.elf_file:
+            return True
+        if not self.elf_path or not self.elf_path.exists():
+            return False
+        self.stream = open(self.elf_path, 'rb')
+        self._load_elf_file()
+        return self.elf_file is not None
 
     def _build_function_address_map(self):
         """Builds a map of function start addresses for quick lookups."""
@@ -406,6 +431,10 @@ class ELFParser:
         if self.structures: return self.structures
         if not self.elf_file or not self.elf_file.has_dwarf_info(): return {}
         logger.info("Extracting structures from DWARF info...")
+        # Fix B: store only scalars — not DIE objects — so the reference chain
+        # typedef-list → DIE → CU → raw byte buffer is broken and CU objects can
+        # be GC'd by Python's reference counter after each CU is iterated.
+        # Format: {'name': str, 'type_offset': int}  (type_offset is absolute)
         typedefs = []
         try:
             dwarfinfo = self.elf_file.get_dwarf_info()
@@ -418,7 +447,7 @@ class ELFParser:
                         elif 'DW_AT_specification' in DIE.attributes:
                             spec = self._get_die_from_attribute(DIE, 'DW_AT_specification')
                             if spec and 'DW_AT_name' in spec.attributes: s_name = spec.attributes['DW_AT_name'].value.decode('utf-8', errors='replace')
-                        
+
                         if s_name:
                             fields = []
                             for child in DIE.iter_children():
@@ -432,39 +461,53 @@ class ELFParser:
                                     t_die = self._get_die_from_attribute(child, 'DW_AT_type')
                                     if t_die: fields.append({'name': '<base>', 'type': self._get_type_name(t_die)})
                             if fields or s_name not in self.structures: self.structures[s_name] = fields
-                    elif DIE.tag == 'DW_TAG_typedef': typedefs.append(DIE)
-            
-            for DIE in typedefs:
-                if 'DW_AT_name' not in DIE.attributes: continue
-                td_name = DIE.attributes['DW_AT_name'].value.decode('utf-8', errors='replace')
-                seen = set()
-                t_die = self._get_die_from_attribute(DIE, 'DW_AT_type')
-                while t_die and t_die.offset not in seen:
-                    seen.add(t_die.offset)
-                    if t_die.tag in ('DW_TAG_const_type', 'DW_TAG_volatile_type', 'DW_TAG_typedef'): t_die = self._get_die_from_attribute(t_die, 'DW_AT_type')
-                    else: break
-                
-                if t_die and t_die.tag in ('DW_TAG_structure_type', 'DW_TAG_class_type', 'DW_TAG_union_type'):
-                    if 'DW_AT_declaration' in t_die.attributes and t_die.attributes['DW_AT_declaration'].value:
-                        if 'DW_AT_name' in t_die.attributes:
-                            target = t_die.attributes['DW_AT_name'].value.decode('utf-8', errors='replace')
-                            if target in self.structures: self.structures[td_name] = self.structures[target]
-                        continue
-                    fields = []
-                    for child in t_die.iter_children():
-                        if child.tag in ('DW_TAG_member', 'DW_TAG_field'):
-                            f_name = child.attributes['DW_AT_name'].value.decode('utf-8', errors='replace') if 'DW_AT_name' in child.attributes else "<anonymous>"
-                            f_type = "unknown"
-                            tt_die = self._get_die_from_attribute(child, 'DW_AT_type')
-                            if tt_die: f_type = self._get_type_name(tt_die)
-                            fields.append({'name': f_name, 'type': f_type})
-                        elif child.tag == 'DW_TAG_inheritance':
-                             tt_die = self._get_die_from_attribute(child, 'DW_AT_type')
-                             if tt_die: fields.append({'name': '<base>', 'type': self._get_type_name(tt_die)})
-                    if td_name not in self.structures or fields: self.structures[td_name] = fields
+                    elif DIE.tag == 'DW_TAG_typedef':
+                        if 'DW_AT_name' not in DIE.attributes or 'DW_AT_type' not in DIE.attributes:
+                            continue
+                        td_name = DIE.attributes['DW_AT_name'].value.decode('utf-8', errors='replace')
+                        attr = DIE.attributes['DW_AT_type']
+                        abs_offset = attr.value
+                        if hasattr(attr, 'form') and attr.form in (
+                            'DW_FORM_ref1', 'DW_FORM_ref2', 'DW_FORM_ref4',
+                            'DW_FORM_ref8', 'DW_FORM_ref_udata',
+                        ):
+                            abs_offset += CU.cu_offset
+                        typedefs.append({'name': td_name, 'type_offset': abs_offset})
+
+            # Typedef resolution pass — dwarfinfo._CU_cache still holds all CUs
+            # so get_DIE_from_refaddr() works without needing the DIE objects.
+            for td in typedefs:
+                td_name = td['name']
+                try:
+                    t_die = dwarfinfo.get_DIE_from_refaddr(td['type_offset'])
+                    seen = set()
+                    while t_die and t_die.offset not in seen:
+                        seen.add(t_die.offset)
+                        if t_die.tag in ('DW_TAG_const_type', 'DW_TAG_volatile_type', 'DW_TAG_typedef'): t_die = self._get_die_from_attribute(t_die, 'DW_AT_type')
+                        else: break
+
+                    if t_die and t_die.tag in ('DW_TAG_structure_type', 'DW_TAG_class_type', 'DW_TAG_union_type'):
+                        if 'DW_AT_declaration' in t_die.attributes and t_die.attributes['DW_AT_declaration'].value:
+                            if 'DW_AT_name' in t_die.attributes:
+                                target = t_die.attributes['DW_AT_name'].value.decode('utf-8', errors='replace')
+                                if target in self.structures: self.structures[td_name] = self.structures[target]
+                            continue
+                        fields = []
+                        for child in t_die.iter_children():
+                            if child.tag in ('DW_TAG_member', 'DW_TAG_field'):
+                                f_name = child.attributes['DW_AT_name'].value.decode('utf-8', errors='replace') if 'DW_AT_name' in child.attributes else "<anonymous>"
+                                f_type = "unknown"
+                                tt_die = self._get_die_from_attribute(child, 'DW_AT_type')
+                                if tt_die: f_type = self._get_type_name(tt_die)
+                                fields.append({'name': f_name, 'type': f_type})
+                            elif child.tag == 'DW_TAG_inheritance':
+                                tt_die = self._get_die_from_attribute(child, 'DW_AT_type')
+                                if tt_die: fields.append({'name': '<base>', 'type': self._get_type_name(tt_die)})
+                        if td_name not in self.structures or fields: self.structures[td_name] = fields
+                except Exception:
+                    pass
         except: pass
-        
-        # Clear large temp list
+
         del typedefs
         gc.collect()
         return self.structures
@@ -505,7 +548,11 @@ class ELFParser:
         return None
 
     def get_function_containing_address(self, address: int) -> Optional[Function]:
-        if not self._sorted_func_addrs: self._build_function_address_map()
+        if not self._sorted_func_addrs:
+            if self._db and self._active_elf_hash:
+                self._rebuild_function_address_map_from_db()
+            else:
+                self._build_function_address_map()
         norm_addr = self._normalize_address(address)
         idx = bisect.bisect_right(self._sorted_func_addrs, norm_addr)
         if idx == 0: return None
@@ -528,6 +575,7 @@ class ELFParser:
         return None
 
     def get_function_bytes(self, func: Function) -> bytes:
+        if not self.elf_file and not self._ensure_elf_file_open(): return b""
         if not self.elf_file: return b""
         for section in self.elf_file.iter_sections():
             if section['sh_flags'] & 0x4:
@@ -542,7 +590,16 @@ class ELFParser:
 
     def extract_subcalls(self, func_name: str) -> List[str]:
         if not CAPSTONE_AVAILABLE: return ["Capstone not installed"]
-        func = next((f for f in self.functions if f.name == func_name), None)
+        if not self._sorted_func_addrs:
+            if self._db and self._active_elf_hash:
+                self._rebuild_function_address_map_from_db()
+            else:
+                self._build_function_address_map()
+        if self._db and self._active_elf_hash:
+            matches = self.search_function(func_name, exact=True)
+            func = matches[0] if matches else None
+        else:
+            func = next((f for f in self.functions if f.name == func_name), None)
         if not func: return ["Function not found"]
         
         # If size is 0, try to estimate it from next function
@@ -563,7 +620,9 @@ class ELFParser:
         
         # Enable skipdata to skip unknown instructions
         md.skipdata = True
-        
+        # Detail mode is required to inspect insn.operands below.
+        md.detail = True
+
         calls = set()
         start_addr = self._normalize_address(func.address)
         
@@ -601,8 +660,460 @@ class ELFParser:
 
         return sorted(list(calls))
 
+    # ------------------------------------------------------------------
+    # DB-backed interface
+    # ------------------------------------------------------------------
+
+    def extract_all_streaming_to_db(self, db) -> None:
+        """
+        Parse the ELF and write each category directly to DB in batches
+        without ever accumulating all lists in RAM simultaneously.
+        Peak RAM is ~one category at a time instead of the entire ELF.
+        """
+        if not self.md5_hash:
+            return
+
+        if db.has_elf(self.md5_hash):
+            self._db = db
+            self._active_elf_hash = self.md5_hash
+            self.close()
+            return
+
+        db.register_elf(self.md5_hash, str(self.elf_path) if self.elf_path else "")
+
+        # -- Phase 1: symbols (streamed in batches) --------------------------
+        BATCH = 2000
+        sym_batch = []
+        func_symbols = []   # only the STT_FUNC subset kept for phase 2
+        for sym in self._generate_symbols():
+            sym_batch.append(sym)
+            if sym.symbol_type == 'STT_FUNC':
+                func_symbols.append(sym)
+            if len(sym_batch) >= BATCH:
+                db.bulk_insert_symbols(self.md5_hash, sym_batch)
+                sym_batch = []
+        if sym_batch:
+            db.bulk_insert_symbols(self.md5_hash, sym_batch)
+        del sym_batch
+
+        # -- Phase 2: functions (built from the small func_symbols list) ------
+        functions = [
+            Function(name=s.name, address=s.address, size=s.size, parameters=[])
+            for s in func_symbols
+        ]
+        del func_symbols
+
+        # -- Phases 3-5: single DWARF pass (Fix A) ----------------------------
+        # Replaces three separate iter_CUs() calls with one, cutting peak DWARF
+        # memory from ~3× per-CU cost to ~1× per-CU cost.  Structures and
+        # global vars are flushed to DB after each CU so only one CU's worth
+        # of data is held in Python at a time.  Typedef DIEs are replaced with
+        # plain scalar dicts (Fix B) to break the DIE→CU→buffer reference chain.
+        self.functions = functions
+        self._extract_dwarf_single_pass(db)
+        self.functions = []
+        del functions
+        self.structures = {}
+        self.global_vars_dwarf = {}
+
+        # Wire up DB-backed mode
+        self._db = db
+        self._active_elf_hash = self.md5_hash
+        db.commit()
+        self.close()
+        gc.collect()
+
+    # ------------------------------------------------------------------
+    # Single-pass DWARF extraction (Fix A + Fix B)
+    # ------------------------------------------------------------------
+
+    def _extract_dwarf_single_pass(self, db) -> None:
+        """
+        Iterate all DWARF CUs exactly once to enrich functions with parameters,
+        extract structures, and collect global variables simultaneously.
+
+        Fix A: replaces the three separate iter_CUs() calls in
+        extract_function_parameters / extract_structures / extract_dwarf_variables
+        with a single pass, cutting peak DWARF RAM from ~3× per-CU cost to
+        ~1× per-CU cost.  Structures and global vars are flushed to DB after
+        each CU so only one CU's worth of Python data is live at a time.
+
+        Fix B: typedef DIEs are stored as plain scalar dicts (name + absolute
+        type_offset) instead of live DIE objects.  This breaks the reference
+        chain typedef-list → DIE → CU → raw byte buffer so Python's reference
+        counter can reclaim CU objects as iteration moves forward, even though
+        pyelftools' internal _CU_cache keeps its own copy.
+        """
+        if not self.elf_file or not self.elf_file.has_dwarf_info():
+            db.bulk_insert_functions(self.md5_hash, self.functions)
+            return
+
+        dwarfinfo = self.elf_file.get_dwarf_info()
+        func_map = {f.name: f for f in self.functions}
+
+        # Typedefs: plain scalars only — no DIE/CU references held across CUs.
+        all_typedefs: list = []  # [{'name': str, 'type_offset': int}, ...]
+
+        _STRUCT_TAGS = ('DW_TAG_structure_type', 'DW_TAG_class_type', 'DW_TAG_union_type')
+        _REL_REF_FORMS = frozenset((
+            'DW_FORM_ref1', 'DW_FORM_ref2', 'DW_FORM_ref4',
+            'DW_FORM_ref8', 'DW_FORM_ref_udata',
+        ))
+
+        for CU in dwarfinfo.iter_CUs():
+            cu_structures: dict = {}
+            cu_vars: dict = {}
+
+            # Track depth so we can recognise file-scope (depth-1) variables.
+            # Null DIEs (tag=None) in the DWARF byte stream signal the end of
+            # a sibling list and decrement depth; a DIE with has_children=True
+            # increments it for the next round of siblings.
+            depth = 0
+
+            for DIE in CU.iter_DIEs():
+                if DIE.tag is None:      # DWARF null terminator — close scope
+                    depth -= 1
+                    continue
+
+                current_depth = depth
+                if DIE.has_children:
+                    depth += 1
+
+                tag = DIE.tag
+
+                # --- function parameter enrichment ---
+                if tag == 'DW_TAG_subprogram':
+                    if 'DW_AT_name' not in DIE.attributes:
+                        continue
+                    try:
+                        func_name = DIE.attributes['DW_AT_name'].value.decode('utf-8', errors='replace')
+                        if func_name in func_map:
+                            params = []
+                            for child in DIE.iter_children():
+                                if (child.tag == 'DW_TAG_formal_parameter'
+                                        and 'DW_AT_name' in child.attributes):
+                                    p_name = child.attributes['DW_AT_name'].value.decode('utf-8', errors='replace')
+                                    p_type = "unknown"
+                                    t_die = self._get_die_from_attribute(child, 'DW_AT_type')
+                                    if t_die:
+                                        p_type = self._get_type_name(t_die)
+                                    params.append({'name': p_name, 'type': p_type})
+                            func_map[func_name].parameters = params
+                    except Exception:
+                        pass
+
+                # --- structure / class / union extraction ---
+                elif tag in _STRUCT_TAGS:
+                    if ('DW_AT_declaration' in DIE.attributes
+                            and DIE.attributes['DW_AT_declaration'].value):
+                        continue
+                    s_name = None
+                    if 'DW_AT_name' in DIE.attributes:
+                        s_name = DIE.attributes['DW_AT_name'].value.decode('utf-8', errors='replace')
+                    elif 'DW_AT_specification' in DIE.attributes:
+                        spec = self._get_die_from_attribute(DIE, 'DW_AT_specification')
+                        if spec and 'DW_AT_name' in spec.attributes:
+                            s_name = spec.attributes['DW_AT_name'].value.decode('utf-8', errors='replace')
+                    if s_name:
+                        fields = []
+                        for child in DIE.iter_children():
+                            if child.tag in ('DW_TAG_member', 'DW_TAG_field'):
+                                f_name = (child.attributes['DW_AT_name'].value.decode('utf-8', errors='replace')
+                                          if 'DW_AT_name' in child.attributes else "<anonymous>")
+                                f_type = "unknown"
+                                t_die = self._get_die_from_attribute(child, 'DW_AT_type')
+                                if t_die:
+                                    f_type = self._get_type_name(t_die)
+                                fields.append({'name': f_name, 'type': f_type})
+                            elif child.tag == 'DW_TAG_inheritance':
+                                t_die = self._get_die_from_attribute(child, 'DW_AT_type')
+                                if t_die:
+                                    fields.append({'name': '<base>', 'type': self._get_type_name(t_die)})
+                        if fields or s_name not in cu_structures:
+                            cu_structures[s_name] = fields
+
+                # --- typedef: store only scalars (Fix B) ---
+                elif tag == 'DW_TAG_typedef':
+                    if 'DW_AT_name' not in DIE.attributes or 'DW_AT_type' not in DIE.attributes:
+                        continue
+                    td_name = DIE.attributes['DW_AT_name'].value.decode('utf-8', errors='replace')
+                    attr = DIE.attributes['DW_AT_type']
+                    abs_offset = attr.value
+                    if hasattr(attr, 'form') and attr.form in _REL_REF_FORMS:
+                        abs_offset += CU.cu_offset
+                    all_typedefs.append({'name': td_name, 'type_offset': abs_offset})
+
+                # --- file-scope global variable (direct child of compile unit) ---
+                elif tag == 'DW_TAG_variable' and current_depth == 1:
+                    if 'DW_AT_name' not in DIE.attributes:
+                        continue
+                    try:
+                        name = DIE.attributes['DW_AT_name'].value.decode('utf-8', errors='replace')
+                        v_type = "unknown"
+                        t_die = self._get_die_from_attribute(DIE, 'DW_AT_type')
+                        if t_die:
+                            v_type = self._get_type_name(t_die)
+                        cu_vars[name] = v_type
+                    except Exception:
+                        continue
+
+            # Flush after each CU — only one CU's worth of data in memory
+            if cu_structures:
+                db.bulk_insert_structures(self.md5_hash, cu_structures)
+            if cu_vars:
+                db.bulk_insert_global_vars(self.md5_hash, cu_vars)
+
+        # Flush enriched functions once (they were built incrementally via func_map)
+        db.bulk_insert_functions(self.md5_hash, self.functions)
+
+        # --- typedef resolution pass ---
+        # pyelftools' _CU_cache still holds all CU objects, so get_DIE_from_refaddr
+        # works even though we dropped our Python-level references above.
+        typedef_structs: dict = {}
+        for td in all_typedefs:
+            td_name = td['name']
+            try:
+                t_die = dwarfinfo.get_DIE_from_refaddr(td['type_offset'])
+                seen: set = set()
+                while t_die and t_die.offset not in seen:
+                    seen.add(t_die.offset)
+                    if t_die.tag in ('DW_TAG_const_type', 'DW_TAG_volatile_type', 'DW_TAG_typedef'):
+                        t_die = self._get_die_from_attribute(t_die, 'DW_AT_type')
+                    else:
+                        break
+
+                if t_die and t_die.tag in _STRUCT_TAGS:
+                    if ('DW_AT_declaration' in t_die.attributes
+                            and t_die.attributes['DW_AT_declaration'].value):
+                        # Forward declaration: resolve alias via DB lookup
+                        if 'DW_AT_name' in t_die.attributes:
+                            target = t_die.attributes['DW_AT_name'].value.decode('utf-8', errors='replace')
+                            row = db.execute(
+                                "SELECT fields FROM elf_structures"
+                                " WHERE elf_hash=? AND name=? LIMIT 1",
+                                (self.md5_hash, target)
+                            ).fetchone()
+                            if row:
+                                typedef_structs[td_name] = json.loads(row[0])
+                        continue
+                    fields = []
+                    for child in t_die.iter_children():
+                        if child.tag in ('DW_TAG_member', 'DW_TAG_field'):
+                            f_name = (child.attributes['DW_AT_name'].value.decode('utf-8', errors='replace')
+                                      if 'DW_AT_name' in child.attributes else "<anonymous>")
+                            f_type = "unknown"
+                            tt_die = self._get_die_from_attribute(child, 'DW_AT_type')
+                            if tt_die:
+                                f_type = self._get_type_name(tt_die)
+                            fields.append({'name': f_name, 'type': f_type})
+                        elif child.tag == 'DW_TAG_inheritance':
+                            tt_die = self._get_die_from_attribute(child, 'DW_AT_type')
+                            if tt_die:
+                                fields.append({'name': '<base>', 'type': self._get_type_name(tt_die)})
+                    typedef_structs[td_name] = fields
+            except Exception:
+                pass
+
+        if typedef_structs:
+            db.bulk_insert_structures(self.md5_hash, typedef_structs)
+
+        db.commit()
+
+    def flush_to_db(self, db) -> None:
+        """
+        Bulk-insert all in-memory ELF data into the DB, then clear RAM lists.
+        Call after extract_all() to drop the memory spike.
+        """
+        if not self.md5_hash:
+            return
+        if db.has_elf(self.md5_hash):
+            # Already imported — just wire up the DB reference
+            self._db = db
+            self._active_elf_hash = self.md5_hash
+            self.close()
+            return
+
+        db.register_elf(self.md5_hash, str(self.elf_path) if self.elf_path else "")
+        db.bulk_insert_symbols(self.md5_hash, self.symbols)
+        db.bulk_insert_functions(self.md5_hash, self.functions)
+        db.bulk_insert_structures(self.md5_hash, self.structures)
+        db.bulk_insert_global_vars(self.md5_hash, self.global_vars_dwarf)
+
+        self._db = db
+        self._active_elf_hash = self.md5_hash
+
+        # Free parser/pyelftools RAM after the DB owns the data.
+        self.close()
+        gc.collect()
+
+    def load_from_db(self, db, elf_hash: str) -> None:
+        """
+        Wire the parser to DB-backed mode for an already-imported ELF.
+        Does NOT load any lists into RAM.
+        """
+        self._db = db
+        self._active_elf_hash = elf_hash
+        self.md5_hash = elf_hash
+        self.symbols = []
+        self.functions = []
+        self.structures = {}
+        self.global_vars_dwarf = {}
+
+    def _rebuild_function_address_map_from_db(self) -> None:
+        if not self._db or not self._active_elf_hash:
+            return
+        rows = self._db.get_functions_for_address_map(self._active_elf_hash)
+        self._func_addr_map = {}
+        for r in rows:
+            name, address, size = r[0], r[1], r[2]
+            norm = self._normalize_address(address)
+            self._func_addr_map[norm] = Function(name, address, size, [])
+        self._sorted_func_addrs = sorted(self._func_addr_map.keys())
+
+    def export_elf_cache(self, cache_dir: str) -> Optional[str]:
+        """
+        Write an elf_[hash].json cache file to cache_dir.
+        Returns the path written, or None on failure.
+        The JSON format is identical to save_cache() so load_cache() can read it.
+        """
+        if not self._db or not self._active_elf_hash:
+            return None
+        h = self._active_elf_hash
+        os.makedirs(cache_dir, exist_ok=True)
+        out_path = os.path.join(cache_dir, f"elf_{h}.json")
+        try:
+            elf_info = self._db.execute(
+                "SELECT elf_path FROM elf_index WHERE elf_hash=?", (h,)
+            ).fetchone()
+            elf_path_str = elf_info[0] if elf_info else ""
+
+            sym_rows = self._db.execute(
+                "SELECT name, address, size, sym_type, binding, section"
+                " FROM elf_symbols WHERE elf_hash=?", (h,)
+            )
+            func_rows = self._db.execute(
+                "SELECT name, address, size, parameters, return_type"
+                " FROM elf_functions WHERE elf_hash=?", (h,)
+            )
+            structs = self._db.get_all_structures(h)
+            gvars = self._db.get_all_global_vars(h)
+
+            with open(out_path, "w", encoding="utf-8") as f:
+                import json as _json
+                f.write("{\n")
+                f.write(f'  "elf_path": {_json.dumps(elf_path_str)},\n')
+                f.write(f'  "elf_hash": {_json.dumps(h)},\n')
+
+                f.write('  "symbols": [\n')
+                first = True
+                for s in sym_rows:
+                    d = {
+                        "name": s[0], "address": s[1], "size": s[2],
+                        "symbol_type": s[3], "binding": s[4], "section": s[5]
+                    }
+                    if not first:
+                        f.write(",\n")
+                    f.write("    " + _json.dumps(d))
+                    first = False
+                if not first:
+                    f.write("\n")
+                f.write("  ],\n")
+
+                f.write('  "functions": [\n')
+                first = True
+                for fn in func_rows:
+                    d = {
+                        "name": fn[0], "address": fn[1], "size": fn[2],
+                        "parameters": _json.loads(fn[3]) if fn[3] else [],
+                        "return_type": fn[4]
+                    }
+                    if not first:
+                        f.write(",\n")
+                    f.write("    " + _json.dumps(d))
+                    first = False
+                if not first:
+                    f.write("\n")
+                f.write("  ],\n")
+
+                f.write(f'  "structures": {_json.dumps(structs)},\n')
+                f.write(f'  "global_vars": {_json.dumps(gvars)}\n')
+                f.write("}")
+            return out_path
+        except Exception as e:
+            logger.warning(f"Failed to export ELF cache: {e}")
+            return None
+
+    @staticmethod
+    def import_elf_cache_to_db(json_path: str, db) -> Optional[str]:
+        """
+        Import a JSON cache file directly into the DB without building in-memory lists.
+        Returns the elf_hash on success, None on failure.
+        """
+        import json as _json
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            if "database" in data:
+                data = data["database"]
+
+            elf_hash = data.get("elf_hash")
+            elf_path = data.get("elf_path", "")
+            if not elf_hash:
+                return None
+
+            if db.has_elf(elf_hash):
+                return elf_hash
+
+            db.register_elf(elf_hash, elf_path)
+            db.bulk_insert_symbols(elf_hash, data.get("symbols", []))
+            db.bulk_insert_functions(elf_hash, data.get("functions", []))
+            db.bulk_insert_structures(elf_hash, data.get("structures", {}))
+            db.bulk_insert_global_vars(elf_hash, data.get("global_vars", {}))
+            return elf_hash
+        except Exception as e:
+            logger.warning(f"Failed to import ELF cache to DB: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Overridden query methods — DB-backed when available
+    # ------------------------------------------------------------------
+
+    def search_function(self, name: str, exact: bool = False) -> List[Function]:
+        if self._db and self._active_elf_hash:
+            rows = self._db.search_functions(self._active_elf_hash, name, exact)
+            return [Function(r["name"], r["address"], r["size"],
+                             r["parameters"], r["return_type"]) for r in rows]
+        # Fallback to in-memory
+        if not self.functions:
+            self.extract_functions()
+        name = name.strip()
+        filtered = [f for f in self.functions
+                    if "_EXIT_" not in f.name and not f.name.endswith("_function_end")]
+        if exact:
+            return [f for f in filtered if f.name == name]
+        results = [f for f in filtered if name.lower() in f.name.lower()]
+        results.sort(key=lambda f: f.name != name)
+        return results
+
+    def get_symbol_by_address(self, address: int) -> Optional[Symbol]:
+        if self._db and self._active_elf_hash:
+            row = self._db.get_symbol_by_address(self._active_elf_hash, address)
+            if row:
+                return Symbol(row[0], row[1], row[2], row[3], row[4], row[5])
+            return None
+        # Fallback
+        if not self.symbols:
+            self.extract_symbols()
+        for sym in self.symbols:
+            if sym.address == address:
+                return sym
+        return None
+
     def get_statistics(self) -> Dict[str, int]:
-        if not self.symbols: self.extract_symbols()
+        if self._db and self._active_elf_hash:
+            return self._db.get_elf_stats(self._active_elf_hash)
+        if not self.symbols:
+            self.extract_symbols()
         return {
             'total_symbols': len(self.symbols),
             'functions': len([s for s in self.symbols if s.symbol_type == 'STT_FUNC']),

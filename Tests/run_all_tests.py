@@ -25,9 +25,6 @@ for test in test_files:
     print("=" * 70)
     print(f"\nRunning test: {test_path}...")
     print("=" * 70)
-    # Use sys.executable to ensure we run under the same virtual environment
-    if "test_elf_parser.py" in test:
-        # Run test_elf_parser.py non-interactively by piping an empty newline to stdin
-        subprocess.run([sys.executable, str(test_path)], input=b"\n")
-    else:
-        subprocess.run([sys.executable, str(test_path)])
+    # Use sys.executable to ensure we run under the same virtual environment.
+    # All tests are non-interactive (bundled fixtures / mocked dialogs).
+    subprocess.run([sys.executable, str(test_path)])

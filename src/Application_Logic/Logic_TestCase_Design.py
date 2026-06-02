@@ -295,7 +295,7 @@ def tokenize_partial_condition(text):
         # Check operators or logicals
         remaining = text[pos:].lower()
         found = False
-        for op in ["does not contain", "is not equal", "is equal", "contains"]:
+        for op in ["does not contain", "is not equal", "is equal", "contains", "multiple"]:
             if remaining.startswith(op):
                 op_len = len(op)
                 if op_len == len(remaining) or not remaining[op_len].isalnum():
@@ -305,7 +305,17 @@ def tokenize_partial_condition(text):
                     break
         if found:
             continue
-            
+
+        # Numeric comparison operators following the 'multiple' predicate
+        for cmp in [">=", "<=", "==", ">", "<"]:
+            if remaining.startswith(cmp):
+                tokens.append(('CMP', text[pos:pos+len(cmp)]))
+                pos += len(cmp)
+                found = True
+                break
+        if found:
+            continue
+
         for log in ["and", "or"]:
             if remaining.startswith(log):
                 log_len = len(log)
@@ -361,7 +371,7 @@ def tokenize_condition(condition_text):
             
         remaining = condition_text[pos:].lower()
         found = False
-        for op in ["does not contain", "is not equal", "is equal", "contains"]:
+        for op in ["does not contain", "is not equal", "is equal", "contains", "multiple"]:
             if remaining.startswith(op):
                 op_len = len(op)
                 if op_len == len(remaining) or not remaining[op_len].isalnum() and not remaining[op_len] in ('[', '\'', '"'):
@@ -371,7 +381,7 @@ def tokenize_condition(condition_text):
                     break
         if found:
             continue
-            
+
         for log in ["and", "or"]:
             if remaining.startswith(log):
                 log_len = len(log)
@@ -382,7 +392,17 @@ def tokenize_condition(condition_text):
                     break
         if found:
             continue
-            
+
+        # Numeric comparison operators (used by the 'multiple' count predicate)
+        for cmp in [">=", "<=", "==", ">", "<"]:
+            if remaining.startswith(cmp):
+                tokens.append(('CMP', condition_text[pos:pos+len(cmp)]))
+                pos += len(cmp)
+                found = True
+                break
+        if found:
+            continue
+
         start = pos
         while pos < n and not condition_text[pos].isspace() and condition_text[pos] not in ('[', ']', "'", '"'):
             pos += 1
@@ -418,7 +438,7 @@ def get_condition_suggestions_and_prefix(line_text, active_columns, get_unique_v
     if last_type == 'WORD':
         prev_type = tokens[-2][0] if len(tokens) > 1 else None
         if prev_type == 'COLUMN':
-            ops = ["contains", "does not contain", "is equal", "is not equal"]
+            ops = ["contains", "does not contain", "is equal", "is not equal", "multiple"]
             return ops, last_val
         elif prev_type == 'OPERATOR':
             col_name = None
@@ -447,9 +467,11 @@ def get_condition_suggestions_and_prefix(line_text, active_columns, get_unique_v
 
     if ends_with_space:
         if last_type == 'COLUMN':
-            ops = ["contains", "does not contain", "is equal", "is not equal"]
+            ops = ["contains", "does not contain", "is equal", "is not equal", "multiple"]
             return ops, ""
         elif last_type == 'OPERATOR':
+            if last_val.strip().lower() == 'multiple':
+                return [">", "<", ">=", "<=", "==", "{"], ""
             col_name = None
             for t_type, t_val in reversed(tokens):
                 if t_type == 'COLUMN':
@@ -495,8 +517,12 @@ def get_condition_suggestions_and_prefix(line_text, active_columns, get_unique_v
         return dedup_vals, last_val
 
     if last_type == 'COLUMN':
-        return ["contains", "does not contain", "is equal", "is not equal"], ""
+        return ["contains", "does not contain", "is equal", "is not equal", "multiple"], ""
+    if last_type == 'CMP':
+        return ["{"], ""
     if last_type == 'OPERATOR':
+        if last_val.strip().lower() == 'multiple':
+            return [">", "<", ">=", "<=", "==", "{"], ""
         col_name = None
         for t_type, t_val in reversed(tokens[:-1]):
             if t_type == 'COLUMN':
@@ -544,42 +570,69 @@ class HelpDialog(QtWidgets.QDialog):
         """)
         
         help_html = """
-        <h2>Test Case Design - Smart Template Editor Documentation</h2>
-        <p>This template editor supports a powerful inline conditional syntax and automatic instruction numbering to customize test case markdown documents based on your architecture model row inputs.</p>
-        
-        <h3>1. Conditional Syntax (#if)</h3>
-        <p>Use inline conditions to dynamically include or exclude text blocks for each specific port:</p>
+        <h2>Test Case Design — Template Editor</h2>
+        <p>Templates are written in <b>standard Markdown</b> with two additional features: column tokens and inline conditionals.</p>
+
+        <h3>1. Standard Markdown</h3>
+        <p>The editor and generated files fully support standard Markdown syntax:</p>
+        <pre style="background-color: #333; padding: 10px; border-radius: 4px; color: #ddd;">
+# Heading 1 &nbsp;&nbsp; ## Heading 2 &nbsp;&nbsp; ### Heading 3
+**bold** &nbsp;&nbsp; *italic* &nbsp;&nbsp; `inline code`
+---  (horizontal rule)
+- bullet item
+- [ ] unchecked task &nbsp;&nbsp; - [x] checked task
+1. numbered item
+> blockquote / precondition
+        </pre>
+
+        <h3>2. Column Tokens</h3>
+        <p>Reference any architecture table column by wrapping its name in square brackets.
+        The special token <b>[Model]</b> resolves to the current architecture model name.</p>
         <pre style="background-color: #333; padding: 10px; border-radius: 4px; color: #5384e4;">
-#if [Column Name] operator 'value' {
-    Your instruction text here
+## Verify `[Input Port]` in *[Model]*
+- [ ] Set breakpoint in `[Mapped Func]`
+        </pre>
+        <p>Type <b>[</b> in the editor to open the autocomplete list of available columns.</p>
+
+        <h3>3. Conditional Blocks (#if)</h3>
+        <p>Include or exclude content per row using inline conditions:</p>
+        <pre style="background-color: #333; padding: 10px; border-radius: 4px; color: #5384e4;">
+#if [Column] operator 'value' {
+    Content shown only when condition is true
 }
         </pre>
-        <p><b>Multiple Conditions:</b> Group multiple conditions together using <b>AND</b> / <b>OR</b> logical operators (AND has higher precedence than OR):</p>
+        <p><b>Supported operators:</b> <code>contains</code> · <code>does not contain</code> · <code>is equal</code> · <code>is not equal</code> (all case-insensitive)</p>
+
+        <h3>3a. Operation-count predicate (multiple)</h3>
+        <p>When operation grouping is <b>Grouped</b>, several operations of the same port collapse into one test case. The <code>multiple</code> predicate lets the template react to how many operations a test case represents, so a port with 40+ operations can be laid out differently from one with two.</p>
         <pre style="background-color: #333; padding: 10px; border-radius: 4px; color: #5384e4;">
-#if [Input Port] contains 'init' OR [Input Port (Init)] is equal '1' {
-    Check that the function is reached only once
+#if [port] multiple {            &nbsp;# true when the port has more than one operation
+    See the attached operation list.
+}
+#if [port] multiple &gt; 10 {        &nbsp;# more than 10 operations
+    Operations are documented separately.
+}
+#if [port] multiple &lt; 11 {        &nbsp;# 10 or fewer — inline them
+    Operations:
+    [Operations]
 }
         </pre>
-        <p><i>Note: Nested condition blocks inside braces are supported and evaluated recursively.</i></p>
-        
-        <h3>2. Supported Operators</h3>
+        <p>Comparators: <code>&gt;</code> · <code>&lt;</code> · <code>&gt;=</code> · <code>&lt;=</code> · <code>==</code> followed by a number. The column in <code>[port]</code> is symbolic — the predicate always counts the current test case's operations. In <b>Independent</b> grouping every test case is a single operation, so <code>multiple</code> is always false.</p>
+
+        <p><b>Multiple conditions:</b> combine with <code>AND</code> / <code>OR</code> (AND has higher precedence than OR):</p>
+        <pre style="background-color: #333; padding: 10px; border-radius: 4px; color: #5384e4;">
+#if [Model] is equal 'LsmDevice' AND [Operations] contains 'Init' {
+    ### Init sequence
+    - [ ] Verify initialisation is reached exactly once
+}
+        </pre>
+        <p><b>Nesting:</b> <code>#if</code> blocks can be nested to any depth. Multiple sibling blocks at the same level are each evaluated independently.</p>
+
+        <h3>4. Autocomplete</h3>
         <ul>
-            <li><b>contains</b>: True if the column value contains the expected string.</li>
-            <li><b>does not contain</b>: True if the column value does not contain the expected string.</li>
-            <li><b>is equal</b>: True if the column value exactly equals the expected string.</li>
-            <li><b>is not equal</b>: True if the column value does not equal the expected string.</li>
-        </ul>
-        <p><i>Note: Matching of operators, column values, and comparison targets is case-insensitive. Values can be quoted (e.g. 'init') or unquoted.</i></p>
-        
-        <h3>3. Automatic Instruction Numbering</h3>
-        <p>Instruction lines written inside the <b>Given</b>, <b>When</b>, and <b>Then</b> headings are automatically numbered starting from 1 in each section.
-        Blank lines, markdown headings (e.g. #, ##), bullet points (- / * / +), and lines already starting with numbers (e.g. 1. ) are preserved as-is without numbering.</p>
-        
-        <h3>4. Autocomplete Guides</h3>
-        <ul>
-            <li>Type <b>#</b> to suggest and insert <b>#if</b>.</li>
-            <li>Type <b>[</b> to list active columns.</li>
-            <li>Press space or type after columns, operators, or values to get context-aware suggestions for operators, values, logical connectives, or structural braces (<b>{</b>).</li>
+            <li>Type <b>[</b> to list available column tokens (including <b>[Model]</b>).</li>
+            <li>Type <b>#</b> to suggest <b>#if</b>.</li>
+            <li>After a column token, type a space for operator suggestions; after an operator, type a space for value suggestions.</li>
         </ul>
         """
         self.browser.setHtml(help_html)
@@ -608,6 +661,7 @@ class HelpDialog(QtWidgets.QDialog):
         layout.addLayout(btn_layout)
 
 class TestCaseDesignController(QtCore.QObject):
+    __test__ = False
     def __init__(self, main_window):
         super().__init__(main_window)
         self.main_window = main_window
@@ -631,6 +685,9 @@ class TestCaseDesignController(QtCore.QObject):
         self.txt_test_case_design.textChanged.connect(self.update_preview)
         self.btn_prev_preview.clicked.connect(self.show_prev_preview)
         self.btn_next_preview.clicked.connect(self.show_next_preview)
+
+        # 5. Default operation grouping mode
+        self._operation_grouping = "grouped"
 
     def setup_ui(self):
         # Setup vertical layout on the container widget (tab_2)
@@ -710,12 +767,17 @@ class TestCaseDesignController(QtCore.QObject):
         self.txt_test_case_design = TokenTextEdit(self.left_widget)
         self.txt_test_case_design.controller = self
         self.txt_test_case_design.setPlaceholderText(
-            "Enter Test Case Design Markdown template (e.g.,\n\n"
+            "Standard markdown is supported: # ## ### headings, **bold**, *italic*, "
+            "--- horizontal rule, - lists, `inline code`, > blockquotes, - [ ] checkboxes.\n\n"
+            "Column tokens: type [ to insert a column reference, e.g. [Input Port].\n"
+            "Model token: [Model] resolves to the current architecture model name.\n"
+            "Conditionals: #if [Column] contains 'value' { ... }\n\n"
+            "Example:\n"
             "## Description\n"
-            "Verify port [Input Port] correctly maps functionality.\n\n"
-            "## Parameters\n"
-            "- Func: [Mapped Func]\n"
-            "- ID: [TC. ID]\n"
+            "Verify **[Input Port]** in model *[Model]*.\n\n"
+            "## Steps\n"
+            "- [ ] Set breakpoint in `[Mapped Func]`\n"
+            "- [ ] Run and wait for halt\n"
         )
         self.txt_test_case_design.setStyleSheet("""
             QPlainTextEdit {
@@ -732,9 +794,32 @@ class TestCaseDesignController(QtCore.QObject):
             }
         """)
         
+        # Grouping mode selector
+        grouping_layout = QtWidgets.QHBoxLayout()
+        lbl_grouping = QtWidgets.QLabel("Operation grouping:", self.left_widget)
+        lbl_grouping.setStyleSheet("color: #aaaaaa; font-size: 11px;")
+        self.cmb_grouping = QtWidgets.QComboBox(self.left_widget)
+        self.cmb_grouping.addItem("Grouped — one test case per port  (default)", "grouped")
+        self.cmb_grouping.addItem("Independent — one test case per operation", "independent")
+        self.cmb_grouping.setStyleSheet("""
+            QComboBox {
+                background-color: #2e2e2e;
+                color: #ffffff;
+                border: 1px solid #3d3d3d;
+                border-radius: 4px;
+                padding: 2px 8px;
+                font-size: 11px;
+            }
+        """)
+        self.cmb_grouping.currentIndexChanged.connect(self._on_grouping_changed)
+        grouping_layout.addWidget(lbl_grouping)
+        grouping_layout.addWidget(self.cmb_grouping)
+        grouping_layout.addStretch()
+
         self.left_layout.addWidget(self.lbl_title)
         self.left_layout.addWidget(self.txt_project_title)
         self.left_layout.addLayout(self.lbl_design_layout)
+        self.left_layout.addLayout(grouping_layout)
         self.left_layout.addWidget(self.txt_test_case_design)
         
         # Right column (Live Preview)
@@ -831,11 +916,12 @@ class TestCaseDesignController(QtCore.QObject):
 
     def setup_completers(self):
         def get_columns():
+            cols = ["Model"]
             if hasattr(self.main_window, 'arch_controller'):
                 controller = self.main_window.arch_controller
                 if hasattr(controller, 'active_columns'):
-                    return [col.name for col in controller.active_columns]
-            return []
+                    cols += [col.name for col in controller.active_columns]
+            return cols
 
         self.completer_title = TokenCompleter(self.txt_project_title, get_columns)
         self.txt_project_title.setCompleter(self.completer_title)
@@ -952,7 +1038,21 @@ class TestCaseDesignController(QtCore.QObject):
         i = 0
         n = len(tokens)
         while i < n:
-            if i + 2 < n and tokens[i][0] == 'COLUMN' and tokens[i+1][0] == 'OPERATOR' and tokens[i+2][0] in ('VALUE', 'WORD'):
+            # Count predicate: "[col] multiple" (>1) or "[col] multiple >/< N".
+            # The column reference is symbolic; what matters is how many operations
+            # this (grouped) test case represents.
+            if (i + 1 < n and tokens[i][0] == 'COLUMN'
+                    and tokens[i+1][0] == 'OPERATOR' and tokens[i+1][1].lower() == 'multiple'):
+                count = self._get_ops_count(row_bind_data)
+                if (i + 3 < n and tokens[i+2][0] == 'CMP'
+                        and tokens[i+3][0] in ('VALUE', 'WORD') and self._is_int(tokens[i+3][1])):
+                    res = self._compare_count(count, tokens[i+2][1], int(str(tokens[i+3][1]).strip()))
+                    i += 4
+                else:
+                    res = count > 1
+                    i += 2
+                eval_list.append(res)
+            elif i + 2 < n and tokens[i][0] == 'COLUMN' and tokens[i+1][0] == 'OPERATOR' and tokens[i+2][0] in ('VALUE', 'WORD'):
                 col = tokens[i][1]
                 op = tokens[i+1][1]
                 val = tokens[i+2][1]
@@ -964,8 +1064,37 @@ class TestCaseDesignController(QtCore.QObject):
                 i += 1
             else:
                 i += 1
-                
+
         return self.evaluate_boolean_list(eval_list)
+
+    def _get_ops_count(self, row_bind_data) -> int:
+        """Operation count for the current (grouped) row; 1 when not grouped."""
+        try:
+            return int(row_bind_data.get("__ops_count__", 1) or 1)
+        except (TypeError, ValueError):
+            return 1
+
+    @staticmethod
+    def _is_int(s) -> bool:
+        try:
+            int(str(s).strip())
+            return True
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _compare_count(count: int, cmp: str, threshold: int) -> bool:
+        if cmp == '>':
+            return count > threshold
+        if cmp == '<':
+            return count < threshold
+        if cmp == '>=':
+            return count >= threshold
+        if cmp == '<=':
+            return count <= threshold
+        if cmp in ('==', '='):
+            return count == threshold
+        return False
 
     def evaluate_boolean_list(self, eval_list):
         if not eval_list:
@@ -1040,58 +1169,6 @@ class TestCaseDesignController(QtCore.QObject):
         val = self.strip_percentage_suffix(val)
         return val
 
-    def apply_auto_numbering(self, text):
-        if not isinstance(text, str):
-            return text
-            
-        lines = text.splitlines()
-        numbered_lines = []
-        
-        current_section = None
-        section_counter = 0
-        
-        for line in lines:
-            stripped = line.strip()
-            
-            keyword_match = re.match(
-                r'^(?:\*\*)?(given|when|then)(?:\*\*)?([:.]?)$', 
-                stripped, 
-                re.IGNORECASE
-            )
-            
-            if keyword_match:
-                current_section = keyword_match.group(1).upper()
-                section_counter = 0
-                numbered_lines.append(line)
-                continue
-                
-            if current_section is not None:
-                if stripped.startswith('#'):
-                    numbered_lines.append(line)
-                    continue
-                if not stripped:
-                    numbered_lines.append(line)
-                    continue
-                if stripped.startswith(('-', '*', '+')):
-                    numbered_lines.append(line)
-                    continue
-                if re.match(r'^\d+\.\s', stripped):
-                    numbered_lines.append(line)
-                    continue
-                if stripped.startswith('#if') or stripped.startswith('}'):
-                    numbered_lines.append(line)
-                    continue
-                    
-                section_counter += 1
-                indent_len = len(line) - len(line.lstrip())
-                indent = line[:indent_len]
-                
-                numbered_line = f"{indent}{section_counter}. {stripped}"
-                numbered_lines.append(numbered_line)
-            else:
-                numbered_lines.append(line)
-                
-        return "\n".join(numbered_lines)
 
     def show_prev_preview(self):
         if self.preview_row_index > 0:
@@ -1106,37 +1183,53 @@ class TestCaseDesignController(QtCore.QObject):
                     self.preview_row_index += 1
                     self.update_preview()
 
-    def find_first_valid_row_idx(self, controller):
+    def _collect_table_raw_rows(self, controller):
+        """Read every row of the active table into raw {col: cell_info} dicts."""
+        raw_rows = []
         for r in range(controller.table.rowCount()):
             row_dict = {}
             for col_idx, col_obj in enumerate(controller.active_columns):
                 cell_info = {}
                 item = controller.table.item(r, col_idx)
-                if item:
-                    cell_info["text"] = item.text()
-                else:
-                    cell_info["text"] = ""
+                cell_info["text"] = item.text() if item else ""
                 widget = controller.table.cellWidget(r, col_idx)
                 if isinstance(widget, QtWidgets.QComboBox):
                     cell_info["widget_text"] = widget.currentText()
                 row_dict[col_obj.name] = cell_info
+            raw_rows.append(row_dict)
+        return raw_rows
 
-            row_bind_data = self.get_row_bind_data(row_dict)
+    def _build_effective_preview_rows(self, controller):
+        """
+        Return (effective_rows, unit_label) for the live preview, honouring the
+        operation-grouping mode so the preview matches the generated output.
+        In Grouped mode ports collapse to one entry with a bulleted operations
+        list (label "Port"); in Independent mode each table row is its own entry
+        (label "Row").
+        """
+        raw_rows = self._collect_table_raw_rows(controller)
+        if self._operation_grouping == "grouped":
+            return self._build_grouped_rows(raw_rows), "Port"
+        return [self.get_row_bind_data(r) for r in raw_rows], "Row"
 
-            is_row_empty = True
-            for col_name, val in row_bind_data.items():
-                if self.is_ignored_column(col_name):
-                    continue
-                if val.strip():
-                    is_row_empty = False
-                    break
+    def _is_bind_row_empty(self, row_bind_data):
+        for col_name, val in row_bind_data.items():
+            if self.is_ignored_column(col_name):
+                continue
+            if val.strip():
+                return False
+        return True
 
-            port_state_col = self.get_port_state_column_name(row_bind_data.keys())
-            port_state_val = row_bind_data.get(port_state_col, "").strip()
-            is_retired_or_deleted = port_state_val.lower() in ["retired", "deleted"]
-
-            if not is_row_empty and not is_retired_or_deleted:
-                return r
+    def _first_valid_effective_idx(self, effective_rows):
+        """First entry that is neither empty nor a Retired/Deleted port."""
+        for i, row_bind_data in enumerate(effective_rows):
+            if self._is_bind_row_empty(row_bind_data):
+                continue
+            psc = self.get_port_state_column_name(row_bind_data.keys())
+            psv = row_bind_data.get(psc, "").strip()
+            if psv.lower() in ["retired", "deleted"]:
+                continue
+            return i
         return -1
 
     def update_preview(self):
@@ -1155,90 +1248,63 @@ class TestCaseDesignController(QtCore.QObject):
             self.last_previewed_model = active_model
             self.preview_row_index = -1
 
-        # Fetch values from the valid row of the active architecture table
+        # Fetch values from the active architecture table, honouring the
+        # operation-grouping mode so the preview matches the generated output.
         data_dict = {}
-        if hasattr(self.main_window, 'arch_controller'):
+        if hasattr(self.main_window, 'arch_controller') and hasattr(self.main_window.arch_controller, 'table'):
             controller = self.main_window.arch_controller
-            if hasattr(controller, 'table'):
-                rc = controller.table.rowCount()
-                if rc == 0:
-                    self.preview_row_index = -1
-                    self.btn_prev_preview.setEnabled(False)
-                    self.btn_next_preview.setEnabled(False)
-                    self.lbl_preview_status.setText("No rows")
-                    self.browser_preview.setHtml("<p style='color: #888; font-style: italic;'>No rows in active architecture model.</p>")
-                    return
 
-                # Determine the index to preview
-                if self.preview_row_index < 0:
-                    first_valid = self.find_first_valid_row_idx(controller)
-                    self.preview_row_index = first_valid if first_valid != -1 else 0
-                
-                # Cap the index within bounds
-                if self.preview_row_index >= rc:
-                    self.preview_row_index = rc - 1
-                if self.preview_row_index < 0:
-                    self.preview_row_index = 0
-
-                # Update navigation UI
-                self.btn_prev_preview.setEnabled(self.preview_row_index > 0)
-                self.btn_next_preview.setEnabled(self.preview_row_index < rc - 1)
-                self.lbl_preview_status.setText(f"Row {self.preview_row_index + 1} of {rc}")
-
-                # Build row dict to run empty/retired validation
-                row_dict = {}
-                for col_idx, col_obj in enumerate(controller.active_columns):
-                    cell_info = {}
-                    item = controller.table.item(self.preview_row_index, col_idx)
-                    if item:
-                        cell_info["text"] = item.text()
-                    else:
-                        cell_info["text"] = ""
-                    widget = controller.table.cellWidget(self.preview_row_index, col_idx)
-                    if isinstance(widget, QtWidgets.QComboBox):
-                        cell_info["widget_text"] = widget.currentText()
-                    row_dict[col_obj.name] = cell_info
-
-                row_bind_data = self.get_row_bind_data(row_dict)
-
-                is_row_empty = True
-                for col_name, val in row_bind_data.items():
-                    if self.is_ignored_column(col_name):
-                        continue
-                    if val.strip():
-                        is_row_empty = False
-                        break
-
-                port_state_col = self.get_port_state_column_name(row_bind_data.keys())
-                port_state_val = row_bind_data.get(port_state_col, "").strip()
-                is_retired_or_deleted = port_state_val.lower() in ["retired", "deleted"]
-
-                if is_row_empty:
-                    self.browser_preview.setHtml(f"<p style='color: #888; font-style: italic;'>Row {self.preview_row_index + 1} is empty. Enter data in the table to see a preview.</p>")
-                    return
-                elif is_retired_or_deleted:
-                    self.browser_preview.setHtml(f"<p style='color: #ea9f9f; font-style: italic;'>Row {self.preview_row_index + 1} Port State is '{port_state_val}'. Test cases are not generated for Retired or Deleted ports.</p>")
-                    return
-
-                # Retrieve values for the selected row
-                for col_idx, col_obj in enumerate(controller.active_columns):
-                    val = ""
-                    widget = controller.table.cellWidget(self.preview_row_index, col_idx)
-                    item = controller.table.item(self.preview_row_index, col_idx)
-                    if isinstance(widget, QtWidgets.QComboBox):
-                        val = widget.currentText()
-                    elif item:
-                        val = item.text()
-                    val = self.strip_percentage_suffix(val)
-                    data_dict[col_obj.name] = val
-            else:
+            effective_rows, unit_label = self._build_effective_preview_rows(controller)
+            n = len(effective_rows)
+            if n == 0:
+                self.preview_row_index = -1
                 self.btn_prev_preview.setEnabled(False)
                 self.btn_next_preview.setEnabled(False)
-                self.lbl_preview_status.setText("")
+                self.lbl_preview_status.setText("No rows")
+                self.browser_preview.setHtml("<p style='color: #888; font-style: italic;'>No rows in active architecture model.</p>")
+                return
+
+            # Determine the index to preview (over grouped/independent entries)
+            if self.preview_row_index < 0:
+                first_valid = self._first_valid_effective_idx(effective_rows)
+                self.preview_row_index = first_valid if first_valid != -1 else 0
+
+            # Cap the index within bounds
+            if self.preview_row_index >= n:
+                self.preview_row_index = n - 1
+            if self.preview_row_index < 0:
+                self.preview_row_index = 0
+
+            # Update navigation UI
+            self.btn_prev_preview.setEnabled(self.preview_row_index > 0)
+            self.btn_next_preview.setEnabled(self.preview_row_index < n - 1)
+            self.lbl_preview_status.setText(f"{unit_label} {self.preview_row_index + 1} of {n}")
+
+            row_bind_data = effective_rows[self.preview_row_index]
+
+            is_row_empty = self._is_bind_row_empty(row_bind_data)
+
+            port_state_col = self.get_port_state_column_name(row_bind_data.keys())
+            port_state_val = row_bind_data.get(port_state_col, "").strip()
+            is_retired_or_deleted = port_state_val.lower() in ["retired", "deleted"]
+
+            if is_row_empty:
+                self.browser_preview.setHtml(f"<p style='color: #888; font-style: italic;'>{unit_label} {self.preview_row_index + 1} is empty. Enter data in the table to see a preview.</p>")
+                return
+            elif is_retired_or_deleted:
+                self.browser_preview.setHtml(f"<p style='color: #ea9f9f; font-style: italic;'>{unit_label} {self.preview_row_index + 1} Port State is '{port_state_val}'. Test cases are not generated for Retired or Deleted ports.</p>")
+                return
+
+            # The grouped/independent bind data is the template substitution source.
+            data_dict = dict(row_bind_data)
         else:
             self.btn_prev_preview.setEnabled(False)
             self.btn_next_preview.setEnabled(False)
             self.lbl_preview_status.setText("")
+
+        # Inject model name so [Model] is available in templates
+        if active_model:
+            data_dict["Model"] = active_model.name
 
         # Bind template strings
         title_template = self.txt_project_title.text()
@@ -1251,14 +1317,6 @@ class TestCaseDesignController(QtCore.QObject):
         # Step 3. Bind standard tokens
         bound_title = self.bind_data(bound_title, data_dict)
         bound_design = self.bind_data(bound_design, data_dict)
-
-        # Step 4. Format Given/When/Then bolding
-        bound_title = self.format_given_when_then(bound_title)
-        bound_design = self.format_given_when_then(bound_design)
-
-        # Step 5. Apply auto-numbering
-        bound_title = self.apply_auto_numbering(bound_title)
-        bound_design = self.apply_auto_numbering(bound_design)
 
         # Render Markdown to QTextBrowser
         markdown_content = f"# {bound_title}\n\n{bound_design}"
@@ -1281,16 +1339,23 @@ class TestCaseDesignController(QtCore.QObject):
     def load_data(self, data_dict):
         title = data_dict.get("project_title", "")
         template = data_dict.get("design_template", "")
-        
+        grouping = data_dict.get("operation_grouping", "grouped")
+
         self.txt_project_title.blockSignals(True)
         self.txt_test_case_design.blockSignals(True)
-        
+        self.cmb_grouping.blockSignals(True)
+
         self.txt_project_title.setText(title)
         self.txt_test_case_design.setPlainText(template)
-        
+        self._operation_grouping = grouping
+        idx = self.cmb_grouping.findData(grouping)
+        if idx >= 0:
+            self.cmb_grouping.setCurrentIndex(idx)
+
         self.txt_project_title.blockSignals(False)
         self.txt_test_case_design.blockSignals(False)
-        
+        self.cmb_grouping.blockSignals(False)
+
         self.update_preview()
 
     def on_tab_changed(self, index):
@@ -1302,7 +1367,7 @@ class TestCaseDesignController(QtCore.QObject):
             QtWidgets.QMessageBox.warning(
                 self.main_window, 
                 "Project Not Saved", 
-                "Please save your project (creates a project folder) before generating test cases."
+                "Please save your project (creates a project file) before generating test cases."
             )
             return
 
@@ -1438,19 +1503,22 @@ Please process the test cases below and generate the low-level designs in place.
             generated_files_count = 0
 
             for model in models_to_process:
-                rows = model.data_cache.get("rows", []) if model.data_cache else []
-                if not rows:
+                raw_rows = model.data_cache.get("rows", []) if model.data_cache else []
+                if not raw_rows:
                     continue
 
+                # Apply operation grouping
+                if self._operation_grouping == "grouped":
+                    effective_rows = self._build_grouped_rows(raw_rows)
+                else:
+                    effective_rows = [self.get_row_bind_data(r) for r in raw_rows]
+
                 model_markdown_parts = []
-                # Header of the model document
                 model_markdown_parts.append(f"# Test Case Design - {model.name}\n")
                 model_markdown_parts.append(f"This document contains the generated test cases for the **{model.name}** architecture model.\n")
 
                 generated_rows_count = 0
-                for row_idx, row_dict in enumerate(rows):
-                    # Resolve row bindings
-                    row_bind_data = self.get_row_bind_data(row_dict)
+                for row_bind_data in effective_rows:
 
                     # 1. Skip if row is empty (i.e. contains no actual input data, such as placeholder last row)
                     is_row_empty = True
@@ -1497,6 +1565,7 @@ Please process the test cases below and generate the low-level designs in place.
                         row_bind_data[tc_id_col] = test_case_id
                     if "TC. ID" not in row_bind_data:
                         row_bind_data["TC. ID"] = test_case_id
+                    row_bind_data["Model"] = model.name
 
                     # Bind templates
                     title_template = self.txt_project_title.text()
@@ -1507,12 +1576,6 @@ Please process the test cases below and generate the low-level designs in place.
 
                     bound_title = self.bind_data(bound_title, row_bind_data)
                     bound_design = self.bind_data(bound_design, row_bind_data)
-                    
-                    bound_title = self.format_given_when_then(bound_title)
-                    bound_design = self.format_given_when_then(bound_design)
-
-                    bound_title = self.apply_auto_numbering(bound_title)
-                    bound_design = self.apply_auto_numbering(bound_design)
 
                     # Build section for this test case
                     tc_section = []
@@ -1548,6 +1611,109 @@ Please process the test cases below and generate the low-level designs in place.
                 f"An error occurred while generating test cases:\n{str(e)}"
             )
 
+    # ------------------------------------------------------------------
+    # Operation grouping helpers
+    # ------------------------------------------------------------------
+
+    def _on_grouping_changed(self, _index):
+        self._operation_grouping = self.cmb_grouping.currentData()
+        # Grouped/independent yield different entry counts, so restart navigation.
+        self.preview_row_index = -1
+        self.update_preview()
+
+    def get_operation_grouping(self) -> str:
+        return self._operation_grouping
+
+    def _get_port_col_name(self) -> str:
+        """
+        Name of the column identifying a port. Prefers an explicit
+        PortSearchColumn, then a stored DB meta, then any column whose name
+        contains 'port' (excluding the Port State/Status column). The fallback
+        is essential for imported projects, where the port column is plain
+        Static Text (e.g. "Port Name") — without it grouping silently no-ops.
+        """
+        if hasattr(self.main_window, 'arch_controller'):
+            from Application_Logic.Logic_Column_Types import PortSearchColumn
+            for col in self.main_window.arch_controller.active_columns:
+                if isinstance(col, PortSearchColumn):
+                    return col.name
+        db = getattr(self.main_window, 'project_db', None)
+        if db and db.is_open:
+            val = db.get_meta("port_column_name")
+            if val:
+                return val
+        if hasattr(self.main_window, 'arch_controller'):
+            for col in self.main_window.arch_controller.active_columns:
+                name_lower = col.name.lower()
+                if "port" in name_lower and "state" not in name_lower and "status" not in name_lower:
+                    return col.name
+        return ""
+
+    def _get_ops_col_name(self) -> str:
+        """
+        Return the operations column name: first look in DB meta, then fall back
+        to any column whose name contains 'operation' (case-insensitive).
+        """
+        db = getattr(self.main_window, 'project_db', None)
+        if db and db.is_open:
+            val = db.get_meta("operations_column_name")
+            if val:
+                return val
+        if hasattr(self.main_window, 'arch_controller'):
+            for col in self.main_window.arch_controller.active_columns:
+                if "operation" in col.name.lower():
+                    return col.name
+        return ""
+
+    def _build_grouped_rows(self, rows: list) -> list:
+        """
+        Groups rows by port name. Returns a list of merged row_bind_data dicts.
+        For groups with >1 row the operations column is rendered as a bullet list.
+        """
+        port_col = self._get_port_col_name()
+        ops_col = self._get_ops_col_name()
+
+        groups: dict = {}   # port_name -> [row_bind_data, ...]
+        order: list = []    # insertion order of port names (preserves table order)
+
+        for row_dict in rows:
+            bd = self.get_row_bind_data(row_dict)
+            port_name = bd.get(port_col, "").strip() if port_col else ""
+            if port_name:
+                if port_name not in groups:
+                    groups[port_name] = []
+                    order.append(port_name)
+                groups[port_name].append(bd)
+            else:
+                # Rows with no port name get a synthetic unique key so they
+                # each appear as their own test case.
+                key = f"__ungrouped_{id(bd)}"
+                groups[key] = [bd]
+                order.append(key)
+
+        merged_rows = []
+        for port_name in order:
+            group = groups[port_name]
+            # __ops_count__ (number of apparitions) powers the "[port] multiple"
+            # template predicate. It is internal — is_ignored_column() hides it.
+            if len(group) == 1:
+                single = dict(group[0])
+                single["__ops_count__"] = 1
+                merged_rows.append(single)
+            else:
+                merged = dict(group[0])
+                merged["__ops_count__"] = len(group)
+                if ops_col:
+                    ops_values = [r.get(ops_col, "").strip() for r in group if r.get(ops_col, "").strip()]
+                    # Proper Markdown list: a leading blank line + one "- item" per
+                    # line so it renders as a real bullet list in the preview and the
+                    # generated .md (a single newline would collapse onto one line).
+                    if ops_values:
+                        merged[ops_col] = "\n\n" + "\n".join(f"- {op}" for op in ops_values)
+                merged_rows.append(merged)
+
+        return merged_rows
+
     def get_row_bind_data(self, row_dict):
         data = {}
         for col_name, cell_info in row_dict.items():
@@ -1571,25 +1737,6 @@ Please process the test cases below and generate the low-level designs in place.
         cleaned = re.sub(r'\s*\(\d+(?:\.\d+)?%\s+similarity\)$', '', cleaned)
         return cleaned
 
-    def format_given_when_then(self, text):
-        if not isinstance(text, str):
-            return text
-        lines = text.splitlines()
-        formatted_lines = []
-        for line in lines:
-            stripped = line.strip()
-            # Match keywords (case-insensitive) at the beginning of a stripped line,
-            # allowing optional trailing colon or period.
-            word_match = re.match(r'^(given|when|then)([:.]?)$', stripped, re.IGNORECASE)
-            if word_match:
-                keyword = word_match.group(1)
-                punctuation = word_match.group(2)
-                start_idx = line.find(stripped)
-                # Reconstruct line by bolding only the keyword itself
-                formatted_lines.append(line[:start_idx] + f"**{keyword}**{punctuation}" + line[start_idx + len(stripped):])
-            else:
-                formatted_lines.append(line)
-        return "\n".join(formatted_lines)
 
     def sanitize_filename(self, name):
         name = re.sub(r'[^\w\s-]', '_', name)
@@ -1597,6 +1744,9 @@ Please process the test cases below and generate the low-level designs in place.
         return name.strip('_ ')
 
     def is_ignored_column(self, col_name):
+        # Internal bookkeeping keys (e.g. __ops_count__) are never table columns.
+        if col_name.startswith("__"):
+            return True
         name_lower = col_name.lower()
         # 1. Port State / Port Status
         if "port state" in name_lower or "port status" in name_lower:

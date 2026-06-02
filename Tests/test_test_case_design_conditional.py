@@ -240,74 +240,13 @@ def test_conditional_blocks_processing():
 
     print("-> Block Processing: PASSED")
 
-def test_auto_numbering():
-    print("Testing Given/When/Then auto-numbering and formatting...")
-    window = ApplicationWindow()
-    controller = window.test_case_controller
-
-    input_text = (
-        "Given:\n"
-        "Verify initialization\n"
-        "\n"
-        "Verify parameters\n"
-        "When:\n"
-        "Some trigger occurs\n"
-        "- A bullet point to skip\n"
-        "Another trigger\n"
-        "Then.\n"
-        "Output is updated\n"
-        "1. Existing number should be preserved\n"
-        "Another output update"
-    )
-
-    res = controller.apply_auto_numbering(input_text)
-    lines = res.splitlines()
-
-    # check bolding helper first
-    res_bold = controller.format_given_when_then(input_text)
-    assert "**Given**:" in res_bold
-    assert "**When**:" in res_bold
-    assert "**Then**." in res_bold
-
-    # check numbering output
-    # Given section (starts after Given:)
-    # "Verify initialization" -> "1. Verify initialization"
-    # "" -> preserved as ""
-    # "Verify parameters" -> "2. Verify parameters"
-    # When section (starts after When:)
-    # "Some trigger occurs" -> "1. Some trigger occurs"
-    # "- A bullet point to skip" -> preserved
-    # "Another trigger" -> "2. Another trigger"
-    # Then section (starts after Then.)
-    # "Output is updated" -> "1. Output is updated"
-    # "1. Existing number..." -> preserved
-    # "Another output update" -> "2. Another output update"
-    
-    assert "1. Verify initialization" in lines
-    assert "2. Verify parameters" in lines
-    assert "1. Some trigger occurs" in lines
-    assert "- A bullet point to skip" in lines
-    assert "2. Another trigger" in lines
-    assert "1. Output is updated" in lines
-    assert "1. Existing number should be preserved" in lines
-    assert "2. Another output update" in lines
-
-    # Test preserving indentation
-    indented_input = (
-        "Given:\n"
-        "    Verify something\n"
-    )
-    res_ind = controller.apply_auto_numbering(indented_input)
-    assert "    1. Verify something" in res_ind.splitlines()
-
-    print("-> Auto Numbering: PASSED")
-
 def test_rendering_integration():
     print("Testing rendering integration (Live Preview)...")
-    temp_proj = "test_tc_design_conditional_project.arch"
-    if os.path.exists(temp_proj):
-        shutil.rmtree(temp_proj)
-    os.makedirs(temp_proj)
+    import tempfile
+    _tmp_ctx = tempfile.TemporaryDirectory()
+    tmp_dir = _tmp_ctx.name
+    temp_proj = os.path.join(tmp_dir, "proj.arch")
+    open(temp_proj, 'w').close()  # placeholder so current_project_file is set
 
     window = ApplicationWindow()
     window.current_project_file = temp_proj
@@ -361,10 +300,9 @@ def test_rendering_integration():
     print(preview)
 
     # Since Input Port is 'p_i_temp':
-    # 'temp' condition should be True -> Given/When/Then for temp should be present and numbered.
-    # 'speed' condition should be False -> Given/When/Then for speed should be omitted.
+    # 'temp' condition should be True -> its block content should be present.
+    # 'speed' condition should be False -> its block content should be omitted.
     assert "Temp reading is validated" in preview
-    assert "1. Temp reading is validated" in preview or "1.  Temp reading is validated" in preview
     assert "Speed reading is validated" not in preview
 
     # Verify generate_test_cases file output uses the correct pipeline
@@ -374,29 +312,28 @@ def test_rendering_integration():
 
     output_dir = os.path.join(os.path.dirname(temp_proj), "Test Case Design")
     files = os.listdir(output_dir)
-    assert len(files) == 1
-    
-    with open(os.path.join(output_dir, files[0]), "r", encoding="utf-8") as f:
+    md_files = [f for f in files if f.endswith(".md") and not f == "rules.md"]
+    assert len(md_files) == 1
+
+    with open(os.path.join(output_dir, md_files[0]), "r", encoding="utf-8") as f:
         file_content = f.read()
 
     print("Integration Generated File Content:")
     print(file_content)
     assert "Temp reading is validated" in file_content
-    assert "1. Temp reading is validated" in file_content
     assert "Speed reading is validated" not in file_content
 
     # Clean up
-    shutil.rmtree(temp_proj)
-    if os.path.exists(output_dir):
-        shutil.rmtree(output_dir)
+    _tmp_ctx.cleanup()
     print("-> Rendering Integration: PASSED")
 
 def test_live_preview_row_selection():
     print("Testing live preview row selection logic...")
-    temp_proj = "test_tc_design_row_selection_project.arch"
-    if os.path.exists(temp_proj):
-        shutil.rmtree(temp_proj)
-    os.makedirs(temp_proj)
+    import tempfile
+    _tmp_ctx2 = tempfile.TemporaryDirectory()
+    tmp_dir2 = _tmp_ctx2.name
+    temp_proj = os.path.join(tmp_dir2, "proj.arch")
+    open(temp_proj, 'w').close()
 
     window = ApplicationWindow()
     window.current_project_file = temp_proj
@@ -452,7 +389,7 @@ def test_live_preview_row_selection():
     controller.update_preview()
     # It should display the empty warning
     preview_html = controller.browser_preview.toHtml()
-    assert "Row 1 is empty" in preview_html
+    assert "Port 1 is empty" in preview_html
 
     # Now let's test fallback warning for retired table (only retired rows)
     arch_table.setRowCount(1)
@@ -471,15 +408,16 @@ def test_live_preview_row_selection():
     assert "Retired" in preview_html
 
     # Clean up
-    shutil.rmtree(temp_proj)
+    _tmp_ctx2.cleanup()
     print("-> Live Preview Row Selection: PASSED")
 
 def test_preview_navigation_buttons():
     print("Testing preview navigation buttons (Previous/Next) and status...")
-    temp_proj = "test_tc_design_nav_project.arch"
-    if os.path.exists(temp_proj):
-        shutil.rmtree(temp_proj)
-    os.makedirs(temp_proj)
+    import tempfile
+    _tmp_ctx3 = tempfile.TemporaryDirectory()
+    tmp_dir3 = _tmp_ctx3.name
+    temp_proj = os.path.join(tmp_dir3, "proj.arch")
+    open(temp_proj, 'w').close()
 
     window = ApplicationWindow()
     window.current_project_file = temp_proj
@@ -542,7 +480,7 @@ def test_preview_navigation_buttons():
     assert controller.preview_row_index == 0
     assert not controller.btn_prev_preview.isEnabled()  # Boundary: disabled on first row
     assert controller.btn_next_preview.isEnabled()
-    assert controller.lbl_preview_status.text() == "Row 1 of 3"
+    assert controller.lbl_preview_status.text() == "Port 1 of 3"
     
     preview = controller.browser_preview.toMarkdown()
     assert "TC-001: Validation" in preview
@@ -553,7 +491,7 @@ def test_preview_navigation_buttons():
     assert controller.preview_row_index == 1
     assert controller.btn_prev_preview.isEnabled()
     assert controller.btn_next_preview.isEnabled()
-    assert controller.lbl_preview_status.text() == "Row 2 of 3"
+    assert controller.lbl_preview_status.text() == "Port 2 of 3"
     
     preview = controller.browser_preview.toMarkdown()
     assert "TC-002: Validation" in preview
@@ -564,7 +502,7 @@ def test_preview_navigation_buttons():
     assert controller.preview_row_index == 2
     assert controller.btn_prev_preview.isEnabled()
     assert not controller.btn_next_preview.isEnabled()  # Boundary: disabled on last row
-    assert controller.lbl_preview_status.text() == "Row 3 of 3"
+    assert controller.lbl_preview_status.text() == "Port 3 of 3"
     
     preview = controller.browser_preview.toMarkdown()
     assert "TC-003: Validation" in preview
@@ -575,7 +513,7 @@ def test_preview_navigation_buttons():
     assert controller.preview_row_index == 1
     assert controller.btn_prev_preview.isEnabled()
     assert controller.btn_next_preview.isEnabled()
-    assert controller.lbl_preview_status.text() == "Row 2 of 3"
+    assert controller.lbl_preview_status.text() == "Port 2 of 3"
     
     preview = controller.browser_preview.toMarkdown()
     assert "TC-002: Validation" in preview
@@ -585,21 +523,68 @@ def test_preview_navigation_buttons():
     controller.last_previewed_model = "dummy_model"
     controller.update_preview()
     assert controller.preview_row_index == 0
-    assert controller.lbl_preview_status.text() == "Row 1 of 3"
+    assert controller.lbl_preview_status.text() == "Port 1 of 3"
 
     # Clean up
-    shutil.rmtree(temp_proj)
+    _tmp_ctx3.cleanup()
     print("-> Preview Navigation Buttons: PASSED")
+
+def test_multiple_predicate():
+    print("Testing '[port] multiple' operation-count predicate...")
+    # evaluate_condition / process_conditional_blocks need no Qt window.
+    tc = TestCaseDesignController.__new__(TestCaseDesignController)
+
+    def rb(count, **extra):
+        d = {"__ops_count__": count, "Port Name": "p_x", "Review Status": "Reviewed"}
+        d.update(extra)
+        return d
+
+    # Bare predicate: true when more than one operation
+    assert tc.evaluate_condition("[port] multiple", rb(1)) is False
+    assert tc.evaluate_condition("[port] multiple", rb(2)) is True
+    # Independent grouping / missing count defaults to 1 -> never "multiple"
+    assert tc.evaluate_condition("[port] multiple", {"Port Name": "p"}) is False
+
+    # Comparators
+    assert tc.evaluate_condition("[Port Name] multiple > 5", rb(6)) is True
+    assert tc.evaluate_condition("[Port Name] multiple > 5", rb(5)) is False
+    assert tc.evaluate_condition("[port] multiple < 5", rb(3)) is True
+    assert tc.evaluate_condition("[port] multiple < 5", rb(5)) is False
+    assert tc.evaluate_condition("[port] multiple >= 3", rb(3)) is True
+    assert tc.evaluate_condition("[port] multiple <= 1", rb(1)) is True
+    assert tc.evaluate_condition("[port] multiple == 4", rb(4)) is True
+
+    # Combines with AND/OR
+    assert tc.evaluate_condition("[port] multiple AND [Review Status] is equal 'Reviewed'", rb(3)) is True
+    assert tc.evaluate_condition("[port] multiple AND [Review Status] is equal 'Reviewed'", rb(1)) is False
+
+    # process_conditional_blocks routes few vs many operations
+    template = (
+        "#if [port] multiple > 5 {\nANNEX\n}\n"
+        "#if [port] multiple < 6 {\nINLINE\n}\n"
+    )
+    many = tc.process_conditional_blocks(template, rb(40))
+    few = tc.process_conditional_blocks(template, rb(2))
+    assert "ANNEX" in many and "INLINE" not in many
+    assert "INLINE" in few and "ANNEX" not in few
+
+    # Autocomplete offers 'multiple' after a column and comparators after it
+    sugg, _ = get_condition_suggestions_and_prefix("#if [Port Name] ", ["Port Name"], lambda c: [])
+    assert "multiple" in sugg
+    sugg2, _ = get_condition_suggestions_and_prefix("#if [Port Name] multiple ", ["Port Name"], lambda c: [])
+    assert ">" in sugg2 and "<" in sugg2
+
+    print("-> Multiple Predicate: PASSED")
 
 def run_all_tests():
     print("=" * 70)
-    print("RUNNING CONDITIONAL SYNTAX & AUTO-NUMBERING TESTS")
+    print("RUNNING CONDITIONAL SYNTAX TESTS")
     print("=" * 70)
     test_tokenizers()
     test_suggestions()
+    test_multiple_predicate()
     test_condition_evaluation()
     test_conditional_blocks_processing()
-    test_auto_numbering()
     test_rendering_integration()
     test_live_preview_row_selection()
     test_preview_navigation_buttons()

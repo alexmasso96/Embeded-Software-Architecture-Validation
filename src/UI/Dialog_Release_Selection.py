@@ -417,8 +417,8 @@ class ReleaseSelectionDialog(QDialog):
             return
             
         # Fast Hash Check before slow parser import
+        parser_hash = None
         try:
-            parser_hash = None
             if file_path.lower().endswith('.elf'):
                 import hashlib
                 hash_md5 = hashlib.md5()
@@ -426,14 +426,7 @@ class ReleaseSelectionDialog(QDialog):
                     for chunk in iter(lambda: f.read(4096), b""):
                         hash_md5.update(chunk)
                 parser_hash = hash_md5.hexdigest()
-            else:
-                import json
-                with open(file_path, 'r') as f:
-                    data = json.load(f)
-                if "database" in data:
-                    data = data["database"]
-                parser_hash = data.get("elf_hash")
-                
+
             if parser_hash:
                 for r in self.manager.releases:
                     if r.elf_hash == parser_hash:
@@ -465,27 +458,12 @@ class ReleaseSelectionDialog(QDialog):
         if loader.run_task(self._parse_task, mode, file_path):
             try:
                 final_hash = loader.result.md5_hash or parser_hash
-                
-                from dataclasses import asdict
+
                 parser = loader.result
-                elf_data = {
-                    "elf_path": str(parser.elf_path) if parser.elf_path else "",
-                    "elf_hash": parser.md5_hash,
-                    "symbols": [asdict(s) for s in parser.symbols],
-                    "functions": [{
-                        'name': f.name,
-                        'address': f.address,
-                        'size': f.size,
-                        'parameters': f.parameters,
-                        'return_type': f.return_type
-                    } for f in parser.functions],
-                    "structures": parser.structures,
-                    "global_vars": parser.global_vars_dwarf
-                }
-                
-                # Create the release with MD5 hash and parsed ELF data
-                new_release = self.manager.create_release(name, elf_path=file_path, elf_hash=final_hash, elf_data=elf_data)
-                
+
+                # ELF data is stored in SQLite; do not rebuild the legacy in-memory blob.
+                self.manager.create_release(name, elf_path=file_path, elf_hash=final_hash)
+
                 self.refresh_list()
                 QMessageBox.information(self, "Success", f"Release '{name}' created from {os.path.basename(file_path)}")
                 
@@ -497,6 +475,7 @@ class ReleaseSelectionDialog(QDialog):
     def _parse_task(self, mode, file_path):
         from core.elf_parser import ELFParser
         parser = ELFParser()
+        db = getattr(self.manager, '_db', None)
         # Pass down test_mode to ELFParser (Feature 6)
         if hasattr(self, 'controller') and self.controller and hasattr(self.controller, 'main_window'):
             if getattr(self.controller.main_window, 'test_mode', False):
@@ -504,10 +483,18 @@ class ReleaseSelectionDialog(QDialog):
                 
         if mode == 'ELF':
             parser.load_elf(file_path)
-            parser.extract_all()
+            if db and db.is_open:
+                parser.extract_all_streaming_to_db(db)
+            else:
+                parser.extract_all()
         else:
-            if not parser.load_cache(file_path):
-                 raise ValueError("Failed to load JSON cache")
+            if db and db.is_open:
+                imported_hash = ELFParser.import_elf_cache_to_db(file_path, db)
+                if not imported_hash:
+                    raise ValueError("Failed to load JSON cache")
+                parser.load_from_db(db, imported_hash)
+            elif not parser.load_cache(file_path):
+                raise ValueError("Failed to load JSON cache")
         return parser
 
     def on_reorder(self, parent, start, end, destination, row):

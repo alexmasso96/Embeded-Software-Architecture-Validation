@@ -25,8 +25,10 @@ class CustomListWidget(QtWidgets.QListWidget):
 
         def get_item_info(item):
             text = item.text()
-            parts = text.split(" | ")
-            return parts[0].strip(), parts[1]
+            parts = text.split(" | ", 1)
+            if len(parts) < 2:
+                return text.strip(), ""
+            return parts[0].strip(), parts[1].strip()
 
         for item in items:
             name, l_type = get_item_info(item)
@@ -119,13 +121,14 @@ class ColumnCustomizer(QtWidgets.QDialog):
         list_layout = QtWidgets.QHBoxLayout()
         self.active_list = self._create_drag_list()
         
-        # Config is now (name, type, visible)
+        # Config is now (name, type, visible, width)
         for col_data in current_config:
-            # Handle legacy config (name, type) or new (name, type, visible)
+            # Handle legacy config (name, type) or new (name, type, visible[, width])
             name, l_type = col_data[0], col_data[1]
             visible = col_data[2] if len(col_data) > 2 else None
-            
-            self._add_list_item(name, l_type, visible)
+            width = col_data[3] if len(col_data) > 3 else None
+
+            self._add_list_item(name, l_type, visible, width)
 
         # Enforce constraints on initial load
         self.active_list.enforce_constraints()
@@ -183,7 +186,7 @@ class ColumnCustomizer(QtWidgets.QDialog):
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
-    def _add_list_item(self, name, l_type, visible=None):
+    def _add_list_item(self, name, l_type, visible=None, width=None):
         # Issue: Indent dependent columns to show hierarchy
         display_name = name
         is_dependent = False
@@ -222,6 +225,9 @@ class ColumnCustomizer(QtWidgets.QDialog):
         if name == "TC. ID" or is_dependent:
              item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsDragEnabled)
 
+        # Preserve the column's saved width so it survives the customizer round-trip.
+        item.setData(QtCore.Qt.ItemDataRole.UserRole, width)
+
         self.active_list.addItem(item)
 
     def _get_unique_name(self, base_name):
@@ -250,11 +256,10 @@ class ColumnCustomizer(QtWidgets.QDialog):
                 has_link = False
                 for i in range(self.active_list.count()):
                     item = self.active_list.item(i)
-                    if " | " in item.text():
-                        _, item_type = item.text().split(" | ")
-                        if item_type.strip() == "Link":
-                            has_link = True
-                            break
+                    parts = item.text().split(" | ", 1)
+                    if len(parts) == 2 and parts[1].strip() == "Link":
+                        has_link = True
+                        break
                 if has_link:
                     QtWidgets.QMessageBox.warning(self, "Duplicate Column", "There can only be one Link column type per architecture model.")
                     return
@@ -263,11 +268,10 @@ class ColumnCustomizer(QtWidgets.QDialog):
                 has_last_result = False
                 for i in range(self.active_list.count()):
                     item = self.active_list.item(i)
-                    if " | " in item.text():
-                        _, item_type = item.text().split(" | ")
-                        if item_type.strip() == "Last Result":
-                            has_last_result = True
-                            break
+                    parts = item.text().split(" | ", 1)
+                    if len(parts) == 2 and parts[1].strip() == "Last Result":
+                        has_last_result = True
+                        break
                 if has_last_result:
                     QtWidgets.QMessageBox.warning(self, "Duplicate Column", "There can only be one Last Result column type per architecture model.")
                     return
@@ -294,8 +298,11 @@ class ColumnCustomizer(QtWidgets.QDialog):
         
         item = self.active_list.item(row)
         text = item.text()
-        old_name, l_type = text.split(" | ")
-        old_name = old_name.strip() # Remove indentation if present
+        parts = text.split(" | ", 1)
+        if len(parts) < 2:
+            return
+        old_name = parts[0].strip()
+        l_type = parts[1].strip()
         
         # Constraint 2: Review Status cannot be renamed
         if l_type == "Review Status":
@@ -344,8 +351,11 @@ class ColumnCustomizer(QtWidgets.QDialog):
         for i in range(self.active_list.count()):
             other_item = self.active_list.item(i)
             other_text = other_item.text()
-            other_name, other_type = other_text.split(" | ")
-            other_name_clean = other_name.strip()
+            other_parts = other_text.split(" | ", 1)
+            if len(other_parts) < 2:
+                continue
+            other_name_clean = other_parts[0].strip()
+            other_type = other_parts[1].strip()
             
             for suffix in suffixes:
                 if other_name_clean == f"{old_name}{suffix}":
@@ -416,9 +426,11 @@ class ColumnCustomizer(QtWidgets.QDialog):
         for i in range(self.active_list.count()):
             item = self.active_list.item(i)
             text = item.text()
-            name, l_type = text.split(" | ")
-            name = name.strip() # Remove indentation
-            l_type = l_type.strip() # Remove leading/trailing spaces
+            parts = text.split(" | ", 1)
+            if len(parts) < 2:
+                continue
+            name = parts[0].strip()
+            l_type = parts[1].strip()
             
             # Determine visibility override
             # Issue 2: Map Tristate back to None/True/False
@@ -429,8 +441,10 @@ class ColumnCustomizer(QtWidgets.QDialog):
                 is_visible = True # Force Show
             else:
                 is_visible = False # Force Hide
-            
-            config.append((name, l_type, is_visible))
+
+            # Carry the preserved width through so manual resizes are not lost.
+            width = item.data(QtCore.Qt.ItemDataRole.UserRole)
+            config.append((name, l_type, is_visible, width))
         return config
 
     def get_default_cyclicity(self):

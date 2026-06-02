@@ -12,33 +12,52 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 class Ui_win_new_project_dialogue(object):
     def setupUi(self, win_new_project_dialogue):
         win_new_project_dialogue.setObjectName("win_new_project_dialogue")
-        win_new_project_dialogue.resize(530, 269)
+        win_new_project_dialogue.resize(530, 300)
         icon = QtGui.QIcon.fromTheme(QtGui.QIcon.ThemeIcon.FolderNew)
         win_new_project_dialogue.setWindowIcon(icon)
         self.centralwidget = QtWidgets.QWidget(parent=win_new_project_dialogue)
         self.centralwidget.setObjectName("centralwidget")
-        self.btn_help_new_project = QtWidgets.QPushButton(parent=self.centralwidget)
-        self.btn_help_new_project.setGeometry(QtCore.QRect(363, 160, 141, 51))
-        icon = QtGui.QIcon.fromTheme(QtGui.QIcon.ThemeIcon.DialogQuestion)
-        self.btn_help_new_project.setIcon(icon)
-        self.btn_help_new_project.setObjectName("btn_help_new_project")
+
         self.lbl_question_dialog = QtWidgets.QLabel(parent=self.centralwidget)
-        self.lbl_question_dialog.setGeometry(QtCore.QRect(10, 0, 531, 181))
+        self.lbl_question_dialog.setGeometry(QtCore.QRect(10, 8, 510, 42))
         font = QtGui.QFont()
-        font.setPointSize(24)
+        font.setPointSize(16)
         font.setBold(True)
         self.lbl_question_dialog.setFont(font)
         self.lbl_question_dialog.setObjectName("lbl_question_dialog")
-        self.btn_new_elf = QtWidgets.QPushButton(parent=self.centralwidget)
-        self.btn_new_elf.setGeometry(QtCore.QRect(26, 160, 141, 51))
+
+        self.btn_start_empty = QtWidgets.QPushButton(parent=self.centralwidget)
+        self.btn_start_empty.setGeometry(QtCore.QRect(26, 60, 478, 61))
         icon = QtGui.QIcon.fromTheme(QtGui.QIcon.ThemeIcon.DocumentNew)
+        self.btn_start_empty.setIcon(icon)
+        self.btn_start_empty.setObjectName("btn_start_empty")
+        self.btn_start_empty.setStyleSheet(
+            "QPushButton { font-size: 14pt; font-weight: bold; }"
+        )
+
+        self.lbl_or_separator = QtWidgets.QLabel(parent=self.centralwidget)
+        self.lbl_or_separator.setGeometry(QtCore.QRect(10, 133, 510, 24))
+        self.lbl_or_separator.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.lbl_or_separator.setObjectName("lbl_or_separator")
+
+        self.btn_new_elf = QtWidgets.QPushButton(parent=self.centralwidget)
+        self.btn_new_elf.setGeometry(QtCore.QRect(26, 167, 141, 51))
+        icon = QtGui.QIcon.fromTheme(QtGui.QIcon.ThemeIcon.DocumentOpen)
         self.btn_new_elf.setIcon(icon)
         self.btn_new_elf.setObjectName("btn_new_elf")
+
         self.btn_Load_json = QtWidgets.QPushButton(parent=self.centralwidget)
-        self.btn_Load_json.setGeometry(QtCore.QRect(195, 160, 141, 51))
+        self.btn_Load_json.setGeometry(QtCore.QRect(195, 167, 141, 51))
         icon = QtGui.QIcon.fromTheme(QtGui.QIcon.ThemeIcon.DocumentOpen)
         self.btn_Load_json.setIcon(icon)
         self.btn_Load_json.setObjectName("btn_Load_json")
+
+        self.btn_help_new_project = QtWidgets.QPushButton(parent=self.centralwidget)
+        self.btn_help_new_project.setGeometry(QtCore.QRect(363, 167, 141, 51))
+        icon = QtGui.QIcon.fromTheme(QtGui.QIcon.ThemeIcon.DialogQuestion)
+        self.btn_help_new_project.setIcon(icon)
+        self.btn_help_new_project.setObjectName("btn_help_new_project")
+
         win_new_project_dialogue.setCentralWidget(self.centralwidget)
         self.menubar = QtWidgets.QMenuBar(parent=win_new_project_dialogue)
         self.menubar.setGeometry(QtCore.QRect(0, 0, 530, 24))
@@ -54,10 +73,12 @@ class Ui_win_new_project_dialogue(object):
     def retranslateUi(self, win_new_project_dialogue):
         _translate = QtCore.QCoreApplication.translate
         win_new_project_dialogue.setWindowTitle(_translate("win_new_project_dialogue", "New Project"))
-        self.btn_help_new_project.setText(_translate("win_new_project_dialogue", "Help"))
-        self.lbl_question_dialog.setText(_translate("win_new_project_dialogue", "Start from an existing data base?"))
+        self.lbl_question_dialog.setText(_translate("win_new_project_dialogue", "How would you like to start?"))
+        self.btn_start_empty.setText(_translate("win_new_project_dialogue", "Start Empty Project"))
+        self.lbl_or_separator.setText(_translate("win_new_project_dialogue", "—  or import existing ELF / JSON data  —"))
         self.btn_new_elf.setText(_translate("win_new_project_dialogue", "Load New ELF"))
         self.btn_Load_json.setText(_translate("win_new_project_dialogue", "Load JSON"))
+        self.btn_help_new_project.setText(_translate("win_new_project_dialogue", "Help"))
 
 
 if __name__ == "__main__":

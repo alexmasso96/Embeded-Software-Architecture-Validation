@@ -1,440 +1,401 @@
-import json
+"""
+Project Saving
+==============
+Save / load a .arch SQLite project file.
+The "dirty" concept is tracked via a sidecar .dirty flag file.
+"""
 import os
 import hashlib
+import json
 from PyQt6 import QtWidgets
+
+from .Logic_Database import ProjectDatabase
 from core.elf_parser import ELFParser
-from dataclasses import asdict
-from .Logic_History import HistoryManager
+
 
 class ProjectSaver:
     """
-    Handles saving and loading of the project file (.arch).
-    The project file is a JSON wrapper containing:
-    1. Table Data (Configuration, Settings, Rows)
-    2. ELF Data (Cache of the loaded ELF/JSON)
+    Handles saving and loading of .arch project files (SQLite databases).
     """
 
-    @staticmethod
-    def compute_integrity_hash(project_path: str) -> str:
-        hasher = hashlib.sha256()
-        
-        files_to_hash = []
-        for root, dirs, files in os.walk(project_path):
-            for file in files:
-                # Exclude .lock and .integrity
-                if file in (".lock", ".integrity"):
-                    continue
-                abs_path = os.path.join(root, file)
-                rel_path = os.path.relpath(abs_path, project_path)
-                files_to_hash.append((rel_path, abs_path))
-                
-        # Sort alphabetically by relative path for determinism
-        files_to_hash.sort(key=lambda x: x[0])
-        
-        for rel_path, abs_path in files_to_hash:
-            try:
-                with open(abs_path, 'rb') as f:
-                    hasher.update(f.read())
-            except Exception:
-                pass
-                
-        return hasher.hexdigest()
+    # ------------------------------------------------------------------
+    # Dirty / temp tracking  (sidecar .dirty flag)
+    # ------------------------------------------------------------------
 
     @staticmethod
-    def get_temp_path(file_path):
-        """
-        Returns the path for the temporary dirty file: .tmp_<filename>
-        """
-        if not file_path:
-            return None
-        directory = os.path.dirname(file_path)
-        filename = os.path.basename(file_path)
-        return os.path.join(directory, f".tmp_{filename}")
+    def _dirty_path(project_path: str) -> str:
+        return project_path + ".dirty"
 
     @staticmethod
-    def save_temp(main_window, original_path):
+    def has_temp_changes(project_path: str) -> bool:
+        if not project_path:
+            return False
+        return os.path.exists(ProjectSaver._dirty_path(project_path))
+
+    @staticmethod
+    def cleanup_temp(project_path: str):
+        if not project_path:
+            return
+        dirty = ProjectSaver._dirty_path(project_path)
+        try:
+            if os.path.exists(dirty):
+                os.remove(dirty)
+        except OSError:
+            pass
+
+    @staticmethod
+    def save_temp(main_window, original_path: str):
         """
-        Saves the current state to a hidden temporary file to mark as dirty.
+        Flush current table data to DB and set the dirty flag.
+        Called on every cell change in 'immediate' auto-save mode.
         """
         if not original_path:
             return False, "No project file."
-        
-        temp_path = ProjectSaver.get_temp_path(original_path)
-        return ProjectSaver.save_project(main_window, temp_path, is_temp=True)
+        db = getattr(main_window, 'project_db', None)
+        if not db or not db.is_open:
+            return False, "No open database."
+        try:
+            main_window.arch_controller.flush_current_data_to_model()
+            # Touch dirty flag
+            with open(ProjectSaver._dirty_path(original_path), 'w'):
+                pass
+            return True, "Changes staged."
+        except Exception as e:
+            return False, str(e)
+
+    # ------------------------------------------------------------------
+    # Integrity hash
+    # ------------------------------------------------------------------
 
     @staticmethod
-    def has_temp_changes(original_path):
-        """
-        Checks if a temporary file exists for the given project path.
-        """
-        if not original_path:
-            return False
-        temp_path = ProjectSaver.get_temp_path(original_path)
-        return os.path.exists(temp_path)
+    def compute_integrity_hash(project_path: str) -> str:
+        """SHA-256 of the .arch DB file content."""
+        hasher = hashlib.sha256()
+        try:
+            with open(project_path, 'rb') as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    hasher.update(chunk)
+        except Exception:
+            pass
+        return hasher.hexdigest()
+
+    # ------------------------------------------------------------------
+    # ELF cache helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
-    def cleanup_temp(original_path):
-        """
-        Removes the temporary file or directory if it exists.
-        """
-        if not original_path:
-            return
-        temp_path = ProjectSaver.get_temp_path(original_path)
-        if os.path.exists(temp_path):
-            try:
-                if os.path.isdir(temp_path):
-                    import shutil
-                    shutil.rmtree(temp_path)
-                else:
-                    os.remove(temp_path)
-            except OSError:
-                pass # Best effort
+    def _elf_cache_dir(project_path: str) -> str:
+        return project_path + ".elf_caches"
 
-    # Cache for ELF serialization to avoid re-processing 200k+ symbols on every auto-save
-    _cached_elf_data = None
-    _cached_parser_hash = None
+    # ------------------------------------------------------------------
+    # Save
+    # ------------------------------------------------------------------
 
     @staticmethod
-    def save_project(main_window, path, is_temp=False):
+    def save_project(main_window, path: str, is_temp: bool = False):
         if not getattr(main_window, 'edit_mode', True):
             return False, "Saving is disabled in View-Only mode."
         try:
-            # Handle Path: If it refers to an existing FILE, we must remove it to create a directory
-            if os.path.isfile(path):
-                try:
-                    os.remove(path)
-                except OSError as e:
-                    return False, f"Cannot overwrite existing file with project directory: {e}"
-            
-            # Create Directory
-            os.makedirs(path, exist_ok=True)
-            
-            # 1. Collect Data
-            full_table_data = main_window.arch_controller.get_project_data()
-            layout_data = full_table_data.get("config", [])
-            settings_data = full_table_data.get("settings", {})
-            rows_data = full_table_data.get("rows", [])
-            
-            # 2. Collect ELF Data
-            elf_data = {}
-            if main_window.parser:
-                # Check Cache
-                current_hash = main_window.parser.md5_hash
-                if (ProjectSaver._cached_elf_data is not None and 
-                    ProjectSaver._cached_parser_hash == current_hash):
-                    elf_data = ProjectSaver._cached_elf_data
-                else:
-                    elf_data = {
-                        "elf_path": str(main_window.parser.elf_path) if main_window.parser.elf_path else "",
-                        "elf_hash": main_window.parser.md5_hash,
-                        "symbols": [asdict(s) for s in main_window.parser.symbols],
-                        "functions": [{
-                            'name': f.name,
-                            'address': f.address,
-                            'size': f.size,
-                            'parameters': f.parameters,
-                            'return_type': f.return_type
-                        } for f in main_window.parser.functions],
-                        "structures": main_window.parser.structures,
-                        "global_vars": main_window.parser.global_vars_dwarf
-                    }
-                    ProjectSaver._cached_elf_data = elf_data
-                    ProjectSaver._cached_parser_hash = current_hash
+            db: ProjectDatabase = getattr(main_window, 'project_db', None)
+            if db is None or not db.is_open:
+                # First save — create DB at the new path
+                db = ProjectDatabase()
+                db.open(path)
+                main_window.project_db = db
+                main_window.arch_controller.set_project_db(db)
+            elif db.db_path != path:
+                # Save-As: close current DB, copy to new path, reopen
+                db.close()
+                import shutil
+                if os.path.exists(db.db_path):
+                    shutil.copy2(db.db_path, path)
+                db.open(path)
+                main_window.project_db = db
+                main_window.arch_controller.set_project_db(db)
 
-            # 3. Save Files
-            
-            # layout.json (Configuration & Settings)
-            test_case_json = {}
-            if hasattr(main_window, 'test_case_controller'):
-                test_case_json = {
-                    "project_title": main_window.test_case_controller.get_project_title(),
-                    "design_template": main_window.test_case_controller.get_design_template()
-                }
-
-            # Update settings_data with auto_save_interval
-            settings_data["auto_save_interval"] = getattr(main_window, 'auto_save_interval', 'immediate')
-
-            layout_json = {
-                "version": "2.0",
-                "layout": layout_data,
-                "settings": settings_data,
-                "test_case_design": test_case_json
-            }
-            master_hash = getattr(main_window, 'master_password_hash', None)
-            if master_hash:
-                layout_json["master_password_hash"] = master_hash
-
-            with open(os.path.join(path, "layout.json"), 'w') as f:
-                json.dump(layout_json, f, indent=4)
-                
-            # database.json (ELF Cache) -> REMOVED
-            # User Req: "Release JSON is currently saved as Database.JSON -> It should be saved in the SW Release folder"
-            # We now save this inside the Release Model (Step 5 below).
-            
-            # Cleanup old database.json if exists
-            db_path = os.path.join(path, "database.json")
-            if os.path.exists(db_path):
-                 try: os.remove(db_path)
-                 except: pass
-
-            # 4. Architecture Models (New System)
+            # 1. Flush current table rows to DB
             main_window.arch_controller.flush_current_data_to_model()
 
+            # 2. Column layout
+            full_data = main_window.arch_controller.get_project_data()
+            db.save_column_layout(full_data.get("config", []))
+
+            # 3. Settings
+            settings = full_data.get("settings", {})
+            settings["auto_save_interval"] = getattr(main_window, 'auto_save_interval', 'immediate')
+            for k, v in settings.items():
+                db.set_meta(k, v)
+
+            # 4. Master password hash
+            master_hash = getattr(main_window, 'master_password_hash', None)
+            if master_hash:
+                db.set_meta("master_password_hash", master_hash)
+
+            # 5. Test-case design
+            if hasattr(main_window, 'test_case_controller'):
+                tc = main_window.test_case_controller
+                db.set_test_case_design({
+                    "project_title": tc.get_project_title(),
+                    "design_template": tc.get_design_template(),
+                    "operation_grouping": tc.get_operation_grouping(),
+                })
+
+            # 6. ELF data: flush parser to DB (first save) and export cache JSON only when changed
+            if main_window.parser:
+                parser: ELFParser = main_window.parser
+                if parser.md5_hash and not db.has_elf(parser.md5_hash):
+                    # Still in-memory — flush to DB now
+                    parser.flush_to_db(db)
+                elif parser.md5_hash and not parser._db:
+                    parser._db = db
+                    parser._active_elf_hash = parser.md5_hash
+
+                # Export cache JSON only when the ELF hash changed or the file is missing
+                if parser._db and parser._active_elf_hash:
+                    last_exported = db.get_meta("last_exported_elf_hash")
+                    cache_dir = ProjectSaver._elf_cache_dir(path)
+                    cache_file = os.path.join(
+                        cache_dir, f"elf_{parser._active_elf_hash}.json"
+                    )
+                    if (parser._active_elf_hash != last_exported
+                            or not os.path.exists(cache_file)):
+                        parser.export_elf_cache(cache_dir)
+                        db.set_meta("last_exported_elf_hash", parser._active_elf_hash)
+
+            # 7. Release registry + ELF hash linkage
+            active_release = main_window.arch_controller.release_manager.get_active_release()
+            if active_release and main_window.parser and main_window.parser.md5_hash:
+                if not active_release.elf_hash:
+                    active_release.elf_hash = main_window.parser.md5_hash
+                    active_release.elf_path = str(main_window.parser.elf_path or "")
+            main_window.arch_controller.release_manager.save_registry()
+            main_window.arch_controller.model_manager.save_registry()
+            # Persist EVERY model's rows (not just the active one). Models created
+            # during a multi-sheet import live only in data_cache until now.
+            main_window.arch_controller.model_manager.save_all_model_data()
+
+            # 8. History
+            if not hasattr(main_window, 'history_manager') or main_window.history_manager is None:
+                from .Logic_History import HistoryManager
+                main_window.history_manager = HistoryManager(db)
+            else:
+                main_window.history_manager.set_db(db)
+
+            db.commit()
+
             if not is_temp:
-                # Update controller with path (this triggers manager to update paths)
-                main_window.arch_controller.set_project_path(path)
-                main_window.arch_controller.model_manager.save_registry()
+                ProjectSaver.cleanup_temp(path)
+                
+                if db.is_open:
+                    db.execute("PRAGMA wal_checkpoint(FULL)")
+                    
+                # Write integrity hash
+                integrity = ProjectSaver.compute_integrity_hash(path)
+                try:
+                    with open(path + ".integrity", 'w') as f:
+                        f.write(integrity)
+                except Exception:
+                    pass
 
-                # 5. Save Table & ELF Data into Active Release
-                active_release = main_window.arch_controller.release_manager.get_active_release()
-                if active_release:
-                    if elf_data:
-                        if active_release.data_cache is None:
-                            active_release.data_cache = {}
-                        active_release.data_cache["database"] = elf_data
-                        if not active_release.elf_hash and "elf_hash" in elf_data:
-                            active_release.elf_hash = elf_data["elf_hash"]
-                    if active_release.data_cache:
-                        main_window.arch_controller.release_manager._save_data(active_release, active_release.data_cache)
-
-                # Save ALL models to disk (needed for Save As / first save path migration)
-                for model in main_window.arch_controller.model_manager.models:
-                    if model.data_cache and model.file_path:
-                        try:
-                            with open(model.file_path, 'w') as f:
-                                json.dump(model.data_cache, f, indent=4)
-                        except Exception as e:
-                            print(f"Failed to auto-save model {model.name}: {e}")
-            
-            # Legacy: Remove table_data.json if it exists to avoid confusion, or keep as backup?
-            # Let's clean it up to enforce new structure.
-            legacy_data_path = os.path.join(path, "table_data.json")
-            if os.path.exists(legacy_data_path):
-                 try:
-                     os.remove(legacy_data_path)
-                 except: pass # Ignore
-
-            # Save History if not is_temp
-            if not is_temp:
-                if not hasattr(main_window, 'history_manager') or not main_window.history_manager:
-                    main_window.history_manager = HistoryManager(path)
-                else:
-                    main_window.history_manager.project_path = path
-                main_window.history_manager.save_history()
-
-            # Cleanup temp if needed
-            if not is_temp:
-                 ProjectSaver.cleanup_temp(path)
-                 
-                 # Save integrity hash (Feature 3)
-                 integrity_hash = ProjectSaver.compute_integrity_hash(path)
-                 with open(os.path.join(path, ".integrity"), 'w') as f:
-                     f.write(integrity_hash)
-                 
             return True, "Project saved successfully." + (" (Temp)" if is_temp else "")
 
         except Exception as e:
-            return False, f"Failed to save project: {str(e)}"
+            return False, f"Failed to save project: {e}"
+
+    # ------------------------------------------------------------------
+    # Load
+    # ------------------------------------------------------------------
 
     @staticmethod
-    def load_project(main_window, path):
+    def load_project(main_window, path: str):
         try:
-            # Set is_loading flag and call reset_controller
+            # 1. Close any existing open ProjectDatabase to release locks
+            old_db = getattr(main_window, 'project_db', None)
+            if old_db and old_db.is_open:
+                old_db.close()
+            main_window.project_db = None
+
+            # 2. Prevent any auto-saves during project load by resetting current_project_file to None
+            main_window.current_project_file = None
+
+            # 3. Clear stale parser, matcher, and database references
+            if hasattr(main_window, 'arch_controller') and main_window.arch_controller:
+                main_window.arch_controller._db = None
+                main_window.arch_controller.parser = None
+                main_window.arch_controller.matcher = None
+            main_window.parser = None
+
             main_window.arch_controller.is_loading = True
             main_window.arch_controller.reset_controller()
 
-            # Integrity check (Feature 3)
+            # Integrity check
             integrity_mismatch = False
-            integrity_file = os.path.join(path, ".integrity")
+            integrity_file = path + ".integrity"
             if os.path.exists(integrity_file):
-                with open(integrity_file, 'r') as f:
-                    stored_hash = f.read().strip()
-                computed_hash = ProjectSaver.compute_integrity_hash(path)
-                if computed_hash != stored_hash:
-                    integrity_mismatch = True
-            else:
-                # If there's no .integrity file, but layout.json exists, it means it's a legacy or tampered project
-                if os.path.exists(os.path.join(path, "layout.json")):
-                    integrity_mismatch = True
-            
+                try:
+                    with open(integrity_file, 'r') as f:
+                        stored_hash = f.read().strip()
+                    computed_hash = ProjectSaver.compute_integrity_hash(path)
+                    if computed_hash != stored_hash:
+                        integrity_mismatch = True
+                except Exception:
+                    # Unreadable integrity file — treat as no integrity check
+                    pass
             main_window.integrity_mismatch = integrity_mismatch
 
-            # Initialize HistoryManager and load history (Feature 5)
-            main_window.history_manager = HistoryManager(path)
+            # Open DB
+            db = ProjectDatabase()
+            db.open(path)
+            main_window.project_db = db
+            main_window.arch_controller.set_project_db(db)
 
-            # Enforce Directory Format
-            if os.path.isdir(path):
-                success, msg = ProjectSaver._load_directory_project(main_window, path)
-                main_window.arch_controller.is_loading = False
-                return success, msg
-            else:
-                main_window.arch_controller.is_loading = False
-                return False, "Selected path is not a valid project directory."
+            success, msg = ProjectSaver._load_from_db(main_window, db, path)
+            main_window.arch_controller.is_loading = False
+
+            if success:
+                main_window.current_project_file = path
+
+            # History manager
+            from .Logic_History import HistoryManager
+            main_window.history_manager = HistoryManager(db)
+
+            return success, msg
 
         except Exception as e:
             if hasattr(main_window, 'arch_controller'):
                 main_window.arch_controller.is_loading = False
-            return False, f"Failed to load project: {str(e)}"
+            return False, f"Failed to load project: {e}"
 
     @staticmethod
-    def _load_directory_project(main_window, dir_path):
+    def _load_from_db(main_window, db: ProjectDatabase, path: str):
         try:
-            # 1. Load Database (ELF) -> MOVED to Step 3 (Release Load)
-            # Old database.json support (Legacy Migration?)
-            # If database.json exists but no releases, maybe keep it?
-            # But new logic relies on Release. 
-            pass
+            # 1. Load column layout
+            layout_config = db.load_column_layout()
 
-            # 2. Load Layout & Settings
-            layout_path = os.path.join(dir_path, "layout.json")
-            layout_config = []
-            settings_config = {}
-            test_case_data = {}
-            if os.path.exists(layout_path):
-                with open(layout_path, 'r') as f:
-                    layout_json = json.load(f)
-                layout_config = layout_json.get("layout", [])
-                settings_config = layout_json.get("settings", {})
-                test_case_data = layout_json.get("test_case_design", {})
+            # 2. Load settings
+            all_meta = db.get_all_meta()
+            settings_config = {
+                "default_cyclicity": all_meta.get("default_cyclicity", "10"),
+                "show_retired": all_meta.get("show_retired", True),
+                "show_deleted": all_meta.get("show_deleted", False),
+            }
+            main_window.master_password_hash = all_meta.get("master_password_hash")
+            auto_save_val = all_meta.get("auto_save_interval", "immediate")
 
-            # 3. Load Architecture Models (Now Releases)
-            # First, set the path so the manager activates (do not flush)
-            main_window.arch_controller.set_project_path(dir_path, flush=False)
-            
-            # CRITICAL: We must explicit LOAD the registry from disk
-            mgr = main_window.arch_controller.model_manager
-            mgr.load_registry()
-            
-            # Refresh the UI List Model
-            main_window.arch_controller.list_model.refresh()
-            
-            # Pre-load all models into RAM
-            mgr.preload_all_models()
-            
-            # LOAD ACTIVE RELEASE & ELF DATA
-            rel_mgr = main_window.arch_controller.release_manager
-            rel_mgr.load_registry()
-            
-            # Set active release (triggers load from JSON)
-            active_release = rel_mgr.get_active_release()
-            
-            # If we have an active release, populate parser from it
-            if active_release:
-                 # Ensure data is loaded
-                 if active_release.data_cache is None:
-                      active_release.data_cache = rel_mgr._load_data(active_release)
-                       
-                 if active_release.data_cache:
-                      if active_release.is_baseline:
-                           # Baseline release data cache is table_data.json.
-                           # We also read layout.json from baseline folder.
-                           baseline_dir = os.path.dirname(active_release.file_path)
-                           layout_path = os.path.join(baseline_dir, "layout.json")
-                           
-                           layout_config = []
-                           settings_config = {}
-                           if os.path.exists(layout_path):
-                               with open(layout_path, 'r') as f:
-                                   layout_json = json.load(f)
-                               layout_config = layout_json.get("layout", [])
-                               settings_config = layout_json.get("settings", {})
-                               test_case_data = layout_json.get("test_case_design", {})
-                               
-                           data_to_load = {
-                               "config": layout_config,
-                               "settings": settings_config,
-                               "rows": active_release.data_cache.get("rows", [])
-                           }
-                           main_window.arch_controller.load_project_data(data_to_load)
-                           
-                           if test_case_data and hasattr(main_window, 'test_case_controller'):
-                               main_window.test_case_controller.load_data(test_case_data)
-                               
-                           elf_data = active_release.data_cache.get("database", {})
-                      else:
-                           elf_data = active_release.data_cache.get("database", {})
-
-                      if elf_data:
-                           print(f"Loading ELF Data from Release: {active_release.name}")
-                           ProjectSaver._populate_parser(main_window, elf_data)
-            else:
-                 # Attempt legacy database.json load if no active release?
-                 db_path = os.path.join(dir_path, "database.json")
-                 if os.path.exists(db_path):
-                     print("Loading legacy database.json...")
-                     with open(db_path, 'r') as f:
-                        db_json = json.load(f)
-                     elf_data = db_json.get("database", {})
-                     ProjectSaver._populate_parser(main_window, elf_data)
-            
-            # 4. Legacy Migration Check
-            # If manager has NO releases AND table_data.json exists,
-            # it means we are loading a legacy project. We should import the rows into a default release.
-            data_path = os.path.join(dir_path, "table_data.json")
-            
-            if not mgr.models and os.path.exists(data_path):
-                 print("Detected Legacy Project. Migrating to Architecture Manager...")
-                 try:
-                     with open(data_path, 'r') as f:
-                         data_json = json.load(f)
-                     rows_config = data_json.get("rows", [])
-                     
-                     # Create a default model
-                     new_model = mgr.create_model("Legacy_Migration", "In Work")
-                     new_model.data_cache = {"rows": rows_config}
-                     
-                     # Save it immediately
-                     # ArchitectureManager doesn't have _save_data, manually save
-                     if new_model.file_path:
-                         with open(new_model.file_path, 'w') as f:
-                             json.dump(new_model.data_cache, f, indent=4)
-                             
-                     mgr.set_active_model(0)
-                     
-                     print("Legacy Migration Successful.")
-                 except Exception as e:
-                     print(f"Legacy Migration Failed: {e}")
-            
-            # 5. Load Active Release into Table
-            main_window.arch_controller.load_active_model_to_table()
-            
-            # 6. Apply Settings (from layout.json)
-            # We construct a partial data dict to pass to load_project_data for settings only
-            # Need to update controller's settings from file BEFORE loading model rows if possible
+            # 3. Apply to controller (before loading rows so column config is ready)
             main_window.arch_controller.active_config = [tuple(c) for c in layout_config]
             main_window.arch_controller._rebuild_column_objects()
-            main_window.arch_controller.current_default_cyclicity = settings_config.get("default_cyclicity", "10")
-            main_window.arch_controller.show_retired = settings_config.get("show_retired", True)
-            main_window.arch_controller.show_deleted = settings_config.get("show_deleted", False)
+            main_window.arch_controller.current_default_cyclicity = str(
+                settings_config.get("default_cyclicity", "10")
+            )
+            show_retired = settings_config.get("show_retired", True)
+            if isinstance(show_retired, str):
+                show_retired = show_retired.lower() == "true"
+            main_window.arch_controller.show_retired = show_retired
+            show_deleted = settings_config.get("show_deleted", False)
+            if isinstance(show_deleted, str):
+                show_deleted = show_deleted.lower() == "true"
+            main_window.arch_controller.show_deleted = show_deleted
             main_window.arch_controller._setup_table_style()
-            
-            # Now reload rows from model (which uses the new column config)
+
+            # 4. Load model manager
+            main_window.arch_controller.model_manager.set_db(db)
+            main_window.arch_controller.list_model.refresh()
+            main_window.arch_controller.model_manager.preload_all_models()
+
+            # 5. Load release manager
+            main_window.arch_controller.release_manager.set_db(db)
+
+            # 6. Load ELF parser from DB
+            active_release = main_window.arch_controller.release_manager.get_active_release()
+            if active_release and active_release.elf_hash:
+                elf_hash = active_release.elf_hash
+                if db.has_elf(elf_hash):
+                    parser = ELFParser()
+                    parser.elf_path = None
+                    if active_release.elf_path:
+                        from pathlib import Path
+                        parser.elf_path = Path(active_release.elf_path)
+                    parser.load_from_db(db, elf_hash)
+                    main_window.parser = parser
+                    main_window.arch_controller.populate_from_parser(
+                        parser, skip_release_create=True
+                    )
+                else:
+                    # ELF data missing from DB — try to import from cache
+                    cache_dir = ProjectSaver._elf_cache_dir(path)
+                    cache_file = os.path.join(cache_dir, f"elf_{elf_hash}.json")
+                    if os.path.exists(cache_file):
+                        imported_hash = ELFParser.import_elf_cache_to_db(cache_file, db)
+                        if imported_hash:
+                            parser = ELFParser()
+                            parser.load_from_db(db, imported_hash)
+                            main_window.parser = parser
+                            main_window.arch_controller.populate_from_parser(
+                                parser, skip_release_create=True
+                            )
+
+            # 7. Load active model into table
             main_window.arch_controller.load_active_model_to_table()
 
-            # 7. Load Test Case Design template
-            if test_case_data and hasattr(main_window, 'test_case_controller'):
-                main_window.test_case_controller.load_data(test_case_data)
-            
+            # 8. Test-case design
+            tc_data = db.get_test_case_design()
+            if tc_data and hasattr(main_window, 'test_case_controller'):
+                main_window.test_case_controller.load_data(tc_data)
+
+            # 9. Auto-save interval
+            if hasattr(main_window, 'set_auto_save_interval'):
+                main_window.set_auto_save_interval(auto_save_val)
+
             return True, "Project loaded successfully."
-            
+
         except Exception as e:
-             return False, f"Failed to load directory project: {e}"
+            return False, f"Failed to load project from DB: {e}"
+
+    # ------------------------------------------------------------------
+    # Legacy shim — _populate_parser kept for baseline loading
+    # ------------------------------------------------------------------
 
     @staticmethod
-    def _populate_parser(main_window, elf_data):
-        from core.elf_parser import ELFParser, Symbol, Function
-        from pathlib import Path
-        
+    def _populate_parser(main_window, elf_data: dict):
+        """Legacy path: populate parser from a dict (baseline load, etc.)."""
         parser = ELFParser()
-        parser.elf_path = Path(elf_data.get("elf_path", ""))
-        parser.md5_hash = elf_data.get("elf_hash")
-        
-        parser.symbols = [Symbol(**s) for s in elf_data.get("symbols", [])]
-        parser.functions = [Function(**f) for f in elf_data.get("functions", [])]
-        parser.structures = elf_data.get("structures", {})
-        parser.global_vars_dwarf = elf_data.get("global_vars", {})
-        
-        parser._build_function_address_map()
-        
+        db = getattr(main_window, 'project_db', None)
+
+        elf_hash = elf_data.get("elf_hash")
+        if db and db.is_open and elf_hash:
+            if not db.has_elf(elf_hash):
+                db.register_elf(elf_hash, elf_data.get("elf_path", ""))
+                db.bulk_insert_symbols(elf_hash, elf_data.get("symbols", []))
+                db.bulk_insert_functions(elf_hash, elf_data.get("functions", []))
+                db.bulk_insert_structures(elf_hash, elf_data.get("structures", {}))
+                db.bulk_insert_global_vars(elf_hash, elf_data.get("global_vars", {}))
+                db.commit()
+            from pathlib import Path
+            parser.elf_path = Path(elf_data.get("elf_path", ""))
+            parser.load_from_db(db, elf_hash)
+        else:
+            # Fully in-memory fallback (e.g. during baseline view with no DB)
+            from pathlib import Path
+            from core.elf_parser import Symbol, Function
+            parser.elf_path = Path(elf_data.get("elf_path", ""))
+            parser.md5_hash = elf_hash
+            parser.symbols = [Symbol(**s) for s in elf_data.get("symbols", [])]
+            parser.functions = [Function(**f) for f in elf_data.get("functions", [])]
+            parser.structures = elf_data.get("structures", {})
+            parser.global_vars_dwarf = elf_data.get("global_vars", {})
+            parser._build_function_address_map()
+
         main_window.parser = parser
-        main_window.arch_controller.populate_from_parser(parser)
+        main_window.arch_controller.populate_from_parser(parser, skip_release_create=True)
+
+    # ------------------------------------------------------------------
+    # Unused / removed legacy helpers (stubs for import compatibility)
+    # ------------------------------------------------------------------
+
+    _cached_elf_data = None
+    _cached_parser_hash = None
+
+    @staticmethod
+    def get_temp_path(file_path):
+        return None

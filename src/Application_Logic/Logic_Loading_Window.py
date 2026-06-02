@@ -82,9 +82,6 @@ class LoadingDialog (QDialog):
         self.log_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
         logging.getLogger().addHandler(self.log_handler)
 
-        self.old_stdout = sys.stdout
-        sys.stdout = signaller
-
         # Setup Thread
         self.worker = TaskWorker(task_fn, *args, **kwargs)
         self.worker.finished.connect(self._on_finished)
@@ -106,8 +103,6 @@ class LoadingDialog (QDialog):
         self.reject()  # Closes the dialog with QDialog.Rejected
 
     def _cleanup (self):
-        if self.old_stdout:
-            sys.stdout = self.old_stdout
         if self.log_handler:
             logging.getLogger().removeHandler(self.log_handler)
 

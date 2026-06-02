@@ -1,59 +1,48 @@
-
 """
 Quick test script to verify all required libraries are installed correctly.
+The checked packages mirror requirements.txt.
 """
 
+import importlib
+
+
+# (import name, friendly label) — names match the actual runtime dependencies.
+REQUIRED = [
+    ("PyQt6", "PyQt6"),
+    ("PyQt6.QtWidgets", "PyQt6.QtWidgets"),
+    ("elftools", "pyelftools"),
+    ("pandas", "pandas"),
+    ("openpyxl", "openpyxl"),
+    ("rapidfuzz", "rapidfuzz"),
+    ("capstone", "capstone"),
+    ("bcrypt", "bcrypt"),
+    ("PyInstaller", "PyInstaller"),
+]
+
+
 def test_imports():
-    """Test if all required libraries can be imported."""
-    
+    """Verify all required libraries can be imported; fail if any are missing."""
+
     print("Testing library imports...\n")
-    
-    try:
-        import PySide6
-        from PySide6.QtWidgets import QApplication
-        print("✓ PySide6 imported successfully")
-        print(f"  Version: {PySide6.__version__}")
-    except ImportError as e:
-        print(f"✗ PySide6 import failed: {e}")
-    
-    try:
-        import elftools
-        from elftools.elf.elffile import ELFFile
-        print("✓ pyelftools imported successfully")
-        print(f"  Version: {elftools.__version__}")
-    except ImportError as e:
-        print(f"✗ pyelftools import failed: {e}")
-    
-    try:
-        import pandas as pd
-        print("✓ pandas imported successfully")
-        print(f"  Version: {pd.__version__}")
-    except ImportError as e:
-        print(f"✗ pandas import failed: {e}")
-    
-    try:
-        from fuzzywuzzy import fuzz, process
-        print("✓ fuzzywuzzy imported successfully")
-    except ImportError as e:
-        print(f"✗ fuzzywuzzy import failed: {e}")
-    
-    try:
-        import Levenshtein
-        print("✓ python-Levenshtein imported successfully")
-        print(f"  Version: {Levenshtein.__version__}")
-    except ImportError as e:
-        print(f"✗ python-Levenshtein import failed: {e}")
-    
-    try:
-        import PyInstaller
-        print("✓ PyInstaller imported successfully")
-        print(f"  Version: {PyInstaller.__version__}")
-    except ImportError as e:
-        print(f"✗ PyInstaller import failed: {e}")
-    
-    print("\n" + "="*50)
+
+    missing = []
+    for module_name, label in REQUIRED:
+        try:
+            mod = importlib.import_module(module_name)
+            version = getattr(mod, "__version__", None)
+            if version:
+                print(f"✓ {label} imported successfully (version {version})")
+            else:
+                print(f"✓ {label} imported successfully")
+        except ImportError as e:
+            print(f"✗ {label} import failed: {e}")
+            missing.append(label)
+
+    print("\n" + "=" * 50)
     print("Import test complete!")
-    print("="*50)
+    print("=" * 50)
+
+    assert not missing, f"Missing required libraries: {', '.join(missing)}"
 
 
 if __name__ == "__main__":

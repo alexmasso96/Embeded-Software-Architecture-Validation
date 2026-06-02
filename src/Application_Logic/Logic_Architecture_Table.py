@@ -1,6 +1,9 @@
 from PyQt6 import QtWidgets, QtCore, QtGui
+import logging
 import os
 from .Logic_Project_Saving import ProjectSaver
+
+logger = logging.getLogger(__name__)
 from .Logic_Symbol_Matcher import SymbolMatcher
 from .Logic_Column_Customizer import ColumnCustomizer
 from .Logic_Column_Types import TableColumn, PortSearchColumn, FunctionSearchColumn, VariableSearchColumn, ReviewColumn, InitColumn, CyclicColumn, PortStateColumn, LastResultColumn, ReleaseResultColumn, LinkColumn
@@ -25,6 +28,22 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         self.table = self.ui.Architecture_Table
         self.sidebar_list = self.ui.listView
         self.matcher = None
+
+        # Debounce timer: fires 750 ms after the last cell edit in immediate mode
+        self._autosave_timer = QtCore.QTimer()
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(750)
+        self._autosave_timer.timeout.connect(self._do_autosave)
+
+        # Dirty-row tracking: set of row indices changed since last save
+        self._dirty_rows: set = set()
+        self._row_snapshots: dict = {}
+        # When True a structural change (row add/delete/reorder) requires a full flush
+        self._full_flush_needed: bool = False
+        # Suppress the sectionResized handler while widths are applied programmatically
+        self._suppress_resize_save: bool = False
+        # Set when a manual resize needs the column layout persisted on next autosave
+        self._layout_dirty: bool = False
 
 
         # Registry of Logic Types available to the user
@@ -129,6 +148,14 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         self.btn_exit_baseline.setVisible(False)
         self.ui.verticalLayout.addWidget(self.btn_exit_baseline)
 
+    def set_project_db(self, db):
+        """Wire all sub-managers to the open ProjectDatabase."""
+        self._db = db
+        self.model_manager.set_db(db)
+        self.release_manager.set_db(db)
+        if hasattr(self.main_window, 'history_manager') and self.main_window.history_manager:
+            self.main_window.history_manager.set_db(db)
+
     def sanitize_column_config(self, config):
         """Sanitizes configuration by demoting manual or invalid ReleaseResultColumn/Last Result columns to Static Text."""
         sanitized = []
@@ -197,32 +224,36 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         self.table.setColumnCount(col_count)
         self.table.setHorizontalHeaderLabels([c.name for c in self.active_columns])
 
-        # 2. Apply dynamic widths and modes
-        header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Interactive)
-        header.setStretchLastSection(True)
-        header.setMinimumSectionSize(50)
+        # Suppress resize persistence while we apply widths/visibility programmatically;
+        # otherwise these calls would clobber the saved widths via on_column_resized.
+        self._suppress_resize_save = True
+        try:
+            # 2. Apply dynamic widths and modes
+            header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Interactive)
+            header.setStretchLastSection(False)
+            header.setMinimumSectionSize(50)
 
-        for i, col_obj in enumerate(self.active_columns):
-            # Set the width defined in the logic class
-            self.table.setColumnWidth(i, col_obj.width)
-            # Explicitly set Interactive mode for each column
-            header.setSectionResizeMode(i, QtWidgets.QHeaderView.ResizeMode.Interactive)
+            for i, col_obj in enumerate(self.active_columns):
+                self.table.setColumnWidth(i, col_obj.width)
+                header.setSectionResizeMode(i, QtWidgets.QHeaderView.ResizeMode.Interactive)
 
-        # Hide Init column by default until a match is found
-        self.refresh_init_column_state()
-        self.refresh_cyclic_column_state()
+            # Hide Init column by default until a match is found
+            self.refresh_init_column_state()
+            self.refresh_cyclic_column_state()
 
-        if self.table.rowCount() == 0:
-            self.table.insertRow(0)
-            self._initialize_row_widgets(0)
-            
-        # 4. Apply Visibility Override (Fix for Issue 1)
-        for i, col_obj in enumerate(self.active_columns):
-            if col_obj.user_visible is not None:
-                self.table.setColumnHidden(i, not col_obj.user_visible)
-            
-        # 5. Apply Port State Filters
-        self.apply_port_state_filters()
+            if self.table.rowCount() == 0:
+                self.table.insertRow(0)
+                self._initialize_row_widgets(0)
+
+            # 4. Apply Visibility Override (Fix for Issue 1)
+            for i, col_obj in enumerate(self.active_columns):
+                if col_obj.user_visible is not None:
+                    self.table.setColumnHidden(i, not col_obj.user_visible)
+
+            # 5. Apply Port State Filters
+            self.apply_port_state_filters()
+        finally:
+            self._suppress_resize_save = False
 
     def refresh_init_column_state(self):
         """
@@ -239,7 +270,7 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         10. Init column visible as long as any init is declared.
         11. No purple when User_overwrite=1 and column reappears (handled by tracking)
         """
-        self.table.blockSignals(True)
+        old_state = self.table.blockSignals(True)
         init_mappings = [i for i, obj in enumerate(self.active_columns) if isinstance(obj, InitColumn)]
 
         for init_idx in init_mappings:
@@ -334,7 +365,7 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
             else:
                 self.table.setColumnHidden(init_idx, not any_init_found)
 
-        self.table.blockSignals(False)
+        self.table.blockSignals(old_state)
 
     def refresh_cyclic_column_state(self):
         """
@@ -342,7 +373,7 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         Parses function names for 'Cyclic' (10) or 'XXms' (XX).
         Follows the same override/purple logic as InitColumn.
         """
-        self.table.blockSignals(True)
+        old_state = self.table.blockSignals(True)
         cyclic_mappings = [i for i, obj in enumerate(self.active_columns) if isinstance(obj, CyclicColumn)]
 
         for cyc_idx in cyclic_mappings:
@@ -424,7 +455,7 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
             else:
                 self.table.setColumnHidden(cyc_idx, not any_cyclic_found)
 
-        self.table.blockSignals(False)
+        self.table.blockSignals(old_state)
 
     def _initialize_row_widgets(self, row, lazy=False, row_data=None):
         """Ensures widgets like the Review dropdown are created for a new row."""
@@ -490,6 +521,38 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         self.table.horizontalHeader().setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.horizontalHeader().customContextMenuRequested.connect(self.open_column_customizer)
 
+        # Persist manual column resizes so they survive customizer/rebuilds and saves
+        self.table.horizontalHeader().sectionResized.connect(self.on_column_resized)
+
+    def on_column_resized(self, logical_index, old_size, new_size):
+        """
+        Persist a user-driven column resize into the active config so it survives
+        rebuilds (e.g. opening the column customizer) and is saved with the project.
+        """
+        if self._suppress_resize_save:
+            return
+        if new_size <= 0:  # ignore hide-driven 0-width events
+            return
+        if logical_index < 0 or logical_index >= len(self.active_columns):
+            return
+
+        self.active_columns[logical_index].width = new_size
+
+        # Mirror the width into active_config as the 4th tuple element.
+        if logical_index < len(self.active_config):
+            entry = list(self.active_config[logical_index])
+            while len(entry) < 4:
+                entry.append(None)
+            entry[3] = new_size
+            self.active_config[logical_index] = tuple(entry)
+
+        # The column layout (widths) must be persisted on the next autosave;
+        # autosave otherwise only writes row data, so resizes would be lost on
+        # any in-session reload (they only reached the DB on a full save before).
+        self._layout_dirty = True
+        if getattr(self.main_window, 'current_project_file', None):
+            self._autosave_timer.start()
+
     def on_current_cell_changed(self, row, col, prev_row, prev_col):
         if row >= 0 and col >= 0:
             self._pre_edit_row = row
@@ -522,9 +585,10 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
                                 pre_row = getattr(self, "_pre_edit_row", -1)
                                 pre_col = getattr(self, "_pre_edit_col", -1)
                                 if pre_row != r or pre_col != c:
-                                    old_val = "" 
+                                    old_val = ""
                                 if old_val != new_text:
                                     col_name = self.active_columns[c].name if c < len(self.active_columns) else f"Column {c}"
+                                    self._mark_row_dirty(r)
                                     self.handle_table_cell_change(r, col_name, old_val, new_text)
                                     self._pre_edit_row = r
                                     self._pre_edit_col = c
@@ -532,16 +596,140 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
                             return handler
                         widget.currentTextChanged.connect(make_handler(row, col))
 
+    def _persist_column_layout(self):
+        """
+        Write the current column layout (incl. widths) to the DB.
+
+        Syncs every visible column's live width into active_config first so a
+        single resize doesn't reset the other columns to their defaults. Hidden
+        columns report width 0, so their previously stored width is kept.
+        """
+        db = getattr(self, '_db', None) or getattr(self.main_window, 'project_db', None)
+        if not db or not db.is_open:
+            return
+        for i, col_obj in enumerate(self.active_columns):
+            if i >= len(self.active_config):
+                continue
+            w = self.table.columnWidth(i)
+            if w <= 0:
+                continue  # hidden column — preserve the stored width
+            col_obj.width = w
+            entry = list(self.active_config[i])
+            while len(entry) < 4:
+                entry.append(None)
+            entry[3] = w
+            self.active_config[i] = tuple(entry)
+        db.save_column_layout(self.active_config)
+        db.commit()
+
+    def _do_autosave(self):
+        """Fired by the debounce timer — incremental save for dirty rows, full flush for structural changes."""
+        project_file = getattr(self.main_window, 'current_project_file', None)
+        if not project_file:
+            return
+        if self._layout_dirty:
+            self._persist_column_layout()
+            self._layout_dirty = False
+        if self._full_flush_needed or not self._dirty_rows:
+            # Full flush path (structural change or first save)
+            ProjectSaver.save_temp(self.main_window, project_file)
+            self._dirty_rows.clear()
+            self._full_flush_needed = False
+        else:
+            # Incremental path: only persist rows that changed
+            self._flush_dirty_rows_to_db()
+            # Touch .dirty flag
+            try:
+                with open(project_file + ".dirty", 'w'):
+                    pass
+            except OSError:
+                pass
+
+    def _flush_dirty_rows_to_db(self):
+        """Serialize only dirty rows and upsert them — avoids a full table scan."""
+        current_model = self.model_manager.get_active_model()
+        if not current_model or current_model.id is None:
+            return
+        db = getattr(self, '_db', None) or getattr(self.main_window, 'project_db', None)
+        if not db or not db.is_open:
+            return
+
+        from .Logic_User_Interaction import UserInteractionLogic
+        dirty = set(self._dirty_rows)  # snapshot
+        rows_to_upsert = {}
+        for row_idx in dirty:
+            if row_idx >= self.table.rowCount():
+                continue
+            row_data = {}
+            for col_idx, col_obj in enumerate(self.active_columns):
+                cell_info = {}
+                item = self.table.item(row_idx, col_idx)
+                if item:
+                    cell_info["text"] = item.text()
+                    cell_info["user_changed"] = UserInteractionLogic.is_item_user_changed(item)
+                    cell_info["is_purple"] = UserInteractionLogic.is_purple(item)
+                    cell_info["last_func"] = UserInteractionLogic.get_last_function(item)
+                else:
+                    cell_info["text"] = ""
+                widget = self.table.cellWidget(row_idx, col_idx)
+                if isinstance(widget, QtWidgets.QComboBox):
+                    cell_info["widget_text"] = widget.currentText()
+                    cell_info["widget_style"] = widget.styleSheet()
+                row_data[col_obj.name] = cell_info
+
+            rows_to_upsert[row_idx] = row_data
+            # Keep model cache in sync
+            if current_model.data_cache and "rows" in current_model.data_cache:
+                cache_rows = current_model.data_cache["rows"]
+                while len(cache_rows) <= row_idx:
+                    cache_rows.append({})
+                cache_rows[row_idx] = row_data
+
+        if rows_to_upsert:
+            db.upsert_model_rows_batch(current_model.id, rows_to_upsert)
+        db.commit()
+
+        # Update cache so UI refresh is accurate
+        current_model.data_cache["rows"] = db.get_model_rows(current_model.id)
+
+        self._dirty_rows.clear()
+        # Snapshots are intentionally NOT cleared here — they must survive autosave
+        # so that discard_dirty_rows() can still revert to pre-edit state.
+        # Snapshots are cleared only on explicit user save or model switch.
+        
+    def _mark_row_dirty(self, row: int):
+        """Marks a row as dirty and captures a snapshot for discarding changes if needed."""
+        if row not in self._dirty_rows:
+            if getattr(self, '_row_snapshots', None) is not None and row not in self._row_snapshots:
+                db = getattr(self, '_db', None) or getattr(self.main_window, 'project_db', None)
+                active = self.model_manager.get_active_model()
+                if db and active and active.id is not None:
+                    self._row_snapshots[row] = db.get_model_row(active.id, row)
+            self._dirty_rows.add(row)
+
+    def discard_dirty_rows(self):
+        if getattr(self, '_row_snapshots', None) is None or not self._row_snapshots:
+            return
+        db = getattr(self, '_db', None) or getattr(self.main_window, 'project_db', None)
+        active = self.model_manager.get_active_model()
+        if not db or not active or active.id is None:
+            return
+        db.upsert_model_rows_batch(active.id, self._row_snapshots)
+        db.commit()
+        self._dirty_rows.clear()
+        self._row_snapshots.clear()
+        self._full_flush_needed = False
+
     def handle_table_cell_change(self, row, col_name, old_val, new_val):
-        """Logs changes to history and triggers auto-save if immediate (Feature 2 & 5)"""
+        """Logs changes to history and triggers debounced auto-save if in immediate mode."""
         if not old_val.strip() and not new_val.strip():
             return
-            
+
         model_name = ""
         current_model = self.model_manager.get_active_model()
         if current_model:
             model_name = current_model.name
-            
+
         input_port_val = ""
         input_port_col_idx = -1
         for idx, col in enumerate(self.active_columns):
@@ -550,37 +738,45 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
                 break
         if input_port_col_idx != -1:
             input_port_val = self.get_cell_value(row, input_port_col_idx)
-            
+
         if not input_port_val.strip():
             input_port_val = "N/A"
-            
+
         desc = f"Row {row + 1} -> {input_port_val} -> {col_name} -> {old_val} -> {new_val}"
         if hasattr(self.main_window, 'history_manager') and self.main_window.history_manager:
             self.main_window.history_manager.add_entry(desc, model_name)
-            
-        # Hook for immediate auto-save (Feature 2)
+
+        # Debounced immediate auto-save: restart the 750 ms timer on every edit
         if getattr(self.main_window, 'auto_save_interval', 'immediate') == 'immediate':
-            if self.main_window.current_project_file:
-                ProjectSaver.save_temp(self.main_window, self.main_window.current_project_file)
+            if getattr(self.main_window, 'current_project_file', None):
+                self._autosave_timer.start()
 
     def open_column_customizer(self, pos):
         """Opens the drag-and-drop dialog and updates table columns."""
         if not getattr(self.main_window, 'edit_mode', True):
             return
+        try:
+            self._open_column_customizer_impl(pos)
+        except Exception as e:
+            import traceback
+            QtWidgets.QMessageBox.critical(
+                self.main_window, "Column Customizer Error",
+                f"An error occurred while opening the column editor:\n\n{e}\n\n"
+                + traceback.format_exc()
+            )
+
+    def _open_column_customizer_impl(self, pos):
         # Issue 3: Init and Cyclic columns should not be presented as individual types
         # Filter them out of the options passed to the UI
         logic_options = [
-            key for key in self.available_logics.keys() 
+            key for key in self.available_logics.keys()
             if key not in ["InitColumn", "CyclicColumn", "Review Status", "PortStateColumn", "ReleaseResultColumn", "Last Result"]
         ]
 
-        # Ensure "TC. ID" is always locked to preserve logic and traceability
-        self.permanently_locked_columns.add("TC. ID")
-        # Lock "Port State"
-        self.permanently_locked_columns.add("Port State")
+        # Rebuild locked columns fresh each time — never accumulate across calls
+        self.permanently_locked_columns = {"TC. ID", "Port State"}
 
         # Issue 1: Identify locked columns (rows that are Reviewed OR were previously reviewed)
-        # We accumulate into self.permanently_locked_columns
         review_idx = self.get_column_index_by_type("ReviewColumn")
         if review_idx != -1:
             # Lock the Review Column itself so it cannot be deleted
@@ -647,9 +843,9 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
             # Re-apply filters
             self.apply_port_state_filters()
 
-            # Save to temporary file to mark as dirty
-            if self.main_window.current_project_file:
-                ProjectSaver.save_temp(self.main_window, self.main_window.current_project_file)
+            # Mark dirty immediately after column customization
+            if getattr(self.main_window, 'current_project_file', None):
+                self._autosave_timer.start()
 
     def apply_new_columns(self, column_names, default_cyclicity="10", update_existing_cyclic=False):
         """
@@ -665,8 +861,9 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         loading = LoadingDialog(self.main_window)
         loading.ui.lbl_loading_text.setText("Applying changes...")
         loading.setWindowModality(Qt.WindowModality.ApplicationModal)
-        loading.show()
-        QCoreApplication.processEvents()
+        if self.main_window and self.main_window.isVisible():
+            loading.show()
+            QCoreApplication.processEvents()
         
         try:
             # Optimization: Flush current data to the active model's cache
@@ -794,7 +991,6 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
                         cached_results = current_model.data_cache["release_results"]
                     
                     col_cached_data = cached_results.get(col_obj.name, [])
-                    print(f"DEBUG _run_column_initialization_logic: col_obj.name={col_obj.name}, col_cached_data={col_cached_data}")
 
                     for row in range(self.table.rowCount()):
                         # EXISTENCE CHECK: 
@@ -886,19 +1082,25 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
                 
                 self.table.setRowHidden(row, should_hide)
 
-    def populate_from_parser(self, parser, release_name=None):
+    def populate_from_parser(self, parser, release_name=None, skip_release_create=False):
         """
-        Initializes the matcher when a new ELF/JSON is successfully loaded
+        Initializes the matcher when a new ELF/JSON is successfully loaded.
+        When skip_release_create=True the release was already created by the DB loader.
         """
         if not parser:
-            print("Error: Received empty parser in ArchitectureTabController")
+            logger.error("Received empty parser in ArchitectureTabController")
             return
 
         self.parser = parser
-        self.matcher = SymbolMatcher(parser)
-        
-        # Create the Release Node if name provided
-        if release_name:
+        db = getattr(self, '_db', None) or getattr(self.main_window, 'project_db', None)
+        elf_hash = getattr(parser, 'md5_hash', None) or getattr(parser, '_active_elf_hash', None)
+        if db and db.is_open and elf_hash:
+            self.matcher = SymbolMatcher(parser, db=db, elf_hash=elf_hash)
+        else:
+            self.matcher = SymbolMatcher(parser)
+
+        # Create the Release Node if name provided and not skipped
+        if release_name and not skip_release_create:
              try:
                  # Check if exists? If loading JSON, it might exist? 
                  # Logic_New_Project.py prompts for name.
@@ -910,22 +1112,11 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
                  
                  # We should probably catch this or handle it gracefully.
                  # For now, let's try creation.
-                 from dataclasses import asdict
-                 elf_data = {
-                     "elf_path": str(parser.elf_path) if parser.elf_path else "",
-                     "elf_hash": parser.md5_hash,
-                     "symbols": [asdict(s) for s in parser.symbols],
-                     "functions": [{
-                         'name': f.name,
-                         'address': f.address,
-                         'size': f.size,
-                         'parameters': f.parameters,
-                         'return_type': f.return_type
-                     } for f in parser.functions],
-                     "structures": parser.structures,
-                     "global_vars": parser.global_vars_dwarf
-                 }
-                 self.release_manager.create_release(release_name, elf_path=str(parser.elf_path), elf_hash=parser.md5_hash, elf_data=elf_data)
+                 self.release_manager.create_release(
+                     release_name,
+                     elf_path=str(parser.elf_path) if parser.elf_path else "",
+                     elf_hash=parser.md5_hash,
+                 )
                  # self.list_model.refresh() # No longer exists on release_manager
              except ValueError as e:
                  # If exists, maybe just switch to it? 
@@ -943,7 +1134,7 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
                  # self.model_manager = ReleaseManager(None) was done in init.
                  # We should wipe it or re-init?
                  
-                 print(f"Release creation warning: {e}")
+                 logger.warning("Release creation warning: %s", e)
                  # If it exists, find it and select it
                  for i, r in enumerate(self.release_manager.releases):
                      if r.name == release_name:
@@ -952,7 +1143,7 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
 
         # UI Feedback
         self.ui.statusbar.showMessage("Matcher ready. Enter Port Names to begin matching.")
-        print(f"Matcher initialized with {len(self.matcher.search_pool)} symbols.")
+        logger.debug("Matcher initialized with %d symbols.", len(self.matcher.search_pool))
 
     def get_cell_value(self, row, col_idx):
         """Helper to get text value of a cell, checking widgets first."""
@@ -1038,6 +1229,8 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
                     new_row = self.table.rowCount()
                     self.table.insertRow(new_row)
                     self._initialize_row_widgets(new_row)
+                    self._mark_row_dirty(new_row)
+                    self._full_flush_needed = True  # Row insertion shifts indices
         finally:
             self.table.blockSignals(False)
             # Hook comboboxes since new widgets may have been created
@@ -1047,6 +1240,7 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         new_val = item.text()
         if old_val != new_val:
             col_name = self.active_columns[col_idx].name if col_idx < len(self.active_columns) else f"Column {col_idx}"
+            self._mark_row_dirty(row)
             self.handle_table_cell_change(row, col_name, old_val, new_val)
             # Update pre-edit value so subsequent changes work
             self._pre_edit_row = row
@@ -1057,7 +1251,7 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         if hasattr(self.main_window, 'test_case_controller'):
             QtCore.QTimer.singleShot(0, self.main_window.test_case_controller.show_generation_menu)
         else:
-            print("Generation triggered, but TestCaseDesignController is not initialized.")
+            logger.warning("Generation triggered but TestCaseDesignController is not initialized.")
 
 
     def on_model_selection_changed(self, current, previous):
@@ -1066,16 +1260,19 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         if not current.isValid():
             return
             
-        real_index = current.row() # List model is now flat, so row is index
-        # Fix: ArchitectureManager uses active_model_index, not active_release_index
+        real_index = self.list_model.get_real_index(current.row())
+        if real_index == -1:
+            return
         if real_index == self.model_manager.active_model_index:
             return
             
         # 1. Save current table data to the OLD active model
         self.flush_current_data_to_model()
-        
+        self._dirty_rows.clear()
+        self._row_snapshots.clear()
+        self._full_flush_needed = False
+
         # 2. Set new active model
-        # Fix: ArchitectureManager uses set_active_model
         self.model_manager.set_active_model(real_index)
         
         # 3. Load data
@@ -1122,24 +1319,16 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
 
         self.main_window.setWindowTitle(f"Architecture Testing Tool - {current_model.name}")
         
-        # UI: Helpers
-        from PyQt6.QtCore import QCoreApplication, Qt
-        from .Logic_Loading_Window import LoadingDialog
+        from PyQt6.QtCore import QCoreApplication
 
-        loading = LoadingDialog(self.main_window)
-        loading.ui.lbl_loading_text.setText(f"Loading {current_model.name}...")
-        # loading.show() # Optional, might be too flashy for quick switches
-        QCoreApplication.processEvents()
+        # Lazy-load model data from DB if not yet in cache
+        if current_model.data_cache is None:
+            self.model_manager._load_model_data(current_model)
 
         # Get rows from the model's cache
         rows_data = []
         if current_model.data_cache:
             rows_data = current_model.data_cache.get("rows", [])
-        elif current_model.file_path and os.path.exists(current_model.file_path):
-             # Just in case cache is empty but file exists (shouldn't happen with Manager)
-             # The manager preload should have handled this? 
-             # Or we load on demand? Manager.preload_all_models() is called on project load.
-             pass
 
         # FIX: Restore Project/Model Configuration (Phantom Columns Fix)
         # If the model has a saved configuration, we must restore it to the controller.
@@ -1149,7 +1338,6 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
             # Only update if different (optimization)
             # But deep comparison is safe enough
             if self.active_config != model_config:
-                print(f"DEBUG: Restoring configuration for {current_model.name}")
                 self.active_config = model_config
                 self._rebuild_column_objects()
                 self._setup_table_style()
@@ -1201,7 +1389,6 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
                 try:
                     for col_idx, col_obj in enumerate(self.active_columns):
                         if isinstance(col_obj, ReleaseResultColumn) and col_obj.name in release_results:
-                            loading.append_log(f"Restoring results for {col_obj.name}...")
                             result_list = release_results[col_obj.name]
                             
                             # Apply to table
@@ -1251,12 +1438,18 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         """
         Resets the controller to a clean state, discarding any previous project's models, releases, and settings.
         """
+        self._db = None
+        self.parser = None
+        self.matcher = None
+
         # Reset Managers
+        self.model_manager._db = None
         self.model_manager.project_path = None
         self.model_manager.models = []
         self.model_manager.active_model_index = 0
-        self.model_manager.create_default_model(in_memory=True)
+        self.model_manager._create_default_model_in_memory()
         
+        self.release_manager._db = None
         self.release_manager.project_path = None
         self.release_manager.releases = []
         self.release_manager.active_release_index = -1
@@ -1267,6 +1460,9 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         self.show_deleted = False
         self.column_metadata = {}
         self.permanently_locked_columns = set()
+        self._dirty_rows.clear()
+        self._full_flush_needed = False
+        self._autosave_timer.stop()
         
         # Reset columns to default configuration
         self.active_config = [
@@ -1336,10 +1532,9 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         self.table.blockSignals(False)
         self.table.viewport().update()
 
-        # Save or save temp immediately so the new column is persisted
-        if getattr(self.main_window, 'auto_save_interval', 'immediate') == 'immediate':
-            if self.main_window.current_project_file:
-                ProjectSaver.save_temp(self.main_window, self.main_window.current_project_file)
+        # Mark dirty so the new column is persisted on the next autosave tick
+        if getattr(self.main_window, 'current_project_file', None):
+            self._autosave_timer.start()
 
     def refresh_all_column_locking(self):
         """
