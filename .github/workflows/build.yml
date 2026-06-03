@@ -1,6 +1,11 @@
 name: Build and Release Multi-Platform App
 
 on:
+  # Push a semver tag (e.g. v1.0.1) to build + publish a release automatically.
+  push:
+    tags:
+      - 'v*.*.*'
+  # Or trigger manually with custom title / draft / prerelease options.
   workflow_dispatch:
     inputs:
       tag_name:
@@ -150,8 +155,9 @@ jobs:
           Categories=Development;Utility;
           EOF
           
-          # Handle Debian versioning (strip 'v' prefix if present for compliance)
-          RAW_VERSION="${{ github.event.inputs.tag_name }}"
+          # Handle Debian versioning (strip 'v' prefix if present for compliance).
+          # Falls back to the pushed tag name when triggered by a tag push.
+          RAW_VERSION="${{ github.event.inputs.tag_name || github.ref_name }}"
           VERSION="${RAW_VERSION#v}"
           
           # Create Debian control metadata file
@@ -232,10 +238,12 @@ jobs:
       - name: Create GitHub Release and Upload Assets
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag_name }}
-          name: ${{ github.event.inputs.release_title }}
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
+          name: ${{ github.event.inputs.release_title || format('Release {0}', github.ref_name) }}
           draft: ${{ github.event.inputs.draft == 'true' }}
           prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+          make_latest: true
+          body_path: RELEASE_NOTES.md
           generate_release_notes: true
           files: |
             architecture-validator-pro-windows.zip
