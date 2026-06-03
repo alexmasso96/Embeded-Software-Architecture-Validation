@@ -6,6 +6,7 @@ The "dirty" concept is tracked via a sidecar .dirty flag file.
 """
 import os
 import hashlib
+import hmac
 import json
 from PyQt6 import QtWidgets
 
@@ -67,17 +68,37 @@ class ProjectSaver:
     # Integrity hash
     # ------------------------------------------------------------------
 
+    # Fallback key used for projects that have no master password configured.
+    # Integrity still detects accidental external modification; it just isn't
+    # keyed to a user secret in that case.
+    _DEFAULT_INTEGRITY_KEY = b"arch-validator-integrity-v1"
+
     @staticmethod
-    def compute_integrity_hash(project_path: str) -> str:
-        """SHA-256 of the .arch DB file content."""
-        hasher = hashlib.sha256()
-        try:
-            with open(project_path, 'rb') as f:
-                for chunk in iter(lambda: f.read(65536), b""):
-                    hasher.update(chunk)
-        except Exception:
-            pass
-        return hasher.hexdigest()
+    def _integrity_key(master_hash) -> bytes:
+        if master_hash:
+            return str(master_hash).encode("utf-8")
+        return ProjectSaver._DEFAULT_INTEGRITY_KEY
+
+    @staticmethod
+    def compute_integrity_hmac(db, master_hash) -> str:
+        """
+        HMAC-SHA256 over the project's canonical logical content, keyed by the
+        master-password hash (or a fixed fallback key when none is set).
+
+        This replaces the old whole-file SHA-256. The file-byte approach was
+        unstable: SQLite rewrites its own header (change counter, version
+        fields), checkpoints the WAL on close, and the app commits to the DB
+        outside the save path (ui_state, history) — so the raw bytes changed on
+        nearly every reopen and triggered spurious master-password prompts.
+        Hashing logical content instead is stable across reopen and SQLite
+        versions while remaining tamper-evident.
+        """
+        digest = db.compute_content_digest()
+        return hmac.new(
+            ProjectSaver._integrity_key(master_hash),
+            digest.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
 
     # ------------------------------------------------------------------
     # ELF cache helpers
@@ -181,21 +202,30 @@ class ProjectSaver:
             else:
                 main_window.history_manager.set_db(db)
 
+            # Integrity stamp: HMAC over canonical logical content, stored INSIDE
+            # the DB (so it travels with the file and can't desync like the old
+            # sidecar). Must be the last content write before commit; it is
+            # excluded from the digest so it isn't self-referential.
+            if not is_temp:
+                master_hash = db.get_meta("master_password_hash")
+                integrity = ProjectSaver.compute_integrity_hmac(db, master_hash)
+                db.set_meta("integrity_hmac", integrity)
+
             db.commit()
 
             if not is_temp:
                 ProjectSaver.cleanup_temp(path)
-                
+
                 if db.is_open:
                     db.execute("PRAGMA wal_checkpoint(FULL)")
-                    
-                # Write integrity hash
-                integrity = ProjectSaver.compute_integrity_hash(path)
-                try:
-                    with open(path + ".integrity", 'w') as f:
-                        f.write(integrity)
-                except Exception:
-                    pass
+
+                # Remove any stale sidecar left by the old file-byte scheme.
+                legacy_sidecar = path + ".integrity"
+                if os.path.exists(legacy_sidecar):
+                    try:
+                        os.remove(legacy_sidecar)
+                    except Exception:
+                        pass
 
             return True, "Project saved successfully." + (" (Temp)" if is_temp else "")
 
@@ -228,26 +258,28 @@ class ProjectSaver:
             main_window.arch_controller.is_loading = True
             main_window.arch_controller.reset_controller()
 
-            # Integrity check
-            integrity_mismatch = False
-            integrity_file = path + ".integrity"
-            if os.path.exists(integrity_file):
-                try:
-                    with open(integrity_file, 'r') as f:
-                        stored_hash = f.read().strip()
-                    computed_hash = ProjectSaver.compute_integrity_hash(path)
-                    if computed_hash != stored_hash:
-                        integrity_mismatch = True
-                except Exception:
-                    # Unreadable integrity file — treat as no integrity check
-                    pass
-            main_window.integrity_mismatch = integrity_mismatch
-
             # Open DB
             db = ProjectDatabase()
             db.open(path)
             main_window.project_db = db
             main_window.arch_controller.set_project_db(db)
+
+            # Integrity check: recompute the HMAC over canonical logical content
+            # and compare to the value stored in the DB. Done right after open,
+            # before any load-time writes. Legacy projects (no stored integrity)
+            # open silently and get stamped on the next save.
+            integrity_mismatch = False
+            try:
+                stored = db.get_meta("integrity_hmac")
+                if stored:
+                    master_hash = db.get_meta("master_password_hash")
+                    expected = ProjectSaver.compute_integrity_hmac(db, master_hash)
+                    integrity_mismatch = not hmac.compare_digest(
+                        str(stored), str(expected)
+                    )
+            except Exception:
+                integrity_mismatch = False
+            main_window.integrity_mismatch = integrity_mismatch
 
             success, msg = ProjectSaver._load_from_db(main_window, db, path)
             main_window.arch_controller.is_loading = False

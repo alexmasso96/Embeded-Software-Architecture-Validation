@@ -7,6 +7,7 @@ All project state lives here: layout, models, releases, ELF data, history.
 import sqlite3
 import os
 import json
+import hashlib
 import datetime
 import time
 import logging
@@ -33,6 +34,28 @@ def _timed(label: str, **extra):
     _perf_logger.info("[PERF] %-45s %6.1f ms  %s", label, ms, detail)
 
 DB_SCHEMA_VERSION = 1
+
+# Tables excluded from the integrity content digest. These are either cosmetic /
+# volatile state the app writes OUTSIDE an explicit save (so they must not affect
+# integrity), or bulky ELF caches that are already hash-addressed by their own
+# md5 and don't need re-hashing here.
+_INTEGRITY_EXCLUDED_TABLES = frozenset({
+    "ui_state",          # active model id, geometry — written on selection/load
+    "history",           # audit log, appended independently of save
+    "elf_symbols",       # large, hash-addressed ELF cache
+    "elf_functions",
+    "elf_structures",
+    "elf_global_vars",
+    "sqlite_sequence",   # internal AUTOINCREMENT bookkeeping
+})
+
+# project_meta keys excluded from the digest: the integrity value itself (would be
+# self-referential) and volatile bookkeeping keys.
+_INTEGRITY_EXCLUDED_META = frozenset({
+    "integrity_hmac",
+    "schema_version",
+    "last_exported_elf_hash",
+})
 
 
 class ProjectDatabase:
@@ -265,6 +288,51 @@ class ProjectDatabase:
     def get_all_meta(self) -> dict:
         cur = self._conn.execute("SELECT key, value FROM project_meta")
         return {r[0]: r[1] for r in cur.fetchall()}
+
+    # ------------------------------------------------------------------
+    # Integrity content digest
+    # ------------------------------------------------------------------
+
+    def compute_content_digest(self) -> str:
+        """
+        Deterministic SHA-256 over the project's *logical* content.
+
+        Unlike hashing the raw .arch file bytes, this is stable across
+        save -> close -> reopen cycles and across SQLite versions: it ignores
+        SQLite's internal bookkeeping (file change counter, WAL state, page
+        layout, freelist) and the volatile/cosmetic tables the app writes
+        outside of an explicit save (UI state, history), as well as the
+        integrity value itself. That makes it suitable as the basis for a
+        tamper-evidence check that does NOT fire on every benign reopen.
+        """
+        h = hashlib.sha256()
+        cur = self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        )
+        tables = [
+            r[0] for r in cur.fetchall()
+            if r[0] not in _INTEGRITY_EXCLUDED_TABLES
+            and not r[0].startswith("sqlite_")
+        ]
+        for tbl in tables:
+            cols = [r[1] for r in self._conn.execute(
+                f'PRAGMA table_info("{tbl}")'
+            ).fetchall()]
+            if not cols:
+                continue
+            # Order by every column so the digest is independent of physical
+            # row order / rowid churn.
+            order = ", ".join(f'"{c}"' for c in cols)
+            h.update(b"\x00TABLE\x00")
+            h.update(tbl.encode("utf-8"))
+            for row in self._conn.execute(f'SELECT * FROM "{tbl}" ORDER BY {order}'):
+                if tbl == "project_meta" and row[0] in _INTEGRITY_EXCLUDED_META:
+                    continue
+                h.update(b"\x00ROW\x00")
+                h.update(json.dumps(
+                    list(row), default=str, ensure_ascii=False, sort_keys=True
+                ).encode("utf-8"))
+        return h.hexdigest()
 
     # ------------------------------------------------------------------
     # Column layout
