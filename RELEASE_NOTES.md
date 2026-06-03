@@ -1,3 +1,36 @@
+# v1.0.2
+
+## 🔍 Fixed: imported & ELF-switched rows now fuzzy-match immediately
+
+Previously, when you imported a Rhapsody/Excel architecture export and mapped
+operations or ports into a **Search** column, the adjacent **(Match)** column did
+not actually perform the fuzzy search — it only mirrored the raw text copied from
+the search column. The match scoring was deferred to a *lazy* dropdown that only
+ran when you manually opened each cell, so freshly imported rows showed no
+suggestions or scores until you clicked through every one of them.
+
+**Cause.** Imported and loaded rows were rendered through the lazy widget path,
+which pre-fills the (Match) cell with the search text but never invokes the
+matcher until the dropdown is opened. Typing into a cell by hand used the eager
+path; importing did not.
+
+**Fix.** Imports and ELF switches now run the **active (eager) matcher branch**,
+so the (Match) columns are filled with real fuzzy results (with match percentages)
+the moment the data lands:
+
+- **Importing** an architecture export now eagerly matches every row against the
+  loaded symbols. An *"Importing — matching symbols"* progress window is shown so
+  it's clear work is happening on large imports.
+- **Loading a different ELF** from the Release Selection window now re-runs the
+  matcher against the new symbol set automatically. The redundant **Deep Search**
+  checkbox (which had no effect) was removed.
+- **Opening a saved project** intentionally keeps the lighter lazy path, and now
+  always matches against the last loaded ELF for that project.
+
+Baselines remain read-only snapshots — their stored matches are left untouched.
+
+---
+
 # v1.0.1 — Hotfix
 
 ## 🔒 Fixed: repeated master-password prompts ("integrity mismatch")

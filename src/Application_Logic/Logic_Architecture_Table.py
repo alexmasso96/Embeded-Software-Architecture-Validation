@@ -1145,6 +1145,64 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         self.ui.statusbar.showMessage("Matcher ready. Enter Port Names to begin matching.")
         logger.debug("Matcher initialized with %d symbols.", len(self.matcher.search_pool))
 
+    def refresh_fuzzy_matches(self, show_progress=False,
+                              progress_label="Matching symbols, please wait..."):
+        """
+        Eagerly re-run the *active* fuzzy-match branch for every search column in
+        every row, populating the adjacent (Match) column immediately against the
+        currently loaded matcher (ELF).
+
+        This is the same path that runs when a user types into a search cell
+        (``on_change`` with ``lazy=False``), so the (Match) columns are filled with
+        real fuzzy results instead of waiting for the user to open each lazy
+        dropdown. Used on import and whenever a different ELF is loaded.
+
+        Project loading deliberately keeps the lazy branch and is not routed here.
+        """
+        if not self.matcher:
+            return
+
+        search_cols = [
+            (i, col) for i, col in enumerate(self.active_columns)
+            if isinstance(col, (PortSearchColumn, FunctionSearchColumn, VariableSearchColumn))
+        ]
+        if not search_cols:
+            return
+
+        row_count = self.table.rowCount()
+
+        from PyQt6.QtCore import QCoreApplication, Qt
+
+        loading = None
+        if show_progress and self.main_window and self.main_window.isVisible():
+            from .Logic_Loading_Window import LoadingDialog
+            loading = LoadingDialog(self.main_window)
+            loading.ui.lbl_loading_text.setText(progress_label)
+            loading.setWindowModality(Qt.WindowModality.ApplicationModal)
+            loading.show()
+            QCoreApplication.processEvents()
+
+        self.table.blockSignals(True)
+        try:
+            for row in range(row_count):
+                for col_idx, col_obj in search_cols:
+                    text = self.get_cell_value(row, col_idx)
+                    if text:
+                        # lazy defaults to False -> eager match, populates (Match) column now
+                        col_obj.on_change(self.table, row, col_idx, text, self)
+                if loading is not None and (row % 25 == 0 or row == row_count - 1):
+                    loading.append_log(f"Matched {row + 1}/{row_count} rows...")
+                    QCoreApplication.processEvents()
+        finally:
+            self.table.blockSignals(False)
+            self.hook_comboboxes()
+            self.refresh_init_column_state()
+            self.refresh_cyclic_column_state()
+            if loading is not None:
+                loading.close()
+                loading.deleteLater()
+                QCoreApplication.processEvents()
+
     def get_cell_value(self, row, col_idx):
         """Helper to get text value of a cell, checking widgets first."""
         widget = self.table.cellWidget(row, col_idx)

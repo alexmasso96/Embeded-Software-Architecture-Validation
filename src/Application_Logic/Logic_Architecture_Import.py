@@ -296,6 +296,13 @@ class ArchitectureImportMixin:
         self.list_model.refresh()
         self.load_active_model_to_table()
 
+        # Eagerly populate the (Match) columns against the active matcher so the
+        # imported rows show real fuzzy results instead of the lazy placeholder.
+        self.refresh_fuzzy_matches(
+            show_progress=True,
+            progress_label="Importing — matching symbols, please wait...",
+        )
+
         if self.main_window.current_project_file:
             success, msg = ProjectSaver.save_project(
                 self.main_window, self.main_window.current_project_file
@@ -474,6 +481,14 @@ class ArchitectureImportMixin:
 
         self.list_model.refresh()
         self.load_active_model_to_table()
+
+        # Eagerly populate the (Match) columns against the active matcher so the
+        # imported operations show real fuzzy results instead of the lazy
+        # placeholder that only mirrors the search text.
+        self.refresh_fuzzy_matches(
+            show_progress=True,
+            progress_label="Importing — matching symbols, please wait...",
+        )
 
         if self.main_window.current_project_file:
             success, msg = ProjectSaver.save_project(

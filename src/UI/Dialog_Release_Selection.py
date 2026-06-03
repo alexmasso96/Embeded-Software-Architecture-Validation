@@ -1,6 +1,6 @@
 from PyQt6 import QtWidgets
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
-                               QPushButton, QLabel, QMessageBox, QInputDialog, QCheckBox, QAbstractItemView, QFileDialog)
+                               QPushButton, QLabel, QMessageBox, QInputDialog, QAbstractItemView, QFileDialog)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont
 from Application_Logic.Logic_Release_Manager import ReleaseManager
@@ -35,12 +35,7 @@ class ReleaseSelectionDialog(QDialog):
         self.list_widget.model().rowsMoved.connect(self.on_reorder)
         
         left_layout.addWidget(self.list_widget)
-        
-        # Deep Search Option (Req 9)
-        self.chk_deep_search = QCheckBox("Deep Search (Perform thorough validation on load)")
-        self.chk_deep_search.setToolTip("Will trigger a deeper search for missing symbols during load (slower).")
-        left_layout.addWidget(self.chk_deep_search)
-        
+
         layout.addLayout(left_layout, stretch=2)
         
         # Right: Actions
@@ -218,6 +213,7 @@ class ReleaseSelectionDialog(QDialog):
         release = self.manager.set_active_release(actual_index)
         
         # Load the Data into the Architecture Controller
+        elf_reloaded = False
         if release:
             if release.elf_path:
                 current_elf = str(self.controller.parser.elf_path) if self.controller.parser and self.controller.parser.elf_path else None
@@ -228,11 +224,12 @@ class ReleaseSelectionDialog(QDialog):
                          from Application_Logic.Logic_Loading_Window import LoadingDialog
                          loader = LoadingDialog(self)
                          loader.ui.lbl_loading_text.setText(f"Switching Context to {os.path.basename(release.elf_path)}...")
-                         
+
                          if loader.run_task(self._parse_task, 'ELF', release.elf_path):
                              # Update Controller Context (Parser/Matcher)
                              # We pass None for release_name since release already exists
                              self.controller.populate_from_parser(loader.result, release_name=None)
+                             elf_reloaded = True
                          else:
                              QMessageBox.warning(self, "Warning", f"Failed to load associated ELF: {loader.error_msg}\nSome features may not work.")
                      else:
@@ -257,6 +254,16 @@ class ReleaseSelectionDialog(QDialog):
 
             # Let's try loading it directly
             self.controller.load_project_data(data)
+
+            # When a different ELF was loaded, re-run the active fuzzy matcher so the
+            # (Match) columns reflect the new symbol set. Baselines are read-only
+            # snapshots, so their stored matches are left untouched.
+            if elf_reloaded and not release.is_baseline:
+                self.controller.refresh_fuzzy_matches(
+                    show_progress=True,
+                    progress_label="Loading symbols for the selected ELF...",
+                )
+
             self.controller.main_window.setWindowTitle(f"Architecture Testing Tool - {release.name}")
             if release.is_baseline:
                  self.controller.main_window.setWindowTitle(f"Architecture Testing Tool - {release.name} (READ ONLY)")
