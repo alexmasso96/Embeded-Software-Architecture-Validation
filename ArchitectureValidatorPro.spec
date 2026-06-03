@@ -1,7 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 import sys
 import os
-from PyInstaller.utils.hooks import collect_data_files
 
 block_cipher = None
 
@@ -23,7 +22,12 @@ a = Analysis(
     ['src/main.py'],
     pathex=['src'],
     binaries=[],
-    datas=collect_data_files('PyQt6') + [(ICON_PNG, ICON_DIR)],
+    # NOTE: do NOT add collect_data_files('PyQt6') here. PyInstaller's bundled
+    # PyQt6 hook already ships the needed Qt libraries and platform plugins and
+    # prunes unused ones. Collecting the whole PyQt6 package as data overrides
+    # that pruning and bundles every Qt framework + QML + .sip dev files,
+    # roughly doubling the build (macOS .app went 138 MB -> 281 MB).
+    datas=[(ICON_PNG, ICON_DIR)],
     hiddenimports=[
         'PyQt6',
         'PyQt6.QtWidgets',
