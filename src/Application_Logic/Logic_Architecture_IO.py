@@ -152,26 +152,38 @@ class ArchitectureIOMixin:
     # ------------------------------------------------------------------
 
     def load_project_data(self, data):
-        """Restores project state from a data dict (config + settings + rows)."""
-        settings = data.get("settings", {})
-        config = data.get("config", [])
+        """Restores project state from a data dict (config + settings + rows).
 
+        A Software Release data dict carries only ``rows`` (plus results/metadata)
+        and intentionally has no ``config`` or ``settings`` — releases share the
+        architecture model's current column schema and only overlay their own row
+        data.  In that case we must keep the existing columns and filters and just
+        reload the rows; rebuilding from an empty config would wipe every column,
+        leaving only the row-number gutter (the ELF-reload "columns disappeared"
+        bug).  Rebuild only when a real config is supplied, or when the table has
+        no columns yet.
+        """
+        config = data.get("config", [])
         current_config_tuples = [tuple(x) for x in self.active_config]
         new_config_tuples = [tuple(c) for c in config]
-        rebuild_needed = (current_config_tuples != new_config_tuples) or not self.active_columns
+        rebuild_needed = (
+            (bool(new_config_tuples) and current_config_tuples != new_config_tuples)
+            or not self.active_columns
+        )
+
+        if "settings" in data:
+            settings = data["settings"]
+            self.current_default_cyclicity = settings.get(
+                "default_cyclicity", self.current_default_cyclicity)
+            self.show_retired = settings.get("show_retired", self.show_retired)
+            self.show_deleted = settings.get("show_deleted", self.show_deleted)
 
         if rebuild_needed:
-            self.current_default_cyclicity = settings.get("default_cyclicity", "10")
-            self.show_retired = settings.get("show_retired", True)
-            self.show_deleted = settings.get("show_deleted", False)
             self.active_config = new_config_tuples
             self._rebuild_column_objects()
             self.table.clear()
             self.table.setRowCount(0)
             self._setup_table_style()
-        else:
-            self.show_retired = settings.get("show_retired", True)
-            self.show_deleted = settings.get("show_deleted", False)
 
         rows = data.get("rows", [])
         self._load_row_data(rows)

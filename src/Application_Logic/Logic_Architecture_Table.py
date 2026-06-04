@@ -114,9 +114,15 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         self._setup_table_style()
         self._connect_signals()
 
-        # UI Polish: Spacing and Styling
+        # UI Polish: Spacing and Styling — larger, easier-to-click model rows
         self.sidebar_list.setSpacing(4)
-        
+        self.sidebar_list.setStyleSheet("""
+            QListView::item {
+                padding: 6px 8px;
+                font-size: 13px;
+            }
+        """)
+
         # Connect Selection
         self.sidebar_list.selectionModel().currentChanged.connect(self.on_model_selection_changed)
         
@@ -1171,14 +1177,17 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
 
         row_count = self.table.rowCount()
 
-        from PyQt6.QtCore import QCoreApplication, Qt
+        from PyQt6.QtCore import QCoreApplication
 
         loading = None
         if show_progress and self.main_window and self.main_window.isVisible():
             from .Logic_Loading_Window import LoadingDialog
             loading = LoadingDialog(self.main_window)
             loading.ui.lbl_loading_text.setText(progress_label)
-            loading.setWindowModality(Qt.WindowModality.ApplicationModal)
+            # Non-modal on purpose: this runs synchronously on the UI thread, so an
+            # app-modal session adds nothing and, shown via show()/close() instead
+            # of exec(), can leave a dangling modal session on macOS that silently
+            # disables the sidebar buttons until the app is restarted.
             loading.show()
             QCoreApplication.processEvents()
 

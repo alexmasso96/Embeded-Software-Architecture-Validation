@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 import copy
 from typing import List, Optional
-from PyQt6.QtCore import QAbstractListModel, Qt, QModelIndex, QMimeData, QByteArray, QDataStream, QIODevice
+from PyQt6.QtCore import QAbstractListModel, Qt, QModelIndex, QMimeData, QByteArray, QDataStream, QIODevice, QSize
 from PyQt6.QtGui import QColor, QFont
 from PyQt6 import QtGui
 
@@ -306,6 +306,10 @@ class ArchitectureListModel(QAbstractListModel):
                 font = QtGui.QFont()
                 font.setBold(True)
                 return font
+        elif role == Qt.ItemDataRole.SizeHintRole:
+            # Taller rows give a comfortably larger click target for selecting
+            # the active architecture model.
+            return QSize(0, 34)
         elif role == self.ModelRole:
             return model
         return None

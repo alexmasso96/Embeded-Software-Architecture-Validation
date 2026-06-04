@@ -30,6 +30,7 @@ Thumbs.db
 
 # PyInstaller build directories
 build/
+build_*/
 dist/
 
 # Test cache and local temporary project directories
@@ -45,6 +46,9 @@ coverage.xml
 
 # Local-only real test data (not for distribution)
 ForTesting/
+
+# Smoke tests: resources not yet committed — ignore until reviewed
+Tests/smoke/
 
 # Windows build script: distribute the app via Releases; to build, pull/fork.
 build_windows.bat

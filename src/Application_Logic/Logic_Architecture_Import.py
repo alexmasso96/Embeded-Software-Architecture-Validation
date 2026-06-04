@@ -12,7 +12,10 @@ logger = logging.getLogger(__name__)
 from PyQt6 import QtWidgets
 from rapidfuzz import fuzz
 
-from .Logic_Column_Types import PortSearchColumn, LinkColumn, PortStateColumn
+from .Logic_Column_Types import (
+    PortSearchColumn, FunctionSearchColumn, VariableSearchColumn,
+    LinkColumn, PortStateColumn, _match_style,
+)
 from .Logic_Project_Saving import ProjectSaver
 from UI.Dialog_Architecture_Import import (
     ImportModeDialog,
@@ -23,6 +26,118 @@ from UI.Dialog_Architecture_Import import (
 
 
 class ArchitectureImportMixin:
+
+    def _eager_match_imported_models(self, models):
+        """Populate the (Match) columns for every model that received imported
+        rows, matching against the active matcher.
+
+        A single import distributes rows across several models (one per sheet),
+        and newly-created models are *not* made active by ``create_model``.
+        Matching only the active model would leave every other imported model
+        showing the lazy placeholder (raw search text) until the user manually
+        opens each dropdown.
+
+        Rather than activate each touched model in turn and route the match
+        through the live table (which made the UI visibly jump from model to
+        model), we compute the best fuzzy match directly in each model's cached
+        row data — no active-model switching, no per-model table reload. A single
+        loading overlay covers the whole pass, and only the already-active model
+        is reloaded at the end so its freshly matched rows are shown. The matches
+        live in each model's ``data_cache`` and are persisted to the DB by the
+        ``save_project`` call that follows every import.
+        """
+        # Dedupe while preserving order; drop Nones.
+        seen = set()
+        unique_models = []
+        for m in models:
+            if m is not None and id(m) not in seen:
+                seen.add(id(m))
+                unique_models.append(m)
+
+        loading = None
+        if (self.matcher and unique_models
+                and self.main_window and self.main_window.isVisible()):
+            from PyQt6.QtCore import QCoreApplication
+            from .Logic_Loading_Window import LoadingDialog
+            loading = LoadingDialog(self.main_window)
+            loading.ui.lbl_loading_text.setText(
+                "Importing — matching symbols, please wait...")
+            # Deliberately NON-modal: matching runs synchronously on the UI thread
+            # (the loop already blocks interaction), so an app-modal session here
+            # buys nothing and, when shown via show()/close() rather than exec(),
+            # can leave a dangling modal session on macOS that silently kills the
+            # sidebar buttons until the app is restarted.
+            loading.show()
+            QCoreApplication.processEvents()
+
+        try:
+            if self.matcher:
+                from PyQt6.QtCore import QCoreApplication
+                for i, model in enumerate(unique_models, 1):
+                    self._match_model_data_inplace(model)
+                    if loading is not None:
+                        loading.append_log(
+                            f"Matched {i}/{len(unique_models)}: {model.name}")
+                        QCoreApplication.processEvents()
+        finally:
+            if loading is not None:
+                from PyQt6.QtCore import QCoreApplication
+                loading.close()
+                loading.deleteLater()
+                QCoreApplication.processEvents()
+
+        # Refresh the view for whichever model is currently active so its newly
+        # imported, freshly matched rows are shown. The active model's rows were
+        # flushed to its data_cache before import, so one reload is enough — we
+        # never switch the active model, so the table no longer jumps.
+        self.load_active_model_to_table()
+
+    def _match_model_data_inplace(self, model):
+        """Compute the best fuzzy match for every search column in a model's
+        cached rows and write it into the adjacent (Match) column cell
+        (``widget_text`` + ``widget_style``), without touching the table.
+
+        Mirrors exactly what the table path produced via ``_update_dropdown`` +
+        ``flush_current_data_to_model``: the (Match) cell stores ``"Name (NN%)"``
+        as ``widget_text`` and a score-coloured stylesheet. The match for a
+        search column lives in the *next* column — all imported models share the
+        active schema, since their rows are built from ``self.active_columns`` at
+        import time, so we read that schema to locate each (Match) column.
+        """
+        if not self.matcher or not model.data_cache:
+            return
+        rows = model.data_cache.get("rows")
+        if not rows:
+            return
+
+        specs = []
+        for i, col_obj in enumerate(self.active_columns):
+            if isinstance(col_obj, (PortSearchColumn, FunctionSearchColumn,
+                                    VariableSearchColumn)):
+                if i + 1 < len(self.active_columns):
+                    specs.append(
+                        (col_obj.name, self.active_columns[i + 1].name, type(col_obj)))
+        if not specs:
+            return
+
+        for row_dict in rows:
+            for search_name, match_name, col_type in specs:
+                text = row_dict.get(search_name, {}).get("text", "").strip()
+                if not text:
+                    continue
+                if col_type is FunctionSearchColumn:
+                    matches = self.matcher.find_top_function_matches(text, limit=10)
+                elif col_type is VariableSearchColumn:
+                    matches = self.matcher.find_top_variable_matches(text, limit=10)
+                else:
+                    matches = self.matcher.find_top_matches(text, limit=10)
+                if not matches:
+                    continue
+                best_name, best_score = matches[0]
+                cell = row_dict.setdefault(match_name, {"text": ""})
+                cell["widget_text"] = f"{best_name} ({best_score}%)"
+                cell["widget_style"] = (
+                    f"background-color: {_match_style(best_score)}; color: white;")
 
     def calculate_word_similarity(self, name1: str, name2: str) -> float:
         """
@@ -193,6 +308,7 @@ class ArchitectureImportMixin:
             self._setup_table_style()
 
         total_imported_ports = 0
+        touched_models = []
         pattern = re.compile(
             r"^(.*?)\s*-\s*Port\s+(with|without)\s+TestCase\b", re.IGNORECASE
         )
@@ -292,16 +408,15 @@ class ArchitectureImportMixin:
                 new_rows_count += 1
 
             total_imported_ports += new_rows_count
+            if new_rows_count > 0:
+                touched_models.append(model)
 
         self.list_model.refresh()
-        self.load_active_model_to_table()
 
-        # Eagerly populate the (Match) columns against the active matcher so the
-        # imported rows show real fuzzy results instead of the lazy placeholder.
-        self.refresh_fuzzy_matches(
-            show_progress=True,
-            progress_label="Importing — matching symbols, please wait...",
-        )
+        # Eagerly populate the (Match) columns against the active matcher for
+        # every model that received rows — not just the active one — so imported
+        # rows show real fuzzy results instead of the lazy placeholder.
+        self._eager_match_imported_models(touched_models)
 
         if self.main_window.current_project_file:
             success, msg = ProjectSaver.save_project(
@@ -419,6 +534,7 @@ class ArchitectureImportMixin:
                 db.set_meta("operations_column_name", ops_tbl_col)
 
         total_imported = 0
+        touched_models = []
 
         for extracted_name, table_rows in import_data.items():
             target_name = model_mapping.get(extracted_name, "<Create New>")
@@ -478,17 +594,15 @@ class ArchitectureImportMixin:
                 new_count += 1
 
             total_imported += new_count
+            if new_count > 0:
+                touched_models.append(model)
 
         self.list_model.refresh()
-        self.load_active_model_to_table()
 
-        # Eagerly populate the (Match) columns against the active matcher so the
-        # imported operations show real fuzzy results instead of the lazy
-        # placeholder that only mirrors the search text.
-        self.refresh_fuzzy_matches(
-            show_progress=True,
-            progress_label="Importing — matching symbols, please wait...",
-        )
+        # Eagerly populate the (Match) columns against the active matcher for
+        # every model that received operations — not just the active one — so
+        # imported rows show real fuzzy results instead of the lazy placeholder.
+        self._eager_match_imported_models(touched_models)
 
         if self.main_window.current_project_file:
             success, msg = ProjectSaver.save_project(
