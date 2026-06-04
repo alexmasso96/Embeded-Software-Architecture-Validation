@@ -14,6 +14,7 @@ import sys
 import bisect
 import json
 import hashlib
+import io
 import os
 import gc
 
@@ -132,9 +133,23 @@ class ELFParser:
             
         if not self.elf_path.exists():
             raise FileNotFoundError(f"ELF file not found: {elf_path}")
-            
+
         try:
-            self.md5_hash = self._calculate_md5()
+            # Read the whole file into memory ONCE, then both hash it and parse
+            # it from that in-memory buffer. pyelftools issues a very large number
+            # of small seek()/read() calls while walking the ELF/DWARF tree; if the
+            # underlying stream is an OS file handle, every one of those is a
+            # syscall that an endpoint-security minifilter (EDR/antivirus) can
+            # intercept and scan, adding fixed latency per call. On a protected
+            # corporate machine that per-read tax dominates wall time (low CPU,
+            # near-idle disk, but minutes of waiting). Backing the stream with a
+            # BytesIO collapses all of that into a single bulk read. The MD5 is
+            # computed from the same buffer so the file is touched on disk exactly
+            # once instead of twice. The raw bytes are tiny (the file size) and are
+            # freed by close() — unrelated to the old all-objects-in-RAM spike.
+            with open(self.elf_path, 'rb') as f:
+                data = f.read()
+            self.md5_hash = hashlib.md5(data).hexdigest()
         except Exception as e:
             if getattr(self, 'test_mode', False):
                 self.md5_hash = "DUMMY_HASH_FOR_TEST_MODE"
@@ -143,9 +158,9 @@ class ELFParser:
                 self.structures = {}
                 return
             raise e
-        
+
         try:
-            self.stream = open(self.elf_path, 'rb')
+            self.stream = io.BytesIO(data)
             self._load_elf_file()
         except Exception as e:
             self.close()
@@ -180,11 +195,26 @@ class ELFParser:
 
     def _calculate_md5(self):
         """Calculates MD5 hash of the ELF file."""
+        # 4 MB chunks (not 4 KB): on EDR-protected machines each read() is an
+        # intercepted syscall, so a small chunk size turned a 50 MB hash into
+        # thousands of scanned reads. Kept for any caller outside load_elf, which
+        # now hashes the already-in-memory buffer directly.
         hash_md5 = hashlib.md5()
         with open(self.elf_path, "rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
+            for chunk in iter(lambda: f.read(4 * 1024 * 1024), b""):
                 hash_md5.update(chunk)
         return hash_md5.hexdigest()
+
+    def _open_elf_stream(self) -> "io.BytesIO":
+        """Return an in-memory stream of the ELF file.
+
+        Used wherever the ELF must be (re)opened for pyelftools/Capstone. Reading
+        the file once into a BytesIO means all subsequent seeks/reads hit RAM
+        instead of an OS file handle — see load_elf for why that matters on
+        endpoint-security machines.
+        """
+        with open(self.elf_path, 'rb') as f:
+            return io.BytesIO(f.read())
 
     def _load_elf_file(self):
         """Load and validate the ELF file."""
@@ -270,7 +300,7 @@ class ELFParser:
             # We need to open the ELF file for Capstone/disassembly to work later
             if self.elf_path and self.elf_path.exists():
                 try:
-                    self.stream = open(self.elf_path, 'rb')
+                    self.stream = self._open_elf_stream()
                     self._load_elf_file()
                 except Exception as e:
                     logger.warning(f"Could not open original ELF file {self.elf_path}: {e}. Disassembly will not work.")
@@ -298,7 +328,7 @@ class ELFParser:
             return True
         if not self.elf_path or not self.elf_path.exists():
             return False
-        self.stream = open(self.elf_path, 'rb')
+        self.stream = self._open_elf_stream()
         self._load_elf_file()
         return self.elf_file is not None
 
