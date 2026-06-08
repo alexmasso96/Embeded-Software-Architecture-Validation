@@ -26,8 +26,9 @@ build_one () {
     done
     "${CC}" ${CFLAGS} -I"${srcdir}" -c "${amalgam}" -o "${here}/wlc_${ver}.elf"
     rm -f "${amalgam}"
-    # Pre-apply + neutralize DWARF debug relocations so BOTH the native and the
-    # pyelftools backends read correct DWARF from this relocatable object.
+    # Pre-apply DWARF debug relocations in place and empty the reloc sections so
+    # BOTH the native and the pyelftools backends read correct DWARF from this
+    # relocatable object.
     "${PYTHON:-python3}" "${here}/patch_debug_relocs.py" "${here}/wlc_${ver}.elf"
     echo "built wlc_${ver}.elf"
     file "${here}/wlc_${ver}.elf"

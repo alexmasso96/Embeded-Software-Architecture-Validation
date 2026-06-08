@@ -12,7 +12,7 @@ sys.path.append(os.path.abspath("src"))
 import pytest
 from Application_Logic import Logic_AI_Context as ctx
 
-FIXTURE_SRC = os.path.join(os.path.dirname(__file__), "..", "ForTesting", "AIGenTest", "src")
+FIXTURE_SRC = os.path.join(os.path.dirname(__file__), "..", "Resources", "AIGenTest", "src")
 
 
 class FakeDB:

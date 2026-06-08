@@ -2,7 +2,7 @@
 Phase 7.5 — contract pin for the ported code indexer (Logic_Code_Index).
 
 This test FREEZES the public API the mind-map builder (Phase 8) depends on, run
-against the real C fixture in ForTesting/AIGenTest/src. If a future change to the
+against the real C fixture in Resources/AIGenTest/src. If a future change to the
 ported indexer breaks any of these shapes, Phase 8 breaks — so this is the
 authoritative record of the contract (and corrects two guesses the plan made).
 """
@@ -16,7 +16,7 @@ from Application_Logic.Logic_Code_Index import (
     build_index, CodeIndex, FunctionInfo, GlobalVarInfo, extract_keywords,
 )
 
-FIXTURE = os.path.join(os.path.dirname(__file__), "..", "ForTesting", "AIGenTest", "src")
+FIXTURE = os.path.join(os.path.dirname(__file__), "..", "Resources", "AIGenTest", "src")
 
 
 @pytest.fixture(scope="module")
