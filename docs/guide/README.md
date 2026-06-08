@@ -4,7 +4,7 @@ Welcome! This guide walks through everything Architecture Validator Pro can do, 
 
 If you're new, read it top to bottom. If you're looking for one thing, jump straight to the section you need from the list below.
 
-![Architecture validation workspace](../../Media/images/architecture_tab.png)
+> 📷 _Screenshot coming soon._
 
 ---
 

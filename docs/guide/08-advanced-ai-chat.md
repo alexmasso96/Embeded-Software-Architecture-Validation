@@ -9,7 +9,7 @@ needs through a small set of read-only tools.
 
 ---
 
-![Advanced AI Chat — agentic, source-grounded answers](../../Media/images/advanced_ai_chat.png)
+> 📷 _Screenshot coming soon._
 
 ## What you need
 
