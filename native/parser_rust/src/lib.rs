@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use object::{Object, ObjectSymbol, SymbolKind, ObjectSection};
-use object::read::ObjectSymbolTable;
 use memmap2::Mmap;
 use serde::Serialize;
 use rayon::prelude::*;

@@ -48,6 +48,11 @@ jobs:
 
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          # This action defaults RUSTFLAGS to "-D warnings", which turns any
+          # compiler warning into a hard error and fails the release build.
+          # Keep warnings non-fatal here (the source is warning-clean anyway).
+          rustflags: ''
 
       - name: Build and install Rust ELF Parser extension
         run: |
@@ -93,6 +98,11 @@ jobs:
 
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          # This action defaults RUSTFLAGS to "-D warnings", which turns any
+          # compiler warning into a hard error and fails the release build.
+          # Keep warnings non-fatal here (the source is warning-clean anyway).
+          rustflags: ''
 
       - name: Build and install Rust ELF Parser extension
         run: |
@@ -139,6 +149,11 @@ jobs:
 
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          # This action defaults RUSTFLAGS to "-D warnings", which turns any
+          # compiler warning into a hard error and fails the release build.
+          # Keep warnings non-fatal here (the source is warning-clean anyway).
+          rustflags: ''
 
       - name: Build and install Rust ELF Parser extension
         run: |

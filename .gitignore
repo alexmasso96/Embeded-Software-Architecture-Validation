@@ -35,6 +35,8 @@ dist/
 
 # Rust native parser build artifacts (commit the source, not the 200M+ target tree)
 native/parser_rust/target/
+# Wheel output dir used by the release build (maturin build --out target/wheels)
+/target/
 
 # Test cache and local temporary project directories
 .pytest_cache/
