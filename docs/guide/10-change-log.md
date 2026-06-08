@@ -7,7 +7,7 @@ as a precise side-by-side diff and, optionally, as an AI-written summary.
 
 ---
 
-![Change Log — side-by-side release diff](../../Media/images/change_log.png)
+> 📷 _Screenshot coming soon._
 
 ## Two views
 

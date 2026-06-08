@@ -6,7 +6,7 @@
 
 The **Architecture** tab is where most of the work happens. Your ports are laid out as rows, your data as columns, and the right-hand sidebar lists the architecture models in the project.
 
-![Architecture validation tab](../../Media/images/architecture_tab.png)
+> 📷 _Screenshot coming soon._
 
 ## Anatomy of the screen
 

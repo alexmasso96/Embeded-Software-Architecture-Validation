@@ -8,7 +8,7 @@ your C source (which file defines each function, the call relationships, the bod
 
 ---
 
-![Code Map — call graph joined to the C source](../../Media/images/code_map.png)
+> 📷 _Screenshot coming soon._
 
 ## Where the data comes from
 

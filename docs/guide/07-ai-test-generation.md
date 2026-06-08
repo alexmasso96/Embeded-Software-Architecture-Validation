@@ -4,7 +4,7 @@
 
 ---
 
-![AI Test Generation tab](../../Media/images/ai_test_generation.png)
+> 📷 _Screenshot coming soon._
 
 The **Test Case Design** tab (section 5) produces the *high-level* test cases — the Given / When / Then structure for every port. The **AI Test Generation** tab takes those a step further: it sends each high-level case, your project's source code, and your rules to an AI model, and fills in the detailed **low-level** test steps (breakpoints, reads, verifications) for you.
 
