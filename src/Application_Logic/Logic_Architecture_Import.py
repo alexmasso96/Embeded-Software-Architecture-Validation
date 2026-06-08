@@ -189,7 +189,8 @@ class ArchitectureImportMixin:
         """
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self.main_window, "Import Excel / CSV File", "",
-            "Excel / CSV Files (*.xlsx *.xls *.csv)"
+            "Excel / CSV Files (*.xlsx *.xls *.csv)",
+            options=QtWidgets.QFileDialog.Option(0)
         )
         if not file_path:
             return
@@ -339,7 +340,14 @@ class ArchitectureImportMixin:
                     model.data_cache = {"rows": [], "config": self.active_config}
 
             try:
-                df = pd.read_excel(file_path, sheet_name=sheet_name, header=None)
+                # Reuse the workbook already opened above as ``xls`` instead of
+                # passing ``file_path`` — pandas re-opens and re-unzips the entire
+                # .xlsx from disk on every read_excel(path) call, so a 30–40 sheet
+                # import re-read the whole file 30–40 times. On EDR-protected
+                # machines each of those reads is also scanned by the antivirus,
+                # turning import into an I/O-bound crawl. Reading from the open
+                # ExcelFile parses the file once.
+                df = pd.read_excel(xls, sheet_name=sheet_name, header=None)
             except Exception as e:
                 logger.error("Error reading sheet %s: %s", sheet_name, e)
                 continue

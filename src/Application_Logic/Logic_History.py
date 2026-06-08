@@ -22,7 +22,8 @@ class HistoryManager:
         if not self._db or not self._db.is_open:
             return
         try:
-            self.history = self._db.get_history()
+            rel_id = self._db.get_active_release_id()
+            self.history = self._db.get_history(rel_id)
         except Exception as e:
             logger.exception("Failed to load history")
 
@@ -39,10 +40,12 @@ class HistoryManager:
         self.history.append(entry)
         if self._db and self._db.is_open:
             try:
+                rel_id = self._db.get_active_release_id()
                 self._db.add_history_entry(
                     description=description,
                     model_name=model_name,
-                    username=entry["user"]
+                    username=entry["user"],
+                    release_id=rel_id
                 )
             except Exception as e:
                 logger.exception("Failed to persist history entry")

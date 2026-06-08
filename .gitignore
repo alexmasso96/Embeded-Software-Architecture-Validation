@@ -33,6 +33,9 @@ build/
 build_*/
 dist/
 
+# Rust native parser build artifacts (commit the source, not the 200M+ target tree)
+native/parser_rust/target/
+
 # Test cache and local temporary project directories
 .pytest_cache/
 .tmp_*/
@@ -52,3 +55,6 @@ Tests/smoke/
 
 # Windows build script: distribute the app via Releases; to build, pull/fork.
 build_windows.bat
+
+# Local-only audit scratchpad (working notes, not a deliverable)
+AUDIT_FINDINGS.md

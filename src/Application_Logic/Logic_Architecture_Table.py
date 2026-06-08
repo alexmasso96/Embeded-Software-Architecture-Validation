@@ -186,11 +186,28 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
             sanitized.append(tuple(item_list) if isinstance(item, tuple) else item_list)
         return sanitized
 
+    @staticmethod
+    def default_column_config():
+        """The default column schema, used for new models and as the Inc-04
+        fallback when a loaded model/release has no persisted column schema."""
+        return [
+            ("TC. ID", "Static Text", True),
+            ("Input Port", "Port Search", True), ("Input Port (Match)", "Static Text", True), ("Input Port (Init)", "InitColumn", None), ("Input Port (Cyclic)", "CyclicColumn", None),
+            ("Mapped Func", "Function Search", True), ("Mapped Func (Match)", "Static Text", True), ("Mapped Func (Init)", "InitColumn", None), ("Mapped Func (Cyclic)", "CyclicColumn", None),
+            ("Mapped Parameter", "Variable Search", True), ("Mapped Parameter (Match)", "Static Text", True),
+            ("Review Status", "Review Status", True),
+            ("Port State", "PortStateColumn", True),
+        ]
+
     def _rebuild_column_objects(self):
         """
         Converts the config tuples (active_config) into actual logic instances
         """
         self.active_config = self.sanitize_column_config(self.active_config)
+        if not self.active_config:
+            # Inc-04: a model/release with no persisted column schema must still
+            # render the full default column set, never an empty/column-less table.
+            self.active_config = self.default_column_config()
         config = getattr(self, 'active_config', [])
         self.active_columns = []
 
@@ -575,32 +592,65 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
             self._pre_edit_col = col
             self._pre_edit_value = self.get_cell_value(row, col)
 
+    def _cell_of_widget(self, widget):
+        """Resolve a cell widget's CURRENT (row, col).
+
+        Indices captured when a widget was created go stale the moment rows are
+        inserted/deleted/reordered above it, which used to make combobox edits
+        dirty-mark and log the wrong row. We resolve the position live instead:
+        a fast indexAt() probe with an authoritative linear-scan fallback.
+        Returns (-1, -1) if the widget is no longer in the table.
+        """
+        idx = self.table.indexAt(widget.geometry().center())
+        if idx.isValid() and self.table.cellWidget(idx.row(), idx.column()) is widget:
+            return idx.row(), idx.column()
+        for r in range(self.table.rowCount()):
+            for c in range(self.table.columnCount()):
+                if self.table.cellWidget(r, c) is widget:
+                    return r, c
+        return -1, -1
+
+    def _hook_one_combobox(self, combo):
+        """Connect a single combobox's change handler exactly once."""
+        if hasattr(combo, "_hooked"):
+            return
+        combo._hooked = True
+
+        def handler(new_text, combo=combo):
+            if self.table.signalsBlocked() or combo.signalsBlocked():
+                return
+            # Resolve the row/col live — the combo may have moved since hooking.
+            r, c = self._cell_of_widget(combo)
+            if r == -1:
+                return
+            old_val = getattr(self, "_pre_edit_value", "")
+            pre_row = getattr(self, "_pre_edit_row", -1)
+            pre_col = getattr(self, "_pre_edit_col", -1)
+            if pre_row != r or pre_col != c:
+                old_val = ""
+            if old_val != new_text:
+                col_name = self.active_columns[c].name if c < len(self.active_columns) else f"Column {c}"
+                self._mark_row_dirty(r)
+                self.handle_table_cell_change(r, col_name, old_val, new_text)
+                self._pre_edit_row = r
+                self._pre_edit_col = c
+                self._pre_edit_value = new_text
+
+        combo.currentTextChanged.connect(handler)
+
+    def _hook_comboboxes_in_row(self, row):
+        """Hook any unhooked comboboxes in a single row (cheap, used on edits)."""
+        if row < 0 or row >= self.table.rowCount():
+            return
+        for col in range(self.table.columnCount()):
+            widget = self.table.cellWidget(row, col)
+            if isinstance(widget, QtWidgets.QComboBox):
+                self._hook_one_combobox(widget)
+
     def hook_comboboxes(self):
         """Finds all QComboBoxes in the table and hooks their changes for history and auto-save."""
         for row in range(self.table.rowCount()):
-            for col in range(self.table.columnCount()):
-                widget = self.table.cellWidget(row, col)
-                if isinstance(widget, QtWidgets.QComboBox):
-                    if not hasattr(widget, "_hooked"):
-                        widget._hooked = True
-                        def make_handler(r, c, combo=widget):
-                            def handler(new_text):
-                                if self.table.signalsBlocked() or combo.signalsBlocked():
-                                    return
-                                old_val = getattr(self, "_pre_edit_value", "")
-                                pre_row = getattr(self, "_pre_edit_row", -1)
-                                pre_col = getattr(self, "_pre_edit_col", -1)
-                                if pre_row != r or pre_col != c:
-                                    old_val = ""
-                                if old_val != new_text:
-                                    col_name = self.active_columns[c].name if c < len(self.active_columns) else f"Column {c}"
-                                    self._mark_row_dirty(r)
-                                    self.handle_table_cell_change(r, col_name, old_val, new_text)
-                                    self._pre_edit_row = r
-                                    self._pre_edit_col = c
-                                    self._pre_edit_value = new_text
-                            return handler
-                        widget.currentTextChanged.connect(make_handler(row, col))
+            self._hook_comboboxes_in_row(row)
 
     def _persist_column_layout(self):
         """
@@ -650,6 +700,22 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
                     pass
             except OSError:
                 pass
+
+    def flush_pending_edits(self):
+        """Finding M: synchronously persist any pending (debounced) table edits and
+        the active release's in-memory data_cache. Call this BEFORE switching the
+        active release, so a fast release switch (within the 750 ms autosave
+        debounce) can never discard unsaved edits."""
+        try:
+            if self._autosave_timer.isActive():
+                self._autosave_timer.stop()
+                self._do_autosave()
+        except Exception:
+            logger.exception("flush_pending_edits: autosave flush failed")
+        try:
+            self.release_manager.flush_active_release_data()
+        except Exception:
+            logger.exception("flush_pending_edits: release-data flush failed")
 
     def _flush_dirty_rows_to_db(self):
         """Serialize only dirty rows and upsert them — avoids a full table scan."""
@@ -1105,6 +1171,18 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         else:
             self.matcher = SymbolMatcher(parser)
 
+        # Build and save an initial basic CodeMap if one doesn't exist yet for this model
+        active_model_id = getattr(self.model_manager, 'active_model_id', None)
+        if db and db.is_open and active_model_id is not None and parser:
+            try:
+                if not db.get_model_code_map(active_model_id):
+                    from Application_Logic.Logic_Code_Map import build_code_map
+                    import json
+                    code_map = build_code_map(parser, None, source_root="")
+                    db.save_model_code_map(active_model_id, json.dumps(code_map))
+            except Exception as e:
+                logger.warning(f"Failed to build initial CodeMap on parser population: {e}")
+
         # Create the Release Node if name provided and not skipped
         if release_name and not skip_release_create:
              try:
@@ -1300,8 +1378,13 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
                     self._full_flush_needed = True  # Row insertion shifts indices
         finally:
             self.table.blockSignals(False)
-            # Hook comboboxes since new widgets may have been created
-            self.hook_comboboxes()
+            # Only the edited row (and a possibly-appended last row) can have new
+            # widgets, so rehook just those — not the whole table on every
+            # keystroke. Bulk paths (load/import/init) still call hook_comboboxes().
+            self._hook_comboboxes_in_row(row)
+            last_row = self.table.rowCount() - 1
+            if last_row != row:
+                self._hook_comboboxes_in_row(last_row)
 
         # Handle cell change history & save after Strategy has finished and signals are unblocked (Feature 5)
         new_val = item.text()

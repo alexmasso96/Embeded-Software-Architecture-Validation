@@ -14,14 +14,23 @@ LOCK_STALE_THRESHOLD_SECONDS = 600
 class FileLockManager:
     @staticmethod
     def get_username():
-        """Returns the current OS username cross-platform."""
+        """Returns the current OS username cross-platform.
+
+        Prefers getpass.getuser() (which honours $LOGNAME/$USER/$USERNAME and
+        falls back to the pwd database) over os.getlogin(): on some macOS launch
+        contexts os.getlogin() returns "root" even for a normal user, which would
+        mislabel both the edit-lock owner and the change-history actor.
+        """
+        try:
+            name = getpass.getuser()
+            if name:
+                return name
+        except Exception:
+            pass
         try:
             return os.getlogin()
         except Exception:
-            try:
-                return getpass.getuser()
-            except Exception:
-                return "unknown"
+            return "unknown"
 
     @staticmethod
     def is_lock_stale(lock_data: dict) -> bool:
@@ -54,18 +63,19 @@ class FileLockManager:
             
         if pid <= 0:
             return False
-            
-        # Check if process is alive locally
+
+        # Determine raw PID liveness on this machine.
         if sys.platform != "win32":
             try:
                 os.kill(pid, 0)
-                return True
+                alive = True
             except OSError as err:
                 import errno
                 if err.errno == errno.ESRCH:
-                    return False
-                # EPERM means we don't have permission to signal but it exists
-                return True
+                    alive = False
+                else:
+                    # EPERM means we don't have permission to signal but it exists
+                    alive = True
         else:
             try:
                 import ctypes
@@ -75,18 +85,28 @@ class FileLockManager:
                     exit_code = ctypes.c_ulong()
                     kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
                     kernel32.CloseHandle(handle)
-                    return exit_code.value == 259
+                    alive = exit_code.value == 259
                 else:
                     last_error = kernel32.GetLastError()
-                    return last_error == 5 # Access Denied
+                    alive = last_error == 5  # Access Denied
             except Exception:
                 try:
                     import subprocess
                     # Run tasklist command to check if PID exists
                     out = subprocess.check_output(f'tasklist /FI "PID eq {pid}"', shell=True, text=True)
-                    return str(pid) in out
+                    alive = str(pid) in out
                 except Exception:
-                    return True
+                    alive = True
+
+        # Same host: PID liveness alone is not enough — the OS can recycle a dead
+        # owner's PID, which would keep the project locked forever. A live owner
+        # refreshes the lock heartbeat (~every 60s); if the heartbeat is stale
+        # beyond the threshold, treat the lock as dead even though *some* process
+        # now happens to hold that PID. Only applied when we have the lock data to
+        # check — a bare PID probe (lock_data=None) keeps the raw liveness answer.
+        if alive and lock_data is not None and FileLockManager.is_lock_stale(lock_data):
+            return False
+        return alive
 
     @staticmethod
     def get_lock_file_path(project_path: str) -> str:

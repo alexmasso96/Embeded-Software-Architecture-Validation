@@ -101,12 +101,15 @@ def test_open_elf_handler_success():
                    return_value=("R1.0", True)), \
              patch("Application_Logic.Logic_New_Project.LoadingDialog",
                    return_value=fake_loader), \
-             patch("PyQt6.QtWidgets.QMessageBox.information") as mock_info:
+             patch.object(ctrl, "show_message") as mock_show:
             ctrl.open_elf_handler()
 
         assert ctrl.parser is fake_parser
         assert ctrl.release_name == "R1.0"
-        mock_info.assert_called_once()
+        # Inc-03: a successful load proceeds straight to the workspace — no
+        # blocking success popup; the dialog closes so main.py enters the table.
+        mock_show.assert_not_called()
+        assert ctrl._closing is True
         db.close()
 
 
@@ -133,11 +136,13 @@ def test_open_json_handler_success():
                    return_value=("R2.0", True)), \
              patch("Application_Logic.Logic_New_Project.LoadingDialog",
                    return_value=fake_loader), \
-             patch("PyQt6.QtWidgets.QMessageBox.information") as mock_info:
+             patch.object(ctrl, "show_message") as mock_show:
             ctrl.open_json_handler()
 
         assert ctrl.release_name == "R2.0"
-        mock_info.assert_called_once()
+        # Inc-03: successful load proceeds straight to the workspace (no popup).
+        mock_show.assert_not_called()
+        assert ctrl._closing is True
 
 
 def test_open_elf_handler_failure_shows_error():
@@ -152,10 +157,10 @@ def test_open_elf_handler_failure_shows_error():
                return_value=("R1.0", True)), \
          patch("Application_Logic.Logic_New_Project.LoadingDialog",
                return_value=fake_loader), \
-         patch("PyQt6.QtWidgets.QMessageBox.critical") as mock_crit:
+         patch.object(ctrl, "show_message") as mock_show:
         ctrl.open_elf_handler()
 
-    mock_crit.assert_called_once()
+    mock_show.assert_called_once()
     assert ctrl.parser is None
 
 

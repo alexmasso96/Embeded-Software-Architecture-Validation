@@ -1,123 +1,95 @@
-# v1.0.2
+# v2.0.0 — AI, Code Mapping & Configuration Management
 
-## 🔍 Fixed: imported & ELF-switched rows now fuzzy-match immediately
+A major release. Architecture Validator Pro grows from an ELF↔architecture matcher
+into a full embedded-software validation workbench: AI-assisted test-case
+generation, an agentic source-aware chat, a visual code map, release/baseline
+configuration management with change history, and a bundled native Rust ELF
+parser — plus a large round of correctness, integrity, and UX fixes.
 
-Previously, when you imported a Rhapsody/Excel architecture export and mapped
-operations or ports into a **Search** column, the adjacent **(Match)** column did
-not actually perform the fuzzy search — it only mirrored the raw text copied from
-the search column. The match scoring was deferred to a *lazy* dropdown that only
-ran when you manually opened each cell, so freshly imported rows showed no
-suggestions or scores until you clicked through every one of them.
-
-**Cause.** Imported and loaded rows were rendered through the lazy widget path,
-which pre-fills the (Match) cell with the search text but never invokes the
-matcher until the dropdown is opened. Typing into a cell by hand used the eager
-path; importing did not.
-
-**Fix.** Imports and ELF switches now run the **active (eager) matcher branch**,
-so the (Match) columns are filled with real fuzzy results (with match percentages)
-the moment the data lands:
-
-- **Importing** an architecture export now eagerly matches every row against the
-  loaded symbols. An *"Importing — matching symbols"* progress window is shown so
-  it's clear work is happening on large imports.
-- **Loading a different ELF** from the Release Selection window now re-runs the
-  matcher against the new symbol set automatically. The redundant **Deep Search**
-  checkbox (which had no effect) was removed.
-- **Opening a saved project** intentionally keeps the lighter lazy path, and now
-  always matches against the last loaded ELF for that project.
-
-Baselines remain read-only snapshots — their stored matches are left untouched.
-
-## 🧱 Fixed: columns disappeared when force-reloading an ELF
-
-Loading/force-reloading a release's ELF from the **Release Selection** window
-could wipe the entire table — every column vanished, leaving only the left
-row-number gutter.
-
-**Cause.** A Software Release stores only its row data, never the column schema
-(columns belong to the architecture model). When the release was loaded, that
-schema-less data was fed to the table restore path, which rebuilt the layout
-from an *empty* configuration and so removed every column. This surfaced after
-the SQLite migration, where release data no longer carries a column list.
-
-**Fix.** The restore path now keeps the current column schema when no
-configuration is supplied (releases inherit the model's columns and only overlay
-their rows). A genuine layout change — e.g. loading a baseline — still rebuilds
-as before. As a side effect, eager fuzzy matching on ELF switch now works,
-because the columns it matches against are no longer destroyed first.
-
-## 🔁 Fixed: (Match) column stayed empty for other models on import
-
-The eager-match fix above only populated the **(Match)** column for the model
-that happened to be on screen. Imports spread rows across several models (one per
-sheet), and newly created models aren't the active one — so every other imported
-model still showed raw search text until each dropdown was opened by hand.
-
-**Fix.** Import now runs the eager matcher for **every model that received rows**
-and saves the results into each, so switching to any imported model shows real
-fuzzy matches immediately. Applies to both Excel and Rhapsody imports.
-
-> Note: opening a saved project still uses the lighter lazy path and matches
-> against the ELF that was active when the project was last saved.
-
-## 🖱️ Fixed: sidebar buttons silently dead after a long matching pass (macOS)
-
-On macOS, the **"Importing — matching symbols"** loading window could leave the
-left-hand sidebar buttons unresponsive until the app was restarted — the model
-list still scrolled, but clicks did nothing.
-
-**Cause.** The loading window was shown **application-modal** but via
-`show()` / `close()` (not `exec()`). Matching runs synchronously on the UI
-thread, so the modal session bought nothing, and on macOS that mismatched
-modal lifecycle left a *dangling modal session* that swallowed sidebar clicks.
-
-**Fix.** The matching/import progress window is now **non-modal** (the
-synchronous loop already blocks interaction), so no stray modal session is left
-behind. Applies to both the import pass and the standalone fuzzy-match refresh.
-
-## ✨ UI: larger, easier-to-click architecture-model rows
-
-The model rows in the left sidebar now have more padding and a taller hit area,
-giving a comfortably larger click target when selecting the active model.
+> **Upgrade note (one-time):** the tamper-evidence integrity digest changed in
+> this release (it is now computed far faster). The **first** time you open a
+> project created with an older version you will be asked once for the project
+> master password to re-stamp it — this is expected and only happens once.
 
 ---
 
-# v1.0.1 — Hotfix
+## ✨ New: AI Test Case Generation (Tab 3)
+Generate detailed, HiL-debugger-style **low-level test designs** from your
+high-level test cases and the actual C source.
+- Providers: **GitHub Copilot** (OAuth device-flow sign-in), **Anthropic**,
+  **OpenAI**, and **Gemini** (direct API keys). Keys are stored Fernet-encrypted
+  in a per-user credential store, never in the project.
+- Parses your `*_Test_Case_Design.md` HLT files, lets you pick which test cases to
+  generate, edit the prompt/rules, streams progress, and writes results back into
+  the high-level design.
+- Dynamic per-account model discovery; non-streaming, per-test-case progress.
 
-## 🔒 Fixed: repeated master-password prompts ("integrity mismatch")
+## ✨ New: Advanced AI Chat (Tab 4)
+An **agentic, source-grounded chat** about your firmware.
+- Builds a compact **mind map** index of your C source (signatures, call/data-flow
+  relationships, requirement traces) — parsed instead of raw C to stay token-cheap.
+- Read-only **agent tools** (`read_file`, `search_code`, `get_mind_map`,
+  `get_requirements`, `get_diff`, `get_function`, `get_call_graph`) let the model
+  pull exactly what it needs, sandboxed to the source root with a path-jail.
+- **Import requirements** (CSV/XLSX), generate/regenerate the mind map per model,
+  and compute **file-by-file source diffs** between a current and previous release.
 
-Opening a project frequently asked for the master password — claiming an
-**integrity mismatch** — even on a normal save → close → reopen, and especially
-after rebuilding or moving the app.
+## ✨ New: Code Map (Tab 5)
+A visual **call-graph + source explorer**. Joins the ELF/DWARF facts (addresses,
+sizes, parameters, structs, globals) to the C source by function name, with a
+depth-bounded graph (caller/callee), a node cap for hub functions, a matched-globals
+panel, and a syntax-highlighted source view. Includes a token-free **Index &
+Rebuild Code Map** action.
 
-**Cause.** Project integrity was verified by hashing the **entire raw bytes of
-the `.arch` SQLite file** and storing that hash in a separate `.integrity`
-sidecar. SQLite files are not byte-stable for unchanged content: WAL
-checkpoints on close, the file change counter, and version fields in the header
-all rewrite bytes that have nothing to do with your data. The app also commits
-to the database outside of an explicit save (UI state, history). So the bytes
-changed on nearly every reopen and the check failed — a false alarm, not real
-tampering.
+## ✨ New: Change Log (Tab 6)
+Review what changed between releases: a **git-style side-by-side diff** (file
+browser + old/new with synchronized scrolling and add/delete highlighting) plus an
+optional AI-generated change-log summary. **Compute Release Diffs** runs the
+file-by-file comparison on demand.
 
-**Fix.** Integrity is now an **HMAC over the project's canonical *logical*
-content** (models, rows, layout, releases, test-case design, …), keyed by the
-master-password hash, and stored **inside the database** so it travels with the
-file. It ignores SQLite's internal bookkeeping and volatile/cosmetic tables, so
-it is stable across reopen and across SQLite versions while remaining
-tamper-evident. Existing projects open silently and are re-stamped on the next
-save; the old `.integrity` sidecar is cleaned up automatically.
+## ✨ New: native Rust ELF parser
+A bundled **PyO3 Rust extension** (`rust_elf_parser`, built via maturin) parses
+ELF symbols/DWARF with parallel traversal and `mmap`, with a transparent
+**pyelftools fallback** when the native module isn't present. Drop-in: the
+in-memory `ELFParser` contract and all six consumers are unchanged.
 
-You should no longer be prompted for the master password unless a project's
-content was genuinely modified outside the app (or you enter Test Mode, which is
-password-gated by design).
-
-## 📦 Build
-
-- Stopped bundling the full PyQt6 package as data files, which was overriding
-  PyInstaller's pruning and roughly doubling artifact size (macOS `.app`
-  ~281 MB → ~138 MB). No functional change.
+## ✨ Releases, baselines & change history (configuration management)
+- **Linear auto-baselining**: creating a new release freezes the previous one as a
+  baseline and clones its rows/results/history.
+- **Password-gated unfreeze**: frozen baselines are read-only and **write-protected
+  at the database layer**; unlocking requires the project master password. Freeze/
+  unfreeze events are recorded in history (visible on both the baseline and the
+  main project).
+- **Release-scoped, tamper-evident history**: every change is logged with user,
+  timestamp and release; the change log is obfuscated at rest and protected by an
+  append-only HMAC hash-chain.
+- Per-project folder on creation (the `.arch`, caches, and generated files now live
+  in one folder).
 
 ---
 
-*No project file format change. No action required to upgrade.*
+## 🛠 Fixes & hardening in this release
+- **Crash fixed:** New Project → Load ELF no longer crashes (dialog lifecycle
+  guard); a successful load now goes straight to the table.
+- **Verified mapping integrity:** the **(Match)** columns now live-search the real
+  symbol pool as you type — so you can map the actual function behind a port even
+  when its name differs — and any entry that isn't a real symbol is flagged instead
+  of being shown as a confirmed match.
+- **Baseline immutability** enforced at the DB layer (not just the UI).
+- **Faster, non-blocking saves:** the integrity digest no longer sorts megabytes of
+  row JSON on every Ctrl+S.
+- **Network-drive safety:** SQLite journal mode auto-switches to `DELETE` on
+  network/UNC drives (where WAL can corrupt), WAL locally — with a silent
+  filesystem check on macOS/Linux.
+- **No lost edits on release switch:** pending edits are flushed before switching.
+- **Correct change-log author** (no longer recorded as `root` on some macOS setups).
+- Native macOS file dialogs restored; styled dialogs render correctly; empty
+  columns no longer appear for schema-less projects.
+- Release-selection dropdown/context fixes for JSON/ELF imports and baselining.
+
+## ⚙️ Packaging
+- Windows `.zip`, macOS `.app` `.zip`, Linux `.deb` / `.rpm` / Flatpak.
+- Release/build CI now builds the Rust extension on all three platforms, and the
+  release job is fixed to work from both tag pushes and manual dispatch.
+
+**Tests:** 394 logic-layer tests passing.

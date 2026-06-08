@@ -98,6 +98,27 @@ def test_add_search_column_creates_dependents():
     assert dlg.new_name_input.text() == ""  # cleared
 
 
+def test_is_valid_column_name():
+    assert ColumnCustomizer.is_valid_column_name("Voltage") is True
+    assert ColumnCustomizer.is_valid_column_name("") is False
+    # A literal '|' would corrupt the "name | type" item encoding.
+    assert ColumnCustomizer.is_valid_column_name("Min | Max") is False
+    assert ColumnCustomizer.is_valid_column_name("a|b") is False
+
+
+def test_add_rejects_pipe_in_name():
+    dlg = _dlg()
+    before = dlg.active_list.count()
+    dlg.new_name_input.setText("Min | Max")
+    dlg.type_combo.setCurrentText("Static Text")
+    with patch("PyQt6.QtWidgets.QMessageBox.warning") as mock_warn:
+        dlg._add_custom_item()
+    mock_warn.assert_called_once()
+    assert dlg.active_list.count() == before   # nothing added
+    assert "Min" not in _names(dlg)
+    assert dlg.new_name_input.text() == "Min | Max"  # input preserved for correction
+
+
 def test_add_empty_name_is_noop():
     dlg = _dlg()
     before = dlg.active_list.count()

@@ -306,7 +306,9 @@ def test_rendering_integration():
     assert "Speed reading is validated" not in preview
 
     # Verify generate_test_cases file output uses the correct pipeline
-    with patch('PyQt6.QtWidgets.QMessageBox.information') as mock_info:
+    with patch('PyQt6.QtWidgets.QMessageBox.information') as mock_info, \
+             patch('PyQt6.QtWidgets.QMessageBox.question',
+                   return_value=__import__('PyQt6.QtWidgets', fromlist=['QMessageBox']).QMessageBox.StandardButton.No):
         controller.generate_test_cases(scope="current")
         assert mock_info.called
 

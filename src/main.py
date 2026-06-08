@@ -5,6 +5,11 @@ import logging
 # Optional: Ensure local imports work if running directly from this folder
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+# Global patch to replace QMessageBox Cocoa native popups/sheets with our custom styled PyQt dialog
+from UI.StyledMessageBox import StyledMessageBox
+import PyQt6.QtWidgets
+PyQt6.QtWidgets.QMessageBox = StyledMessageBox
+
 logger = logging.getLogger(__name__)
 
 from PyQt6.QtWidgets import QApplication, QMainWindow, QFileDialog, QMessageBox
@@ -51,6 +56,10 @@ class ApplicationWindow(QMainWindow):
         # Initialize the specialized controllers
         self.arch_controller = App_Logic.ArchitectureTabController(self)
         self.test_case_controller = App_Logic.TestCaseDesignController(self)
+        self.ai_controller = App_Logic.AIGenerationController(self)
+        self.ai_chat_controller = App_Logic.AIChatController(self)
+        self.code_map_controller = App_Logic.AICodeMapController(self)
+        self.changelog_controller = App_Logic.AIChangeLogController(self)
         
         #initialize parser storage
         self.parser = None
@@ -141,6 +150,11 @@ class ApplicationWindow(QMainWindow):
         self.menuHistory.addAction(self.actionView_History)
         self.actionView_History.triggered.connect(self.show_history_dialog)
 
+        # AI Test Generation help entry
+        self.actionAI_Help = QtGui.QAction("AI Test Generation — Help", self)
+        self.ui.menuAbout.addAction(self.actionAI_Help)
+        self.actionAI_Help.triggered.connect(self._show_ai_help)
+
         # Default values and timer startup
         self.test_mode = False
         self.master_password_hash = None
@@ -151,6 +165,10 @@ class ApplicationWindow(QMainWindow):
 
         # Connect Tab Widget Actions
         self.ui.tabWidget.currentChanged.connect(self.test_case_controller.on_tab_changed)
+        self.ui.tabWidget.currentChanged.connect(self.ai_controller.on_tab_changed)
+        self.ui.tabWidget.currentChanged.connect(self.ai_chat_controller.on_tab_changed)
+        self.ui.tabWidget.currentChanged.connect(self.code_map_controller.on_tab_changed)
+        self.ui.tabWidget.currentChanged.connect(self.changelog_controller.on_tab_changed)
 
         # Current Project File
         self.current_project_file = None
@@ -396,13 +414,26 @@ class ApplicationWindow(QMainWindow):
             FileLockManager.release_lock(self.current_project_file)
 
         # Step 1: Save location — establish the project file path first
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Create New Project", "", "Architecture Project (*.arch)"
+        chosen_path, _ = QFileDialog.getSaveFileName(
+            self, "Create New Project", "", "Architecture Project (*.arch)",
+            options=QFileDialog.Option(0)
         )
-        if not file_path:
+        if not chosen_path:
             return
-        if not file_path.endswith(".arch"):
-            file_path += ".arch"
+        if not chosen_path.endswith(".arch"):
+            chosen_path += ".arch"
+
+        # Establish the parent project folder based on the project name
+        parent_dir = os.path.dirname(chosen_path)
+        base_name = os.path.splitext(os.path.basename(chosen_path))[0]
+        project_dir = os.path.join(parent_dir, base_name)
+        try:
+            os.makedirs(project_dir, exist_ok=True)
+        except Exception as e:
+            QMessageBox.critical(self, "Directory Error", f"Failed to create project folder:\n{e}")
+            return
+
+        file_path = os.path.join(project_dir, f"{base_name}.arch")
 
         # Step 2: Master password — set after the user has chosen where to save
         from Application_Logic.Logic_Security import MasterPasswordSetupDialog, SecurityManager
@@ -477,7 +508,8 @@ class ApplicationWindow(QMainWindow):
 
     def save_project_as(self):
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Project As", "", "Architecture Project (*.arch)"
+            self, "Save Project As", "", "Architecture Project (*.arch)",
+            options=QFileDialog.Option(0)
         )
         if file_path:
             if not file_path.endswith(".arch"):
@@ -565,7 +597,8 @@ class ApplicationWindow(QMainWindow):
             return
             
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Load Project", "", "Architecture Project (*.arch)"
+            self, "Load Project", "", "Architecture Project (*.arch)",
+            options=QFileDialog.Option(0)
         )
         if not file_path:
             return
@@ -727,6 +760,10 @@ class ApplicationWindow(QMainWindow):
         dialog = HistoryDialog(self.history_manager.history, self)
         dialog.exec()
 
+    def _show_ai_help(self):
+        from UI.Dialog_AI_Help import AIHelpDialog
+        AIHelpDialog(self).exec()
+
     def show_all_baselines_dialog(self):
         from UI.Dialog_Release_Selection import AllBaselinesDialog
         dialog = AllBaselinesDialog(self.arch_controller.release_manager, self.arch_controller, self)
@@ -839,6 +876,56 @@ def apply_adwaita_theme(app):
             color: #ffffff; 
             background-color: #2a82da; 
             border: 1px solid white; 
+        }
+        QMessageBox {
+            background-color: #242424;
+            color: #ffffff;
+        }
+        QMessageBox QLabel {
+            color: #ffffff;
+            font-size: 13px;
+        }
+        QMessageBox QPushButton {
+            background-color: #353535;
+            color: white;
+            border: 1px solid #444444;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: bold;
+            padding: 6px 16px;
+            min-width: 80px;
+        }
+        QMessageBox QPushButton:hover {
+            background-color: #5384e4;
+            border: 1px solid #5384e4;
+        }
+        QMessageBox QPushButton:pressed {
+            background-color: #2a5a9a;
+        }
+        QInputDialog {
+            background-color: #242424;
+            color: #ffffff;
+        }
+        QInputDialog QLabel {
+            color: #ffffff;
+            font-size: 13px;
+        }
+        QInputDialog QPushButton {
+            background-color: #353535;
+            color: white;
+            border: 1px solid #444444;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: bold;
+            padding: 6px 16px;
+            min-width: 80px;
+        }
+        QInputDialog QPushButton:hover {
+            background-color: #5384e4;
+            border: 1px solid #5384e4;
+        }
+        QInputDialog QPushButton:pressed {
+            background-color: #2a5a9a;
         }
     """)
 

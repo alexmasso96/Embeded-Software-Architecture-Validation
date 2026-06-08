@@ -81,7 +81,8 @@ class StartupLauncherDialog(QtWidgets.QDialog):
     def handle_view_only(self):
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self.main_window, "Open Project (View Only)", "",
-            "Architecture Project (*.arch)"
+            "Architecture Project (*.arch)",
+            options=QtWidgets.QFileDialog.Option(0)
         )
         if file_path:
             self.accept()
@@ -90,7 +91,8 @@ class StartupLauncherDialog(QtWidgets.QDialog):
     def handle_exclusive_edit(self):
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self.main_window, "Open Project (Exclusive Edit)", "",
-            "Architecture Project (*.arch)"
+            "Architecture Project (*.arch)",
+            options=QtWidgets.QFileDialog.Option(0)
         )
         if file_path:
             from Application_Logic.Logic_File_Locking import FileLockManager

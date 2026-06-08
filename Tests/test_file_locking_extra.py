@@ -80,6 +80,17 @@ def test_is_process_alive_local_dead_and_alive():
     assert FileLockManager.is_process_alive(os.getpid(), host) is True
 
 
+def test_is_process_alive_local_pid_reuse_with_stale_heartbeat():
+    """A live PID on this host whose lock heartbeat is stale must read as dead —
+    the OS may have recycled a dead owner's PID. A fresh heartbeat keeps it alive."""
+    host = socket.gethostname()
+    fresh = {"last_seen": _iso(datetime.datetime.now(datetime.timezone.utc))}
+    stale = {"last_seen": "2000-01-01T00:00:00+00:00"}
+    # Current PID is definitely alive; staleness of the lock decides.
+    assert FileLockManager.is_process_alive(os.getpid(), host, fresh) is True
+    assert FileLockManager.is_process_alive(os.getpid(), host, stale) is False
+
+
 # --------------------------------------------------------------------------
 # check_lock error paths
 # --------------------------------------------------------------------------

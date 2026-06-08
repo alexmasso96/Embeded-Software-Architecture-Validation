@@ -99,6 +99,17 @@ class ColumnCustomizer(QtWidgets.QDialog):
         self.locked_columns = locked_columns if locked_columns else set()
         self.init_ui(current_config)
 
+    @staticmethod
+    def is_valid_column_name(name: str) -> bool:
+        """Reject names that would corrupt storage.
+
+        Each list item encodes its column as the text ``"name | type"``, and
+        every parse site splits on ``" | "`` and takes the first part. A literal
+        ``|`` in a user-entered name (e.g. ``"Min | Max"``) therefore mis-parses
+        into a bogus name+type and would persist a broken layout. Disallow it.
+        """
+        return bool(name) and "|" not in name
+
     def init_ui(self, current_config):
         layout = QtWidgets.QVBoxLayout(self)
 
@@ -251,6 +262,12 @@ class ColumnCustomizer(QtWidgets.QDialog):
     def _add_custom_item(self):
         name = self.new_name_input.text().strip()
         l_type = self.type_combo.currentText()
+        if name and not self.is_valid_column_name(name):
+            QtWidgets.QMessageBox.warning(
+                self, "Invalid Name",
+                "Column names cannot contain the '|' character."
+            )
+            return
         if name:
             if l_type == "Link":
                 has_link = False
@@ -338,6 +355,13 @@ class ColumnCustomizer(QtWidgets.QDialog):
             
         new_name = new_name.strip()
         if new_name == old_name:
+            return
+
+        if not self.is_valid_column_name(new_name):
+            QtWidgets.QMessageBox.warning(
+                self, "Invalid Name",
+                "Column names cannot contain the '|' character."
+            )
             return
 
         # Issue 1: Ensure uniqueness

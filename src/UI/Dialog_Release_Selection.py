@@ -1,6 +1,7 @@
 from PyQt6 import QtWidgets
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
-                               QPushButton, QLabel, QMessageBox, QInputDialog, QAbstractItemView, QFileDialog)
+                               QPushButton, QLabel, QInputDialog, QAbstractItemView, QFileDialog)
+from UI.StyledMessageBox import StyledMessageBox as QMessageBox
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont
 from Application_Logic.Logic_Release_Manager import ReleaseManager
@@ -59,6 +60,9 @@ class ReleaseSelectionDialog(QDialog):
         
         self.btn_baseline = QPushButton("Create Baseline")
         self.btn_baseline.clicked.connect(self.on_baseline)
+
+        self.btn_toggle_lock = QPushButton("Lock/Unlock Release")
+        self.btn_toggle_lock.clicked.connect(self.on_toggle_lock)
         
         # New Feature: Add Release (Import)
         self.btn_add_release = QPushButton("Add New Release")
@@ -73,6 +77,7 @@ class ReleaseSelectionDialog(QDialog):
         right_layout.addWidget(self.btn_create_result)
         right_layout.addWidget(self.btn_link_result)
         right_layout.addWidget(self.btn_baseline)
+        right_layout.addWidget(self.btn_toggle_lock)
         right_layout.addStretch()
         
         self.btn_close = QPushButton("Cancel")
@@ -83,11 +88,18 @@ class ReleaseSelectionDialog(QDialog):
         self.setLayout(layout)
 
     def refresh_list(self):
+        # Remember selection
+        selected_name = None
+        curr_row = self.list_widget.currentRow()
+        if curr_row >= 0 and curr_row < len(self.active_releases):
+            selected_name = self.active_releases[curr_row].name
+
         self.list_widget.clear()
         self.active_releases = [r for r in self.manager.releases if not (r.is_baseline and r.is_deleted)]
         
         # Manager list order is the order we display
-        for release in self.active_releases:
+        select_row = -1
+        for i, release in enumerate(self.active_releases):
             add_text = ""
             if release.is_baseline:
                 add_text = " [BASELINE]"
@@ -107,8 +119,13 @@ class ReleaseSelectionDialog(QDialog):
                  item.setForeground(QColor("gray"))
             
             self.list_widget.addItem(item)
-            
-        self.update_buttons()
+            if selected_name and release.name == selected_name:
+                select_row = i
+                
+        if select_row >= 0:
+            self.list_widget.setCurrentRow(select_row)
+        else:
+            self.update_buttons()
 
     def on_selection_changed(self):
         self.update_buttons()
@@ -123,30 +140,30 @@ class ReleaseSelectionDialog(QDialog):
         self.btn_create_result.setEnabled(has_sel)
         self.btn_link_result.setEnabled(has_sel)
         self.btn_baseline.setEnabled(has_sel)
+        self.btn_toggle_lock.setEnabled(has_sel)
         
         if has_sel:
             index = rows[0].row()
             release = self.active_releases[index]
             
-            # Req 7.8: Unrenamable if baselined? Req 7.6 says Release_Result column uneditable
-            # Requirement 3.1: Inhibited if for that specific software release a result baseline was created
-            # This refers to DELETION (and renaming likely)
-            
-            # Check for existing baselines for this release
-            has_child_baselines = any(r.is_baseline and not r.is_deleted and r.parent_release_name == release.name for r in self.manager.releases)
-            
             if release.is_baseline:
+                self.btn_toggle_lock.setText("🔓 Unfreeze Baseline")
                 self.btn_rename.setEnabled(False) # 14. User should not be able to modify baseline
                 self.btn_delete.setEnabled(True) # Can execute? Req doesn't explicitly forbid deleting a baseline itself
                 self.btn_create_result.setEnabled(False) # Modify baseline blocked
                 self.btn_link_result.setEnabled(False)
                 self.btn_baseline.setEnabled(False) # Baseline of baseline blocked
-            elif has_child_baselines:
-                self.btn_delete.setEnabled(False) # Block deletion if baselines exist (Req 3.1)
-                self.btn_rename.setEnabled(True) # Renaming might break the link? Probably safer to block or update link.
-                                                 # Let's block for safety or allow if we update parent_release_name of children.
-                                                 # Requirement doesn't explicitly block renaming parent, but 3.1 says "behavior inhibited".
-                                                 # Assuming inhibit renaming too.
+            else:
+                self.btn_toggle_lock.setText("🔒 Freeze Release")
+                
+                # Check for existing baselines for this release
+                has_child_baselines = any(r.is_baseline and not r.is_deleted and r.parent_release_name == release.name for r in self.manager.releases)
+                if has_child_baselines:
+                    self.btn_delete.setEnabled(False) # Block deletion if baselines exist (Req 3.1)
+                    self.btn_rename.setEnabled(True) # Renaming might break the link? Probably safer to block or update link.
+                                                     # Let's block for safety or allow if we update parent_release_name of children.
+                                                     # Requirement doesn't explicitly block renaming parent, but 3.1 says "behavior inhibited".
+                    self.btn_rename.setToolTip("Cannot rename release that has baselines")                                 # Assuming inhibit renaming too.
                 self.btn_rename.setToolTip("Cannot rename release that has baselines")
             
     def on_rename(self):
@@ -202,40 +219,198 @@ class ReleaseSelectionDialog(QDialog):
                 else:
                    self.refresh_list()
  
-    def on_load_release(self, item=None):
+    def on_toggle_lock(self):
         rows = self.list_widget.selectedIndexes()
         if not rows:
             return
-            
         index = rows[0].row()
         release = self.active_releases[index]
         actual_index = self.manager.releases.index(release)
+
+        if release.is_baseline:
+            # Requires master password
+            if not getattr(self.controller, "master_password_hash", None):
+                QMessageBox.warning(self, "Unfreeze Baseline", "A master password must be configured on the project to unlock a baseline.")
+                return
+
+            from Application_Logic.Logic_Security import MasterPasswordPromptDialog, SecurityManager
+            prompt = MasterPasswordPromptDialog(self, "Enter Master Password to Unfreeze Baseline:")
+            if prompt.exec():
+                entered = prompt.get_password()
+                if SecurityManager.verify_password(entered, self.controller.master_password_hash):
+                    release.is_baseline = False
+                    if self.manager._db:
+                        self.manager._db.update_release(release.id, is_baseline=0)
+                        self.manager.log_baseline_event(release, frozen=False)  # NC-4
+                        self.manager._db.commit()
+                    self.refresh_list()
+                    self.update_buttons()
+                    
+                    # Update active release UI edit triggers immediately if currently loaded
+                    active_rel = self.manager.get_active_release()
+                    if active_rel and active_rel.id == release.id:
+                        if hasattr(self.controller, 'btn_exit_baseline'):
+                            self.controller.btn_exit_baseline.setVisible(False)
+                        from PyQt6.QtWidgets import QAbstractItemView
+                        self.controller.table.setEditTriggers(
+                            QAbstractItemView.EditTrigger.DoubleClicked |
+                            QAbstractItemView.EditTrigger.AnyKeyPressed
+                        )
+                        self.controller.main_window.setWindowTitle(f"Architecture Testing Tool - {release.name}")
+
+                    QMessageBox.information(self, "Success", f"Baseline '{release.name}' has been unfrozen. You can now edit its table data.")
+                else:
+                    QMessageBox.critical(self, "Access Denied", "Incorrect master password.")
+        else:
+            # Freezing doesn't require a password
+            release.is_baseline = True
+            if self.manager._db:
+                self.manager._db.update_release(release.id, is_baseline=1)
+                self.manager.log_baseline_event(release, frozen=True)  # NC-4
+                self.manager._db.commit()
+            self.refresh_list()
+            self.update_buttons()
+            
+            # Update active release UI edit triggers immediately if currently loaded
+            active_rel = self.manager.get_active_release()
+            if active_rel and active_rel.id == release.id:
+                if hasattr(self.controller, 'btn_exit_baseline'):
+                    self.controller.btn_exit_baseline.setVisible(True)
+                self.controller.table.setEditTriggers(self.controller.table.editTriggers().NoEditTriggers)
+                self.controller.main_window.setWindowTitle(f"Architecture Testing Tool - {release.name} (READ ONLY)")
+
+            QMessageBox.information(self, "Success", f"Release '{release.name}' has been frozen as a baseline.")
+
+    def on_load_release(self, item=None):
+        row = self.list_widget.currentRow()
+        if row < 0:
+            rows = self.list_widget.selectedIndexes()
+            if not rows:
+                return
+            row = rows[0].row()
+            
+        release = self.active_releases[row]
+        actual_index = self.manager.releases.index(release)
+        # Finding M: flush pending edits + the active release's data_cache before
+        # switching, so unsaved changes can't be discarded by set_active_release().
+        try:
+            self.controller.flush_pending_edits()
+        except Exception:
+            pass
         release = self.manager.set_active_release(actual_index)
         
         # Load the Data into the Architecture Controller
         elf_reloaded = False
         if release:
-            if release.elf_path:
-                current_elf = str(self.controller.parser.elf_path) if self.controller.parser and self.controller.parser.elf_path else None
-                if release.elf_path != current_elf:
-                    # ELF mismatch - Reload
-                    # Assuming file exists?
-                     if os.path.exists(release.elf_path):
-                         from Application_Logic.Logic_Loading_Window import LoadingDialog
-                         loader = LoadingDialog(self)
-                         loader.ui.lbl_loading_text.setText(f"Switching Context to {os.path.basename(release.elf_path)}...")
+            parser_obj = getattr(self.controller, 'parser', None)
+            current_hash = parser_obj.md5_hash if parser_obj else None
+            
+            db = getattr(self.controller, '_db', None) or getattr(self.controller.main_window, 'project_db', None)
+            
+            loaded_symbols = False
+            if release.elf_hash:
+                # 1. DB check - check if symbols are already loaded in database tables
+                if db and db.is_open:
+                    cur = db._conn.execute("SELECT 1 FROM elf_index WHERE elf_hash=?", (release.elf_hash,))
+                    if cur.fetchone():
+                        if release.elf_hash != current_hash:
+                            from core.elf_parser import ELFParser
+                            parser = ELFParser()
+                            parser.load_from_db(db, release.elf_hash)
+                            parser.elf_path = release.elf_path
+                            self.controller.populate_from_parser(parser, release_name=None)
+                            elf_reloaded = True
+                        loaded_symbols = True
 
-                         if loader.run_task(self._parse_task, 'ELF', release.elf_path):
-                             # Update Controller Context (Parser/Matcher)
-                             # We pass None for release_name since release already exists
-                             self.controller.populate_from_parser(loader.result, release_name=None)
-                             elf_reloaded = True
-                         else:
-                             QMessageBox.warning(self, "Warning", f"Failed to load associated ELF: {loader.error_msg}\nSome features may not work.")
-                     else:
-                         QMessageBox.warning(self, "Warning", f"Associated ELF not found: {release.elf_path}")
+                # 2. Local cache directory check
+                if not loaded_symbols and db and db.is_open:
+                    cache_dir = db.db_path + ".elf_caches"
+                    cache_file = os.path.join(cache_dir, f"elf_{release.elf_hash}.json")
+                    if os.path.exists(cache_file):
+                        from Application_Logic.Logic_Loading_Window import LoadingDialog
+                        loader = LoadingDialog(self)
+                        loader.ui.lbl_loading_text.setText(f"Loading local cache for release {release.name}...")
+                        if loader.run_task(self._parse_task, 'JSON', cache_file):
+                            self.controller.populate_from_parser(loader.result, release_name=None)
+                            elf_reloaded = True
+                            loaded_symbols = True
+
+                # 3. Prompt user to select file on fallback
+                if not loaded_symbols:
+                    msg_box = QMessageBox(self)
+                    msg_box.setWindowTitle("Locate Release File")
+                    msg_box.setIcon(QMessageBox.Icon.Question)
+                    msg_box.setText(
+                        f"The compiled symbol data for release '{release.name}' is not present in the database or local cache.\n\n"
+                        f"Would you like to manually locate the ELF/JSON file for this release?"
+                    )
+                    msg_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                    msg_box.setDefaultButton(QMessageBox.StandardButton.Yes)
+                    reply = msg_box.exec()
+                    
+                    if reply == QMessageBox.StandardButton.Yes:
+                        file_path, _ = QFileDialog.getOpenFileName(
+                            self, f"Open ELF/JSON File for Release {release.name}", "",
+                            "ELF/JSON Files (*.elf *.json);; All Files (*)",
+                            options=QFileDialog.Option(0)
+                        )
+                        if file_path:
+                            from Application_Logic.Logic_Loading_Window import LoadingDialog
+                            loader = LoadingDialog(self)
+                            loader.ui.lbl_loading_text.setText(f"Loading {os.path.basename(file_path)}...")
+                            mode = 'ELF' if file_path.lower().endswith('.elf') else 'JSON'
+                            if loader.run_task(self._parse_task, mode, file_path):
+                                loaded_hash = loader.result.md5_hash
+                                if loaded_hash == release.elf_hash:
+                                    self.controller.populate_from_parser(loader.result, release_name=None)
+                                    release.elf_path = file_path
+                                    self.manager.save_registry()
+                                    elf_reloaded = True
+                                    loaded_symbols = True
+                                else:
+                                    err_box = QMessageBox(self)
+                                    err_box.setWindowTitle("Hash Mismatch")
+                                    err_box.setIcon(QMessageBox.Icon.Critical)
+                                    err_box.setText(
+                                        f"The selected file has hash '{loaded_hash}', but the release expected '{release.elf_hash}'.\n"
+                                        f"Please select the correct binary file."
+                                    )
+                                    err_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+                                    err_box.exec()
+                            else:
+                                err_box = QMessageBox(self)
+                                err_box.setWindowTitle("Error")
+                                err_box.setIcon(QMessageBox.Icon.Critical)
+                                err_box.setText(f"Failed to load file: {loader.error_msg}")
+                                err_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+                                err_box.exec()
+            
+            if not loaded_symbols or not release.elf_hash:
+                 # Clear parser/matcher when switching to a release with no active/valid loaded symbols
+                 self.controller.parser = None
+                 self.controller.matcher = None
 
             data = self.manager._load_data(release)
+            is_new_release = not data.get("rows")
+
+            # If the loaded release data has no rows, clone from the active model
+            if is_new_release:
+                if hasattr(self.controller, 'model_manager') and self.controller.model_manager:
+                    active_model = self.controller.model_manager.get_active_model()
+                    if active_model:
+                        self.controller.flush_current_data_to_model()
+                        active_model_data = active_model.data_cache or {}
+                        active_rows = active_model_data.get("rows", [])
+                        if active_rows:
+                            import copy
+                            data["rows"] = copy.deepcopy(active_rows)
+                            if "column_metadata" in active_model_data:
+                                data["column_metadata"] = copy.deepcopy(active_model_data["column_metadata"])
+                            if "release_results" in active_model_data:
+                                data["release_results"] = copy.deepcopy(active_model_data["release_results"])
+                            if "linked_release_column" in active_model_data:
+                                data["linked_release_column"] = copy.deepcopy(active_model_data["linked_release_column"])
+                            self.manager._save_data(release, data)
             
             # Enforce Read-Only if Baseline
             if release.is_baseline:
@@ -258,7 +433,8 @@ class ReleaseSelectionDialog(QDialog):
             # When a different ELF was loaded, re-run the active fuzzy matcher so the
             # (Match) columns reflect the new symbol set. Baselines are read-only
             # snapshots, so their stored matches are left untouched.
-            if elf_reloaded and not release.is_baseline:
+            # ASPICE: Skip matching on release switch if the release has saved data to prevent back-and-forth overwrite
+            if elf_reloaded and is_new_release and not release.is_baseline:
                 self.controller.refresh_fuzzy_matches(
                     show_progress=True,
                     progress_label="Loading symbols for the selected ELF...",
@@ -419,7 +595,11 @@ class ReleaseSelectionDialog(QDialog):
 
     def on_add_release(self):
         # 1. Select File
-        file_path, _ = QFileDialog.getOpenFileName(self, "Open ELF/JSON File", "", "ELF/JSON Files (*.elf *.json);; All Files (*)")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Open ELF/JSON File", "",
+            "ELF/JSON Files (*.elf *.json);; All Files (*)",
+            options=QFileDialog.Option(0)
+        )
         if not file_path:
             return
             
@@ -468,11 +648,36 @@ class ReleaseSelectionDialog(QDialog):
 
                 parser = loader.result
 
+                # Check if there is an active release currently and prompt
+                active = self.manager.get_active_release()
+                baseline_previous = False
+                if active:
+                    msg = f"Creating a new release will set the new release '{name}' as the active (main) release, and freeze the current release '{active.name}' as a baseline.\n\nDo you want to continue?"
+                    msg_box = QMessageBox(self)
+                    msg_box.setWindowTitle("Create New Release")
+                    msg_box.setIcon(QMessageBox.Icon.Question)
+                    msg_box.setText(msg)
+                    msg_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                    msg_box.setDefaultButton(QMessageBox.StandardButton.Yes)
+                    reply = msg_box.exec()
+                    if reply == QMessageBox.StandardButton.No:
+                        return
+                    baseline_previous = True
+
                 # ELF data is stored in SQLite; do not rebuild the legacy in-memory blob.
-                self.manager.create_release(name, elf_path=file_path, elf_hash=final_hash)
+                self.manager.create_release(name, elf_path=file_path, elf_hash=final_hash, baseline_previous=baseline_previous)
 
                 self.refresh_list()
                 QMessageBox.information(self, "Success", f"Release '{name}' created from {os.path.basename(file_path)}")
+                
+                # Auto-select and load the newly created release
+                for i in range(self.list_widget.count()):
+                    item = self.list_widget.item(i)
+                    if name in item.text():
+                        item.setSelected(True)
+                        self.list_widget.setCurrentRow(i)
+                        self.on_load_release()
+                        break
                 
             except ValueError as e:
                 QMessageBox.warning(self, "Error", str(e))
@@ -500,6 +705,17 @@ class ReleaseSelectionDialog(QDialog):
                 if not imported_hash:
                     raise ValueError("Failed to load JSON cache")
                 parser.load_from_db(db, imported_hash)
+                # Silently copy JSON cache file to project's .elf_caches folder
+                try:
+                    cache_dir = db.db_path + ".elf_caches"
+                    os.makedirs(cache_dir, exist_ok=True)
+                    dest_file = os.path.join(cache_dir, f"elf_{imported_hash}.json")
+                    if not os.path.exists(dest_file):
+                        import shutil
+                        shutil.copy2(file_path, dest_file)
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning(f"Failed to copy JSON cache silently: {e}")
             elif not parser.load_cache(file_path):
                 raise ValueError("Failed to load JSON cache")
         return parser

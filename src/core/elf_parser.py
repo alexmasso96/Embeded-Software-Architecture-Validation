@@ -14,6 +14,7 @@ import sys
 import bisect
 import json
 import hashlib
+import io
 import os
 import gc
 
@@ -26,6 +27,13 @@ except ImportError as e:
         "pyelftools is required for ELF parsing. "
         "Install it with: pip install pyelftools"
     ) from e
+
+try:
+    import rust_elf_parser
+    RUST_PARSER_AVAILABLE = True
+except ImportError:
+    RUST_PARSER_AVAILABLE = False
+
 
 try:
     import capstone
@@ -112,6 +120,7 @@ class ELFParser:
         self._sorted_func_addrs: List[int] = []
         self._machine_arch: Optional[str] = None
         self.md5_hash = None
+        self.parser_backend = "pyelftools"
 
         # DB-backed mode (set after flush_to_db or load_from_db)
         self._db = None
@@ -132,9 +141,24 @@ class ELFParser:
             
         if not self.elf_path.exists():
             raise FileNotFoundError(f"ELF file not found: {elf_path}")
-            
+
+        # Try native hashing first if available
+        self.parser_backend = "pyelftools"  # default
+        if RUST_PARSER_AVAILABLE:
+            try:
+                self.md5_hash = rust_elf_parser.compute_md5(str(self.elf_path))
+                self.parser_backend = "rust_elf_parser"
+                return
+            except Exception as e:
+                logger.warning(f"Native MD5 compute failed: {e}. Falling back to Python backend.")
+                self.parser_backend = "pyelftools"
+
         try:
-            self.md5_hash = self._calculate_md5()
+            # Read the whole file into memory ONCE, then both hash it and parse
+            # it from that in-memory buffer.
+            with open(self.elf_path, 'rb') as f:
+                data = f.read()
+            self.md5_hash = hashlib.md5(data).hexdigest()
         except Exception as e:
             if getattr(self, 'test_mode', False):
                 self.md5_hash = "DUMMY_HASH_FOR_TEST_MODE"
@@ -143,9 +167,9 @@ class ELFParser:
                 self.structures = {}
                 return
             raise e
-        
+
         try:
-            self.stream = open(self.elf_path, 'rb')
+            self.stream = io.BytesIO(data)
             self._load_elf_file()
         except Exception as e:
             self.close()
@@ -180,11 +204,26 @@ class ELFParser:
 
     def _calculate_md5(self):
         """Calculates MD5 hash of the ELF file."""
+        # 4 MB chunks (not 4 KB): on EDR-protected machines each read() is an
+        # intercepted syscall, so a small chunk size turned a 50 MB hash into
+        # thousands of scanned reads. Kept for any caller outside load_elf, which
+        # now hashes the already-in-memory buffer directly.
         hash_md5 = hashlib.md5()
         with open(self.elf_path, "rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
+            for chunk in iter(lambda: f.read(4 * 1024 * 1024), b""):
                 hash_md5.update(chunk)
         return hash_md5.hexdigest()
+
+    def _open_elf_stream(self) -> "io.BytesIO":
+        """Return an in-memory stream of the ELF file.
+
+        Used wherever the ELF must be (re)opened for pyelftools/Capstone. Reading
+        the file once into a BytesIO means all subsequent seeks/reads hit RAM
+        instead of an OS file handle — see load_elf for why that matters on
+        endpoint-security machines.
+        """
+        with open(self.elf_path, 'rb') as f:
+            return io.BytesIO(f.read())
 
     def _load_elf_file(self):
         """Load and validate the ELF file."""
@@ -270,7 +309,7 @@ class ELFParser:
             # We need to open the ELF file for Capstone/disassembly to work later
             if self.elf_path and self.elf_path.exists():
                 try:
-                    self.stream = open(self.elf_path, 'rb')
+                    self.stream = self._open_elf_stream()
                     self._load_elf_file()
                 except Exception as e:
                     logger.warning(f"Could not open original ELF file {self.elf_path}: {e}. Disassembly will not work.")
@@ -298,7 +337,7 @@ class ELFParser:
             return True
         if not self.elf_path or not self.elf_path.exists():
             return False
-        self.stream = open(self.elf_path, 'rb')
+        self.stream = self._open_elf_stream()
         self._load_elf_file()
         return self.elf_file is not None
 
@@ -312,6 +351,10 @@ class ELFParser:
 
     def extract_all(self):
         """Runs all extraction methods."""
+        if RUST_PARSER_AVAILABLE and self.parser_backend == "rust_elf_parser":
+            if self._try_native_extract():
+                return
+
         # Consume generators into lists for storage
         if not self.symbols:
             self.symbols = list(self._generate_symbols())
@@ -326,6 +369,55 @@ class ELFParser:
         
         # Force GC
         gc.collect()
+
+    def _try_native_extract(self) -> bool:
+        if not RUST_PARSER_AVAILABLE:
+            return False
+        try:
+            json_str = rust_elf_parser.parse_elf(str(self.elf_path))
+            data = json.loads(json_str)
+            self._map_native_json(data)
+            return True
+        except Exception as e:
+            logger.warning(f"Native extraction failed: {e}. Falling back to Python parser.")
+            self.parser_backend = "pyelftools"
+            try:
+                with open(self.elf_path, 'rb') as f:
+                    raw_data = f.read()
+                self.stream = io.BytesIO(raw_data)
+                self._load_elf_file()
+            except Exception as e2:
+                logger.error(f"Failed to open ELF file for fallback parser: {e2}")
+            return False
+
+    def _map_native_json(self, data: dict):
+        self.md5_hash = data.get("elf_hash", self.md5_hash)
+        
+        self.symbols = []
+        for s in data.get("symbols", []):
+            self.symbols.append(Symbol(
+                name=s["name"],
+                address=s["address"],
+                size=s["size"],
+                symbol_type=s["symbol_type"],
+                binding=s["binding"],
+                section=s["section"]
+            ))
+            
+        self.functions = []
+        for f in data.get("functions", []):
+            self.functions.append(Function(
+                name=f["name"],
+                address=f["address"],
+                size=f["size"],
+                parameters=f.get("parameters", []),
+                return_type=f.get("return_type")
+            ))
+            
+        self.structures = data.get("structures", {})
+        self.global_vars_dwarf = data.get("global_vars", {})
+        
+        self._build_function_address_map()
 
     def _generate_symbols(self) -> Generator[Symbol, None, None]:
         """Generator that yields symbols one by one."""
@@ -352,6 +444,9 @@ class ELFParser:
     def extract_symbols(self):
         """Public method to populate symbols list."""
         if self.symbols: return self.symbols
+        if RUST_PARSER_AVAILABLE and self.parser_backend == "rust_elf_parser":
+            if self._try_native_extract():
+                return self.symbols
         self.symbols = list(self._generate_symbols())
         return self.symbols
 
@@ -370,6 +465,9 @@ class ELFParser:
     def extract_functions(self) -> List[Function]:
         """Public method to populate functions list."""
         if self.functions: return self.functions
+        if RUST_PARSER_AVAILABLE and self.parser_backend == "rust_elf_parser":
+            if self._try_native_extract():
+                return self.functions
         self.functions = list(self._generate_functions())
         return self.functions
 
@@ -429,6 +527,9 @@ class ELFParser:
 
     def extract_structures(self) -> Dict[str, List[Dict[str, str]]]:
         if self.structures: return self.structures
+        if RUST_PARSER_AVAILABLE and self.parser_backend == "rust_elf_parser":
+            if self._try_native_extract():
+                return self.structures
         if not self.elf_file or not self.elf_file.has_dwarf_info(): return {}
         logger.info("Extracting structures from DWARF info...")
         # Fix B: store only scalars — not DIE objects — so the reference chain
@@ -514,6 +615,9 @@ class ELFParser:
 
     def extract_dwarf_variables(self) -> Dict[str, str]:
         if self.global_vars_dwarf: return self.global_vars_dwarf
+        if RUST_PARSER_AVAILABLE and self.parser_backend == "rust_elf_parser":
+            if self._try_native_extract():
+                return self.global_vars_dwarf
         if not self.elf_file or not self.elf_file.has_dwarf_info(): return {}
         logger.info("Extracting variables from DWARF info...")
         try:
@@ -679,7 +783,37 @@ class ELFParser:
             self.close()
             return
 
-        db.register_elf(self.md5_hash, str(self.elf_path) if self.elf_path else "")
+        # Scrub any partial/interrupted records from a prior failed run
+        db.delete_elf(self.md5_hash)
+
+        if RUST_PARSER_AVAILABLE and self.parser_backend == "rust_elf_parser":
+            try:
+                json_str = rust_elf_parser.parse_elf(str(self.elf_path))
+                data = json.loads(json_str)
+                
+                db.bulk_insert_symbols(self.md5_hash, data.get("symbols", []))
+                db.bulk_insert_functions(self.md5_hash, data.get("functions", []))
+                db.bulk_insert_structures(self.md5_hash, data.get("structures", {}))
+                db.bulk_insert_global_vars(self.md5_hash, data.get("global_vars", {}))
+                
+                db.register_elf(self.md5_hash, str(self.elf_path) if self.elf_path else "", "rust_elf_parser")
+                
+                self._db = db
+                self._active_elf_hash = self.md5_hash
+                db.commit()
+                self.close()
+                return
+            except Exception as e:
+                logger.warning(f"Native streaming extraction failed: {e}. Falling back to Python streaming.")
+                self.parser_backend = "pyelftools"
+                if not self.elf_file:
+                    try:
+                        with open(self.elf_path, 'rb') as f:
+                            raw_data = f.read()
+                        self.stream = io.BytesIO(raw_data)
+                        self._load_elf_file()
+                    except Exception as e2:
+                        logger.error(f"Failed to open ELF file for fallback parser: {e2}")
 
         # -- Phase 1: symbols (streamed in batches) --------------------------
         BATCH = 2000
@@ -715,6 +849,8 @@ class ELFParser:
         del functions
         self.structures = {}
         self.global_vars_dwarf = {}
+
+        db.register_elf(self.md5_hash, str(self.elf_path) if self.elf_path else "", "pyelftools")
 
         # Wire up DB-backed mode
         self._db = db
@@ -933,11 +1069,15 @@ class ELFParser:
             self.close()
             return
 
-        db.register_elf(self.md5_hash, str(self.elf_path) if self.elf_path else "")
+        # Scrub any partial/interrupted records from a prior failed run
+        db.delete_elf(self.md5_hash)
+
         db.bulk_insert_symbols(self.md5_hash, self.symbols)
         db.bulk_insert_functions(self.md5_hash, self.functions)
         db.bulk_insert_structures(self.md5_hash, self.structures)
         db.bulk_insert_global_vars(self.md5_hash, self.global_vars_dwarf)
+
+        db.register_elf(self.md5_hash, str(self.elf_path) if self.elf_path else "")
 
         self._db = db
         self._active_elf_hash = self.md5_hash
@@ -1109,7 +1249,7 @@ class ELFParser:
                 return sym
         return None
 
-    def get_statistics(self) -> Dict[str, int]:
+    def get_statistics(self) -> Dict[str, Union[int, str]]:
         if self._db and self._active_elf_hash:
             return self._db.get_elf_stats(self._active_elf_hash)
         if not self.symbols:
@@ -1118,6 +1258,7 @@ class ELFParser:
             'total_symbols': len(self.symbols),
             'functions': len([s for s in self.symbols if s.symbol_type == 'STT_FUNC']),
             'objects': len([s for s in self.symbols if s.symbol_type == 'STT_OBJECT']),
+            'parser_backend': self.parser_backend
         }
 
 def main():

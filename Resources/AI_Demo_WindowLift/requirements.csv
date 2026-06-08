@@ -1,0 +1,10 @@
+ID,Description
+REQ-WLC-001,Motor duty shall be clamped to the configured maximum value.
+REQ-WLC-002,Motor duty shall be applied to the PWM output.
+REQ-WLC-003,Anti-pinch shall trigger when measured motor current exceeds the threshold.
+REQ-WLC-010,Window-lift configuration shall be calibratable.
+REQ-WLC-011,Runtime state shall be observable.
+REQ-WLC-020,Hall position shall be scaled to a 0..1000 range.
+REQ-WLC-021,Motor current shall be measured in milliamps.
+REQ-WLC-040,The cyclic task shall execute the control loop.
+REQ-WLC-050,On pinch detection the window shall auto-reverse a short distance.

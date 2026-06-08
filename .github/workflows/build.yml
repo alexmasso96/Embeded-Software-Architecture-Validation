@@ -46,6 +46,14 @@ jobs:
           python-version: '3.14'
           cache: 'pip'
 
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Build and install Rust ELF Parser extension
+        run: |
+          python -m pip install maturin
+          maturin develop --release --manifest-path native/parser_rust/Cargo.toml
+
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
@@ -77,6 +85,14 @@ jobs:
         with:
           python-version: '3.14'
           cache: 'pip'
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Build and install Rust ELF Parser extension
+        run: |
+          python -m pip install maturin
+          maturin develop --release --manifest-path native/parser_rust/Cargo.toml
 
       - name: Install Dependencies
         run: |
@@ -110,6 +126,14 @@ jobs:
         with:
           python-version: '3.14'
           cache: 'pip'
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Build and install Rust ELF Parser extension
+        run: |
+          python -m pip install maturin
+          maturin develop --release --manifest-path native/parser_rust/Cargo.toml
 
       - name: Install System Packaging Tools
         run: |
@@ -211,9 +235,14 @@ jobs:
     needs: [build-windows, build-macos, build-linux]
     steps:
       - name: Checkout Code
+        # Check out the exact commit that triggered this run — works for both a
+        # tag push and a manual workflow_dispatch. Do NOT check out
+        # inputs.tag_name: on a manual run that tag does not exist yet, so the
+        # checkout would fail and RELEASE_NOTES.md would never be available. The
+        # release action below creates the tag itself from this commit.
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag_name || github.ref }}
+          ref: ${{ github.sha }}
 
       - name: Download Windows Artifact
         uses: actions/download-artifact@v4
@@ -244,6 +273,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
+          # Anchor a dispatch-created tag to the commit we just built/checked out.
+          target_commitish: ${{ github.sha }}
           name: ${{ github.event.inputs.release_title || format('Release {0}', github.ref_name) }}
           draft: ${{ github.event.inputs.draft == 'true' }}
           prerelease: ${{ github.event.inputs.prerelease == 'true' }}

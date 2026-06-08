@@ -1,6 +1,6 @@
 # 6. Collaboration & Safety
 
-[← Test Case Design](05-test-case-design.md) · **Collaboration & Safety** · [Guide home](README.md)
+[← Test Case Design](05-test-case-design.md) · **Collaboration & Safety** · [Next: AI Test Case Generation →](07-ai-test-generation.md)
 
 ---
 
@@ -40,4 +40,4 @@ Because the log is permanent and read-only, it gives you the traceability that p
 
 That's the full tour. 🎉
 
-[← Test Case Design](05-test-case-design.md) · [Guide home](README.md)
+[← Test Case Design](05-test-case-design.md) · [Next: AI Test Case Generation →](07-ai-test-generation.md)
