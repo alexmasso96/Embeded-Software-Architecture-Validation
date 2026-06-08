@@ -77,7 +77,9 @@ class LazyComboBox(QtWidgets.QComboBox):
         self._loaded = False
         self.maxVisibleItems = 20
         self.currentTextChanged.connect(self._apply_score_color)
-        
+        # Live search-as-you-type in the (Match) column (see _wire_live_match_search).
+        _wire_live_match_search(self, controller, search_func)
+
     def showPopup(self):
         if not self._loaded:
             self.load_items()
@@ -88,13 +90,10 @@ class LazyComboBox(QtWidgets.QComboBox):
             self.load_items()
         # Ensure we call super via QComboBox to handle the event
         QtWidgets.QComboBox.mousePressEvent(self, e)
-        
+
     def keyPressEvent(self, e):
-        # Trigger load on typing? 
-        # Actually typing usually goes to the QLineEdit lineEdit().
-        # We can hook lineEdit().textEdited?
-        if not self._loaded:
-             self.load_items()
+        # Typing goes to the QLineEdit; live re-search is handled by the
+        # textEdited hook wired in _wire_live_match_search.
         super().keyPressEvent(e)
 
     def load_items(self):
@@ -112,7 +111,8 @@ class LazyComboBox(QtWidgets.QComboBox):
         self._apply_score_color(text)
         
         self.blockSignals(False)
-        self._loaded = True
+        if getattr(self.controller, 'matcher', None) is not None:
+            self._loaded = True
 
     def _apply_score_color(self, text):
         """Calculates color based on the percentage in the text."""
@@ -124,6 +124,69 @@ class LazyComboBox(QtWidgets.QComboBox):
             color = _match_style(score)
         
         self.setStyleSheet(f"background-color: {color}; color: white;")
+
+
+def _wire_live_match_search(combo, controller, search_func):
+    """Make an editable (Match) combo re-query the symbol pool as the user types.
+
+    In real usage the search column holds the architecture port/operation name,
+    but the implementing C function/parameter can be named differently
+    (e.g. port "UART_LMM" -> function "UART_TX123_LMM"), which the one-shot fuzzy
+    match off the port name may miss. While in exclusive edit, typing directly in
+    the (Match) column now runs a fresh search against the symbol pool and updates
+    the dropdown, so the user can pick the *real* symbol — each candidate carries
+    the actual symbol name, so traceability to a real function/parameter is kept.
+
+    NC-1: a committed value that is NOT a real symbol in the pool is flagged
+    (dark red) instead of being shown as a confirmed match. Live search only runs
+    when a matcher is loaded; the combo is already disabled in view/baseline mode.
+    """
+    le = combo.lineEdit()
+    if le is None:
+        return
+    model = QtCore.QStringListModel([], combo)
+    completer = QtWidgets.QCompleter(model, combo)
+    completer.setCaseSensitivity(QtCore.Qt.CaseSensitivity.CaseInsensitive)
+    completer.setCompletionMode(
+        QtWidgets.QCompleter.CompletionMode.UnfilteredPopupCompletion)
+    combo.setCompleter(completer)
+
+    def _on_edit(text):
+        if getattr(controller, "matcher", None) is None:
+            return
+        try:
+            matches = search_func(text) or []
+        except Exception:
+            matches = []
+        cur = le.cursorPosition()
+        combo.blockSignals(True)
+        combo.clear()
+        labels = []
+        for name, score in matches:
+            label = f"{name} ({score}%)"
+            combo.addItem(label, name)
+            labels.append(label)
+        le.setText(text)
+        le.setCursorPosition(min(cur, len(text)))
+        combo.blockSignals(False)
+        model.setStringList(labels)
+        if labels:
+            completer.complete()
+
+    def _on_commit():
+        matcher = getattr(controller, "matcher", None)
+        txt = combo.currentText().strip()
+        if not txt:
+            return
+        m = re.match(r"^(.*?)\s*\(\d+%\)$", txt)
+        sym = (m.group(1) if m else txt).strip()
+        pool = set(getattr(matcher, "search_pool", []) or []) if matcher else set()
+        if sym and pool and sym not in pool:
+            # NC-1: unverified manual entry — never present it as a valid match.
+            combo.setStyleSheet("background-color: #8b0000; color: white;")
+
+    le.textEdited.connect(_on_edit)
+    le.editingFinished.connect(_on_commit)
 
 
 class TableColumn:
@@ -149,13 +212,13 @@ class PortSearchColumn(TableColumn):
         if not text: return
         
         # Optimization: Lazy Load
-        if lazy:
+        if lazy or not controller.matcher:
             self._create_lazy_widget(table, row, col + 1, controller, text)
             return
 
-        if not controller.matcher: return
         matches = controller.matcher.find_top_matches(text, limit=10)
-        self._update_dropdown(table, row, col + 1, text, controller, matches)
+        self._update_dropdown(table, row, col + 1, text, controller, matches,
+                              lambda t: controller.matcher.find_top_matches(t, limit=10) if controller.matcher else [])
 
     def _create_lazy_widget(self, table, row, target_col, controller, text):
         if target_col >= table.columnCount():
@@ -179,37 +242,43 @@ class PortSearchColumn(TableColumn):
             combo.setEnabled(False)
         table.setCellWidget(row, target_col, combo)
 
-    def _update_dropdown(self, table, row, target_col, text, controller, matches):
+    def _update_dropdown(self, table, row, target_col, text, controller, matches, search_func=None):
         if target_col >= table.columnCount():
             return
+        combo = QtWidgets.QComboBox()
+        combo.setEditable(True)
         if matches:
-            combo = QtWidgets.QComboBox()
-            combo.setEditable(True)
             for name, score in matches:
                 combo.addItem(f"{name} ({score}%)", name)
 
-            # Signal Connections
-            combo.currentIndexChanged.connect(lambda: (
-                controller.refresh_init_column_state(), 
-                controller.refresh_cyclic_column_state(),
-                UserInteractionLogic.reset_review_status(table, row, controller)
-            ))
-
             best_score = matches[0][1]
             color = _match_style(best_score)
+        else:
+            color = "#8b0000"
 
-            status = UserInteractionLogic.get_review_status(table, row, controller)
-            if status == "Reviewed":
-                color = "#2e8b57" # Dark Green
-                if combo.count() > 0:
-                    combo.setCurrentText(combo.itemData(0))
-            elif status == "Broken Link":
-                color = "#483d8b"
+        combo.setCurrentText(text)
 
-            combo.setStyleSheet(f"background-color: {color}; color: white;")
-            if is_baseline_mode(controller):
-                combo.setEnabled(False)
-            table.setCellWidget(row, target_col, combo)
+        # Signal Connections
+        combo.currentIndexChanged.connect(lambda: (
+             controller.refresh_init_column_state(), 
+             controller.refresh_cyclic_column_state(),
+             UserInteractionLogic.reset_review_status(table, row, controller)
+        ))
+
+        status = UserInteractionLogic.get_review_status(table, row, controller)
+        if status == "Reviewed":
+            color = "#2e8b57" # Dark Green
+            if combo.count() > 0:
+                combo.setCurrentText(combo.itemData(0))
+        elif status == "Broken Link":
+            color = "#483d8b"
+
+        combo.setStyleSheet(f"background-color: {color}; color: white;")
+        if search_func is not None:
+            _wire_live_match_search(combo, controller, search_func)
+        if is_baseline_mode(controller):
+            combo.setEnabled(False)
+        table.setCellWidget(row, target_col, combo)
 
 
 class FunctionSearchColumn(TableColumn):
@@ -222,7 +291,7 @@ class FunctionSearchColumn(TableColumn):
                   controller: IArchitectureController, lazy: bool = False) -> None:
         if not text: return
         
-        if lazy:
+        if lazy or not controller.matcher:
              if col + 1 < table.columnCount():
                  def search_logic(text):
                      if not controller.matcher: return []
@@ -241,39 +310,45 @@ class FunctionSearchColumn(TableColumn):
                  table.setCellWidget(row, col + 1, combo)
              return
 
-        if not controller.matcher: return
         matches = controller.matcher.find_top_function_matches(text, limit=10)
-        self._update_dropdown(table, row, col + 1, text, controller, matches)
+        self._update_dropdown(table, row, col + 1, text, controller, matches,
+                              lambda t: controller.matcher.find_top_function_matches(t, limit=10) if controller.matcher else [])
 
-    def _update_dropdown(self, table, row, target_col, text, controller, matches):
+    def _update_dropdown(self, table, row, target_col, text, controller, matches, search_func=None):
         if target_col >= table.columnCount(): return
+        combo = QtWidgets.QComboBox()
+        combo.setEditable(True)
         if matches:
-            combo = QtWidgets.QComboBox()
-            combo.setEditable(True)
             for name, score in matches:
                 combo.addItem(f"{name} ({score}%)", name)
 
-            combo.currentIndexChanged.connect(lambda: (
-                controller.refresh_init_column_state(), 
-                controller.refresh_cyclic_column_state(),
-                UserInteractionLogic.reset_review_status(table, row, controller)
-            ))
-
             best_score = matches[0][1]
             color = _match_style(best_score)
+        else:
+            color = "#8b0000"
 
-            status = UserInteractionLogic.get_review_status(table, row, controller)
-            if status == "Reviewed":
-                color = "#2e8b57"
-                if combo.count() > 0:
-                    combo.setCurrentText(combo.itemData(0))
-            elif status == "Broken Link":
-                color = "#483d8b"
+        combo.setCurrentText(text)
 
-            combo.setStyleSheet(f"background-color: {color}; color: white;")
-            if is_baseline_mode(controller):
-                combo.setEnabled(False)
-            table.setCellWidget(row, target_col, combo)
+        combo.currentIndexChanged.connect(lambda: (
+            controller.refresh_init_column_state(), 
+            controller.refresh_cyclic_column_state(),
+            UserInteractionLogic.reset_review_status(table, row, controller)
+        ))
+
+        status = UserInteractionLogic.get_review_status(table, row, controller)
+        if status == "Reviewed":
+            color = "#2e8b57"
+            if combo.count() > 0:
+                combo.setCurrentText(combo.itemData(0))
+        elif status == "Broken Link":
+            color = "#483d8b"
+
+        combo.setStyleSheet(f"background-color: {color}; color: white;")
+        if search_func is not None:
+            _wire_live_match_search(combo, controller, search_func)
+        if is_baseline_mode(controller):
+            combo.setEnabled(False)
+        table.setCellWidget(row, target_col, combo)
 
 class VariableSearchColumn(TableColumn):
     """Search logic restricted to Global Variables and Structures."""
@@ -285,7 +360,7 @@ class VariableSearchColumn(TableColumn):
                   controller: IArchitectureController, lazy: bool = False) -> None:
         if not text: return
         
-        if lazy:
+        if lazy or not controller.matcher:
              if col + 1 < table.columnCount():
                  def search_logic(text):
                      if not controller.matcher: return []
@@ -300,35 +375,41 @@ class VariableSearchColumn(TableColumn):
                  table.setCellWidget(row, col + 1, combo)
              return
 
-        if not controller.matcher: return
         matches = controller.matcher.find_top_variable_matches(text, limit=10)
-        self._update_dropdown(table, row, col + 1, text, controller, matches)
+        self._update_dropdown(table, row, col + 1, text, controller, matches,
+                              lambda t: controller.matcher.find_top_variable_matches(t, limit=10) if controller.matcher else [])
 
-    def _update_dropdown(self, table, row, target_col, text, controller, matches):
+    def _update_dropdown(self, table, row, target_col, text, controller, matches, search_func=None):
         if target_col >= table.columnCount(): return
+        combo = QtWidgets.QComboBox()
+        combo.setEditable(True)
         if matches:
-            combo = QtWidgets.QComboBox()
-            combo.setEditable(True)
             for name, score in matches:
                 combo.addItem(f"{name} ({score}%)", name)
             
-            combo.currentIndexChanged.connect(lambda: UserInteractionLogic.reset_review_status(table, row, controller))
-
             best_score = matches[0][1]
             color = _match_style(best_score)
-            
-            status = UserInteractionLogic.get_review_status(table, row, controller)
-            if status == "Reviewed":
-                color = "#2e8b57"
-                if combo.count() > 0:
-                    combo.setCurrentText(combo.itemData(0))
-            elif status == "Broken Link":
-                color = "#483d8b"
+        else:
+            color = "#8b0000"
 
-            combo.setStyleSheet(f"background-color: {color}; color: white;")
-            if is_baseline_mode(controller):
-                combo.setEnabled(False)
-            table.setCellWidget(row, target_col, combo)
+        combo.setCurrentText(text)
+
+        combo.currentIndexChanged.connect(lambda: UserInteractionLogic.reset_review_status(table, row, controller))
+
+        status = UserInteractionLogic.get_review_status(table, row, controller)
+        if status == "Reviewed":
+            color = "#2e8b57"
+            if combo.count() > 0:
+                combo.setCurrentText(combo.itemData(0))
+        elif status == "Broken Link":
+            color = "#483d8b"
+
+        combo.setStyleSheet(f"background-color: {color}; color: white;")
+        if search_func is not None:
+            _wire_live_match_search(combo, controller, search_func)
+        if is_baseline_mode(controller):
+            combo.setEnabled(False)
+        table.setCellWidget(row, target_col, combo)
 
 class ReviewColumn(TableColumn):
     """

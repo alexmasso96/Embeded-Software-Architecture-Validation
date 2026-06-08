@@ -29,6 +29,13 @@ except ImportError as e:
     ) from e
 
 try:
+    import rust_elf_parser
+    RUST_PARSER_AVAILABLE = True
+except ImportError:
+    RUST_PARSER_AVAILABLE = False
+
+
+try:
     import capstone
     from capstone import (
         Cs, CS_ARCH_ARM, CS_MODE_THUMB, CS_MODE_ARM, 
@@ -113,6 +120,7 @@ class ELFParser:
         self._sorted_func_addrs: List[int] = []
         self._machine_arch: Optional[str] = None
         self.md5_hash = None
+        self.parser_backend = "pyelftools"
 
         # DB-backed mode (set after flush_to_db or load_from_db)
         self._db = None
@@ -134,19 +142,20 @@ class ELFParser:
         if not self.elf_path.exists():
             raise FileNotFoundError(f"ELF file not found: {elf_path}")
 
+        # Try native hashing first if available
+        self.parser_backend = "pyelftools"  # default
+        if RUST_PARSER_AVAILABLE:
+            try:
+                self.md5_hash = rust_elf_parser.compute_md5(str(self.elf_path))
+                self.parser_backend = "rust_elf_parser"
+                return
+            except Exception as e:
+                logger.warning(f"Native MD5 compute failed: {e}. Falling back to Python backend.")
+                self.parser_backend = "pyelftools"
+
         try:
             # Read the whole file into memory ONCE, then both hash it and parse
-            # it from that in-memory buffer. pyelftools issues a very large number
-            # of small seek()/read() calls while walking the ELF/DWARF tree; if the
-            # underlying stream is an OS file handle, every one of those is a
-            # syscall that an endpoint-security minifilter (EDR/antivirus) can
-            # intercept and scan, adding fixed latency per call. On a protected
-            # corporate machine that per-read tax dominates wall time (low CPU,
-            # near-idle disk, but minutes of waiting). Backing the stream with a
-            # BytesIO collapses all of that into a single bulk read. The MD5 is
-            # computed from the same buffer so the file is touched on disk exactly
-            # once instead of twice. The raw bytes are tiny (the file size) and are
-            # freed by close() — unrelated to the old all-objects-in-RAM spike.
+            # it from that in-memory buffer.
             with open(self.elf_path, 'rb') as f:
                 data = f.read()
             self.md5_hash = hashlib.md5(data).hexdigest()
@@ -342,6 +351,10 @@ class ELFParser:
 
     def extract_all(self):
         """Runs all extraction methods."""
+        if RUST_PARSER_AVAILABLE and self.parser_backend == "rust_elf_parser":
+            if self._try_native_extract():
+                return
+
         # Consume generators into lists for storage
         if not self.symbols:
             self.symbols = list(self._generate_symbols())
@@ -356,6 +369,55 @@ class ELFParser:
         
         # Force GC
         gc.collect()
+
+    def _try_native_extract(self) -> bool:
+        if not RUST_PARSER_AVAILABLE:
+            return False
+        try:
+            json_str = rust_elf_parser.parse_elf(str(self.elf_path))
+            data = json.loads(json_str)
+            self._map_native_json(data)
+            return True
+        except Exception as e:
+            logger.warning(f"Native extraction failed: {e}. Falling back to Python parser.")
+            self.parser_backend = "pyelftools"
+            try:
+                with open(self.elf_path, 'rb') as f:
+                    raw_data = f.read()
+                self.stream = io.BytesIO(raw_data)
+                self._load_elf_file()
+            except Exception as e2:
+                logger.error(f"Failed to open ELF file for fallback parser: {e2}")
+            return False
+
+    def _map_native_json(self, data: dict):
+        self.md5_hash = data.get("elf_hash", self.md5_hash)
+        
+        self.symbols = []
+        for s in data.get("symbols", []):
+            self.symbols.append(Symbol(
+                name=s["name"],
+                address=s["address"],
+                size=s["size"],
+                symbol_type=s["symbol_type"],
+                binding=s["binding"],
+                section=s["section"]
+            ))
+            
+        self.functions = []
+        for f in data.get("functions", []):
+            self.functions.append(Function(
+                name=f["name"],
+                address=f["address"],
+                size=f["size"],
+                parameters=f.get("parameters", []),
+                return_type=f.get("return_type")
+            ))
+            
+        self.structures = data.get("structures", {})
+        self.global_vars_dwarf = data.get("global_vars", {})
+        
+        self._build_function_address_map()
 
     def _generate_symbols(self) -> Generator[Symbol, None, None]:
         """Generator that yields symbols one by one."""
@@ -382,6 +444,9 @@ class ELFParser:
     def extract_symbols(self):
         """Public method to populate symbols list."""
         if self.symbols: return self.symbols
+        if RUST_PARSER_AVAILABLE and self.parser_backend == "rust_elf_parser":
+            if self._try_native_extract():
+                return self.symbols
         self.symbols = list(self._generate_symbols())
         return self.symbols
 
@@ -400,6 +465,9 @@ class ELFParser:
     def extract_functions(self) -> List[Function]:
         """Public method to populate functions list."""
         if self.functions: return self.functions
+        if RUST_PARSER_AVAILABLE and self.parser_backend == "rust_elf_parser":
+            if self._try_native_extract():
+                return self.functions
         self.functions = list(self._generate_functions())
         return self.functions
 
@@ -459,6 +527,9 @@ class ELFParser:
 
     def extract_structures(self) -> Dict[str, List[Dict[str, str]]]:
         if self.structures: return self.structures
+        if RUST_PARSER_AVAILABLE and self.parser_backend == "rust_elf_parser":
+            if self._try_native_extract():
+                return self.structures
         if not self.elf_file or not self.elf_file.has_dwarf_info(): return {}
         logger.info("Extracting structures from DWARF info...")
         # Fix B: store only scalars — not DIE objects — so the reference chain
@@ -544,6 +615,9 @@ class ELFParser:
 
     def extract_dwarf_variables(self) -> Dict[str, str]:
         if self.global_vars_dwarf: return self.global_vars_dwarf
+        if RUST_PARSER_AVAILABLE and self.parser_backend == "rust_elf_parser":
+            if self._try_native_extract():
+                return self.global_vars_dwarf
         if not self.elf_file or not self.elf_file.has_dwarf_info(): return {}
         logger.info("Extracting variables from DWARF info...")
         try:
@@ -709,7 +783,37 @@ class ELFParser:
             self.close()
             return
 
-        db.register_elf(self.md5_hash, str(self.elf_path) if self.elf_path else "")
+        # Scrub any partial/interrupted records from a prior failed run
+        db.delete_elf(self.md5_hash)
+
+        if RUST_PARSER_AVAILABLE and self.parser_backend == "rust_elf_parser":
+            try:
+                json_str = rust_elf_parser.parse_elf(str(self.elf_path))
+                data = json.loads(json_str)
+                
+                db.bulk_insert_symbols(self.md5_hash, data.get("symbols", []))
+                db.bulk_insert_functions(self.md5_hash, data.get("functions", []))
+                db.bulk_insert_structures(self.md5_hash, data.get("structures", {}))
+                db.bulk_insert_global_vars(self.md5_hash, data.get("global_vars", {}))
+                
+                db.register_elf(self.md5_hash, str(self.elf_path) if self.elf_path else "", "rust_elf_parser")
+                
+                self._db = db
+                self._active_elf_hash = self.md5_hash
+                db.commit()
+                self.close()
+                return
+            except Exception as e:
+                logger.warning(f"Native streaming extraction failed: {e}. Falling back to Python streaming.")
+                self.parser_backend = "pyelftools"
+                if not self.elf_file:
+                    try:
+                        with open(self.elf_path, 'rb') as f:
+                            raw_data = f.read()
+                        self.stream = io.BytesIO(raw_data)
+                        self._load_elf_file()
+                    except Exception as e2:
+                        logger.error(f"Failed to open ELF file for fallback parser: {e2}")
 
         # -- Phase 1: symbols (streamed in batches) --------------------------
         BATCH = 2000
@@ -745,6 +849,8 @@ class ELFParser:
         del functions
         self.structures = {}
         self.global_vars_dwarf = {}
+
+        db.register_elf(self.md5_hash, str(self.elf_path) if self.elf_path else "", "pyelftools")
 
         # Wire up DB-backed mode
         self._db = db
@@ -963,11 +1069,15 @@ class ELFParser:
             self.close()
             return
 
-        db.register_elf(self.md5_hash, str(self.elf_path) if self.elf_path else "")
+        # Scrub any partial/interrupted records from a prior failed run
+        db.delete_elf(self.md5_hash)
+
         db.bulk_insert_symbols(self.md5_hash, self.symbols)
         db.bulk_insert_functions(self.md5_hash, self.functions)
         db.bulk_insert_structures(self.md5_hash, self.structures)
         db.bulk_insert_global_vars(self.md5_hash, self.global_vars_dwarf)
+
+        db.register_elf(self.md5_hash, str(self.elf_path) if self.elf_path else "")
 
         self._db = db
         self._active_elf_hash = self.md5_hash
@@ -1139,7 +1249,7 @@ class ELFParser:
                 return sym
         return None
 
-    def get_statistics(self) -> Dict[str, int]:
+    def get_statistics(self) -> Dict[str, Union[int, str]]:
         if self._db and self._active_elf_hash:
             return self._db.get_elf_stats(self._active_elf_hash)
         if not self.symbols:
@@ -1148,6 +1258,7 @@ class ELFParser:
             'total_symbols': len(self.symbols),
             'functions': len([s for s in self.symbols if s.symbol_type == 'STT_FUNC']),
             'objects': len([s for s in self.symbols if s.symbol_type == 'STT_OBJECT']),
+            'parser_backend': self.parser_backend
         }
 
 def main():

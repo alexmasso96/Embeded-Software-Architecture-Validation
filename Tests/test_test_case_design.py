@@ -148,7 +148,9 @@ def test_test_case_design_flow():
         print("[TEST 5] Template Load Restoration: PASSED")
 
         # Test Generation
-        with patch('PyQt6.QtWidgets.QMessageBox.information') as mock_info:
+        with patch('PyQt6.QtWidgets.QMessageBox.information') as mock_info, \
+             patch('PyQt6.QtWidgets.QMessageBox.question',
+                   return_value=__import__('PyQt6.QtWidgets', fromlist=['QMessageBox']).QMessageBox.StandardButton.No):
             controller.generate_test_cases(scope="current")
             assert mock_info.called
 
@@ -177,7 +179,9 @@ def test_test_case_design_flow():
 
         # Test Idempotency (smart overwrite)
         controller.txt_project_title.setText("[TC. ID]: UPDATED TITLE")
-        with patch('PyQt6.QtWidgets.QMessageBox.information') as mock_info:
+        with patch('PyQt6.QtWidgets.QMessageBox.information') as mock_info, \
+             patch('PyQt6.QtWidgets.QMessageBox.question',
+                   return_value=__import__('PyQt6.QtWidgets', fromlist=['QMessageBox']).QMessageBox.StandardButton.No):
             controller.generate_test_cases(scope="current")
 
         files_after = os.listdir(output_dir)

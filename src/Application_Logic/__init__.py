@@ -5,5 +5,9 @@ from .Logic_Architecture_Table import ArchitectureTabController
 from .Logic_Symbol_Matcher import SymbolMatcher
 from .Logic_Column_Customizer import ColumnCustomizer
 from .Logic_TestCase_Design import TestCaseDesignController
+from .Logic_AI_Generation import AIGenerationController
+from .Logic_AI_Chat import AIChatController
 from .Logic_Security import SecurityManager, MasterPasswordSetupDialog, MasterPasswordPromptDialog
 from .Logic_History import HistoryManager
+from .Logic_Code_Map_Tab import AICodeMapController
+from .Logic_Change_Log_Tab import AIChangeLogController

@@ -1,0 +1,28 @@
+# Normalize line endings across platforms.
+# Text files are stored with LF in the repo and checked out with LF everywhere,
+# so this no longer depends on each contributor's global core.autocrlf setting.
+* text=auto eol=lf
+
+# Windows scripts must keep CRLF or cmd.exe mis-parses them.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# Binary assets — never apply end-of-line conversion (would corrupt them).
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.icns  binary
+*.pdf   binary
+*.zip   binary
+*.xlsx  binary
+*.xls   binary
+*.elf   binary
+*.out   binary
+*.arch  binary
+*.so    binary
+*.pyd   binary
+*.dll   binary
+*.dylib binary

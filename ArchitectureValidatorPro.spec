@@ -42,6 +42,8 @@ a = Analysis(
         'rapidfuzz',
         'capstone',
         'bcrypt',
+        'rust_elf_parser',
+        'cpp_demangle',
     ],
     hookspath=[],
     hooksconfig={},

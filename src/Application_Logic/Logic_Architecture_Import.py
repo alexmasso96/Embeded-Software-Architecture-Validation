@@ -189,7 +189,8 @@ class ArchitectureImportMixin:
         """
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self.main_window, "Import Excel / CSV File", "",
-            "Excel / CSV Files (*.xlsx *.xls *.csv)"
+            "Excel / CSV Files (*.xlsx *.xls *.csv)",
+            options=QtWidgets.QFileDialog.Option(0)
         )
         if not file_path:
             return

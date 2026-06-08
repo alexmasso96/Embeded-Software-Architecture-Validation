@@ -28,13 +28,32 @@ For a full, screenshot-by-screenshot walkthrough of every feature, see the **[Us
 - [Releases & Baselines](docs/guide/04-releases-and-baselines.md)
 - [Test Case Design](docs/guide/05-test-case-design.md)
 - [Collaboration & Safety](docs/guide/06-collaboration-and-safety.md)
+- [AI Test Generation](docs/guide/07-ai-test-generation.md)
+- [Advanced AI Chat](docs/guide/08-advanced-ai-chat.md)
+- [Code Map](docs/guide/09-code-map.md)
+- [Change Log](docs/guide/10-change-log.md)
 
 ---
 
 ## Features
 
-### 🔍 ELF / DWARF binary parsing
-Reads compiled `.elf` files and pulls out the symbols, functions, structures, and global variables from the DWARF debug info. Includes disassembly-based sub-call analysis (via Capstone) and caches parsed data so large binaries only get the slow treatment once.
+### 🔍 ELF / DWARF binary parsing (native Rust + Python fallback)
+Reads compiled `.elf` files and pulls out the symbols, functions, structures, and global variables from the DWARF debug info. A bundled **native Rust parser** (`rust_elf_parser`, a PyO3 extension built with maturin) does this with parallel traversal and `mmap`; if the native module isn't present it falls back transparently to `pyelftools`. Includes disassembly-based sub-call analysis (via Capstone) and caches parsed data so large binaries only get the slow treatment once.
+
+### 🤖 AI test-case generation, agentic chat & mind maps
+Generate **low-level, HiL-debugger-style test designs** from your high-level test cases and the real C source, across **GitHub Copilot, Anthropic, OpenAI, and Gemini** (keys stored encrypted, per-user, never in the project). An **Advanced AI Chat** indexes your source into a compact **mind map** and answers questions agentically with read-only, sandboxed tools (`read_file`, `search_code`, `get_call_graph`, …) — grounded in the actual code. Import requirements (CSV/XLSX) and compute file-by-file source diffs between releases.
+
+![Advanced AI Chat — agentic, source-grounded answers](/Media/images/advanced_ai_chat.png "Advanced AI Chat — the agent reads the real source and answers with file/line citations")
+
+### 🗺️ Code Map
+A visual **call-graph + source explorer** that joins the ELF/DWARF facts (addresses, sizes, params, structs, globals) to the C source by function name — depth-bounded caller/callee graph, matched-globals panel, and a syntax-highlighted source view. Rebuildable offline (no AI tokens).
+
+![Code Map — call graph joined to the C source](/Media/images/code_map.png "Code Map — caller/callee graph with ELF facts and the mapped C source")
+
+### 📜 Change Log
+A **git-style side-by-side diff** between releases (file browser, old/new with synchronized scrolling and add/delete highlighting), plus an optional AI-generated change-log summary.
+
+![Change Log — side-by-side release diff](/Media/images/change_log.png "Change Log — file-by-file diff with git-style add/delete highlighting")
 
 ### 📥 Flexible architecture import
 Bring your architecture in from **Excel or CSV**. Rhapsody path-based exports are detected automatically and routed through a dedicated import flow, and the classic sheet-per-model spreadsheet format is supported too.
@@ -45,8 +64,8 @@ Maps each architecture port to the closest real symbol in the binary using fuzzy
 ### 📊 Editable, customizable table
 All your data lives in one editable table of ports × columns. A drag-and-drop column customizer lets you add, remove, reorder, and rename columns. Built-in column types cover port/function/variable search, matched symbols, init/cyclic execution info, review status, port state, and per-release validation results.
 
-### 🔁 Release management & change detection
-Manage multiple **software releases** in a single project, each carrying its own ELF data. Snapshot a release as a **baseline**, then compare against it to surface changes — differences are colour-coded in the table so you can **approve or reject** them release over release.
+### 🔁 Release management, baselining & change detection
+Manage multiple **software releases** in a single project, each carrying its own ELF data. Creating a release **auto-baselines** the previous one; frozen baselines are read-only and **write-protected at the database layer**, and unfreezing requires the project master password. Compare against a baseline to surface changes — differences are colour-coded so you can **approve or reject** them release over release, and every freeze/unfreeze is recorded in history.
 
 ### 🗂️ Multiple architecture models
 Organise a project into several architecture models with full lifecycle support: create, duplicate, reorder, soft-delete, and restore.
@@ -63,7 +82,7 @@ Author low-level test case templates and generate them across your architecture:
 ![Test Case Design with live preview](/Media/images/screenshot_testcase_design.png "Test Case Design — template editor and live preview")
 
 ### 🕒 History & audit trail
-A built-in history view tracks changes over the life of the project so you can see what happened and when.
+A built-in history view tracks changes over the life of the project — each entry records the user, timestamp and release. The change log is **release-scoped**, obfuscated at rest, and protected by an **append-only HMAC hash-chain** so edits/deletions/reordering are detectable.
 
 ### 🔒 Collaboration-safe editing
 Projects use file locking with an **Exclusive Edit / View-Only** model, so a teammate opening a project that's already being edited sees who holds the lock instead of clobbering each other's work. A password-protected **Test Mode** and configurable **auto-save** (immediate up to 15-minute intervals) round out day-to-day safety.
@@ -79,13 +98,15 @@ A project is one portable `.arch` file (a SQLite database under the hood), keepi
 | :--- | :--- |
 | Language | Python 🐍 |
 | GUI | PyQt6 |
-| ELF / DWARF parsing | `pyelftools` |
+| ELF / DWARF parsing | native **Rust** (`rust_elf_parser`, PyO3 via `maturin`) + `pyelftools` fallback |
 | Disassembly | `capstone` |
+| C++ demangling | `cpp_demangle` |
 | Fuzzy matching | `rapidfuzz` |
 | Spreadsheet import | `pandas`, `openpyxl` |
+| AI providers | Copilot / Anthropic / OpenAI / Gemini over `requests` |
 | Project storage | SQLite |
-| Security | `bcrypt` |
-| Packaging | `PyInstaller` |
+| Security | `bcrypt` (master password), `cryptography` (encrypted AI credentials, history protection) |
+| Packaging | `PyInstaller` (Windows/macOS/Linux), Flatpak |
 
 ---
 

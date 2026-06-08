@@ -1,0 +1,10 @@
+"Port Name","Full path name","Required Interface",Operations
+p_motor_duty,Components::P_SW_Components::WindowLift::P10_SW_Arch_Public::wlc_motor.p_motor_duty,If_WLC_Motor,WLC_MotorSetDuty
+p_motor_stop,Components::P_SW_Components::WindowLift::P10_SW_Arch_Public::wlc_motor.p_motor_stop,If_WLC_Motor,WLC_MotorStop
+p_motor_get,Components::P_SW_Components::WindowLift::P10_SW_Arch_Public::wlc_motor.p_motor_get,If_WLC_Motor,WLC_MotorGetDuty
+p_hall_pos,Components::P_SW_Components::WindowLift::P10_SW_Arch_Public::wlc_sensor.p_hall_pos,If_WLC_Sensor,WLC_ReadHallPosition
+p_current,Components::P_SW_Components::WindowLift::P10_SW_Arch_Public::wlc_sensor.p_current,If_WLC_Sensor,WLC_ReadCurrent
+p_pinch,Components::P_SW_Components::WindowLift::P10_SW_Arch_Public::wlc_main.p_pinch,If_WLC_App,WLC_DetectPinch
+p_cyclic,Components::P_SW_Components::WindowLift::P10_SW_Arch_Public::wlc_main.p_cyclic,If_WLC_App,WLC_Cyclic
+p_get_state,Components::P_SW_Components::WindowLift::P10_SW_Arch_Public::wlc_main.p_get_state,If_WLC_App,WLC_GetState
+p_init,Components::P_SW_Components::WindowLift::P10_SW_Arch_Public::wlc_main.p_init,If_WLC_App,WLC_Init

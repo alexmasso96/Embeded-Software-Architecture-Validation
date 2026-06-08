@@ -668,6 +668,10 @@ class TestCaseDesignController(QtCore.QObject):
         self.ui = main_window.ui
         self.tab_widget = self.ui.tab_2
         self.preview_row_index = -1
+        # Number of entries the preview can page through. In Grouped mode this is
+        # the number of port groups, NOT the raw table row count — navigation must
+        # bound on this so Next stops at the last group instead of the last row.
+        self._effective_row_count = 0
         
         # 1. Rename tab_2
         tab_index = self.ui.tabWidget.indexOf(self.tab_widget)
@@ -1170,18 +1174,28 @@ class TestCaseDesignController(QtCore.QObject):
         return val
 
 
+    def _advance_preview_index(self, delta: int) -> bool:
+        """Clamp preview_row_index by `delta` within [0, _effective_row_count-1].
+
+        Returns True if the index actually changed. Bounding on the effective
+        (grouped) entry count — not the raw table row count — is what makes
+        Next stop at the last port group in Grouped mode. Pure index math, kept
+        separate from update_preview() so it is testable without a live UI.
+        """
+        upper = max(0, self._effective_row_count - 1)
+        new_idx = max(0, min(self.preview_row_index + delta, upper))
+        if new_idx == self.preview_row_index:
+            return False
+        self.preview_row_index = new_idx
+        return True
+
     def show_prev_preview(self):
-        if self.preview_row_index > 0:
-            self.preview_row_index -= 1
+        if self._advance_preview_index(-1):
             self.update_preview()
 
     def show_next_preview(self):
-        if hasattr(self.main_window, 'arch_controller'):
-            controller = self.main_window.arch_controller
-            if hasattr(controller, 'table'):
-                if self.preview_row_index < controller.table.rowCount() - 1:
-                    self.preview_row_index += 1
-                    self.update_preview()
+        if self._advance_preview_index(1):
+            self.update_preview()
 
     def _collect_table_raw_rows(self, controller):
         """Read every row of the active table into raw {col: cell_info} dicts."""
@@ -1256,6 +1270,8 @@ class TestCaseDesignController(QtCore.QObject):
 
             effective_rows, unit_label = self._build_effective_preview_rows(controller)
             n = len(effective_rows)
+            # Keep the navigation bound in sync with what the preview can page through.
+            self._effective_row_count = n
             if n == 0:
                 self.preview_row_index = -1
                 self.btn_prev_preview.setEnabled(False)
@@ -1399,93 +1415,9 @@ class TestCaseDesignController(QtCore.QObject):
             output_dir = os.path.join(os.path.dirname(project_path), "Test Case Design")
             os.makedirs(output_dir, exist_ok=True)
 
-            # Write rules.md
-            rules_path = os.path.join(output_dir, "rules.md")
-            rules_content = """# GitHub Copilot Rules for Low-Level ECU Test Case Generation
-
-This document defines the strict constraints, execution environment, and formatting rules for generating low-level test case designs based on ECU source code. 
-
-Ignore any other system-level or environment-level testing guidelines. Use only the rules defined in this file.
-
----
-
-## 1. Execution Environment
-- All test cases are executed on a **HiL (Hardware-in-the-Loop)** simulator connected to the target ECU.
-- Test steps must reflect real-world hardware interactions, debugger commands, or debugger script actions.
-
-## 2. Code Analysis Restrictions
-- **No Compilation or Execution of C Code**:
-  - Do **NOT** attempt to compile, run, or execute any part of the C source code.
-  - Do **NOT** generate code snippets, mock frameworks, or compile scripts.
-  - Perform static code analysis only, and describe the test actions and verifications as sequential, human-readable instructions.
-
-## 3. Debugging and Control Restrictions
-- **No Manual Control Flow Bypassing**:
-  - You are **NOT** allowed to skip `if` statements, manually adjust the Program Counter (PC), or force code jumps via `goto` commands during execution.
-  - Exception: This is only permitted if a code block is physically impossible to reach and test otherwise.
-- **Allowed: Modifying Variable States**:
-  - You are fully permitted to modify memory or variable values in the debugger to satisfy conditions (e.g., altering a variable value to make an `if` statement evaluate to `True` so the nested code block executes).
-- **Explicit and Diverse Debugger Steps**:
-  - All debugger interactions must be written out with explicit actions. Avoid assuming implicit behavior.
-  - Match the step paradigm to the specific testing goal:
-
-    ### Case A: Verifying Function Reachability / Initialization
-    1. Set breakpoint in function `[FunctionName]`.
-    2. Run.
-    3. Wait for Halt.
-    4. Check that the function is reached.
-    5. Run.
-    6. Check that it is not reached again.
-
-    ### Case B: Verifying Parameter Values
-    1. Set breakpoint in function `[FunctionName]`.
-    2. Run.
-    3. Wait for Halt.
-    4. Read parameter/argument `[ParameterName]`.
-    5. Verify that `[ParameterName]` is equal to `[ExpectedValue]`.
-    6. Run.
-
-    ### Case C: Verifying Function Cyclicity
-    1. Set breakpoint in function `[FunctionName]`.
-    2. Run.
-    3. Wait for Halt and record initial time `T1`.
-    4. Run.
-    5. Wait for Halt (next hit) and record time `T2`.
-    6. Verify that the time delta (`T2 - T1`) corresponds to the expected cyclic interval (e.g., 10ms).
-    7. Run.
-
-## 4. Communication and Signal Restrictions
-- **No CANoe Signals**:
-  - You are **NOT** allowed to use CANoe signal manipulation or environment variables in test steps.
-  - Exception: This is only permitted if it is the only possible way to execute the test (e.g., needing an active electrical load simulated to prevent a multicore ECU from immediately resetting or overwriting the inputs).
-
-## 5. Output Formatting
-- Generate the low-level test case designs directly under the `### Low Level Test Case Design` section inside each test case.
-- Map the low-level test case steps to the corresponding high-level test case structure (e.g., matching the Given / When / Then sections).
-- Be extremely explicit, unambiguous, and detail-oriented in every step.
-"""
-            with open(rules_path, 'w', encoding='utf-8') as f:
-                f.write(rules_content)
-
-            # Write copilot_prompt.txt
-            prompt_path = os.path.join(output_dir, "copilot_prompt.txt")
-            prompt_content = """You are a specialized low-level embedded software test engineer. Your task is to generate low-level test case designs based on the provided ECU source code and the high-level test cases in this file.
-
-CRITICAL INSTRUCTIONS:
-1. Ignore all general, pre-set, or default environment testing rules. Rely EXCLUSIVELY on the rules defined in the "rules.md" file.
-2. For each test case in the provided file, read the "Given / When / Then" structure.
-3. Generate detailed, low-level test steps that correspond to that structure.
-4. Place the generated low-level test cases directly under the "### Low Level Test Case Design" header for each test case.
-5. Strict constraints check:
-   - Are the steps designed for a HiL simulator environment?
-   - Did you avoid using CANoe signals (unless simulating active loads is strictly necessary for multicore ECU input retention)?
-   - Did you avoid manually bypassing control flow/skipping ifs/goto commands (unless completely untestable otherwise)?
-   - Are the debugger steps explicit (e.g., set breakpoint, run, wait for halt, check reached, run, check not reached)?
-
-Please process the test cases below and generate the low-level designs in place.
-"""
-            with open(prompt_path, 'w', encoding='utf-8') as f:
-                f.write(prompt_content)
+            # Prompt/rules now live in the project DB (de-roleplayed
+            # defaults via Logic_AI_Context) and are no longer auto-exported
+            # here; the user is asked at the end whether to export them.
 
             # Flush current table inputs to active model cache first
             if hasattr(self.main_window, 'arch_controller'):
@@ -1599,6 +1531,25 @@ Please process the test cases below and generate the low-level designs in place.
 
                     generated_files_count += 1
 
+            # Optionally export the rules/prompt files (for manual/external use,
+            # e.g. pasting into the VS Code Copilot chat). The in-app AI tab does
+            # NOT need these — it reads the prompt/rules from the project DB.
+            from Application_Logic import Logic_AI_Context as _aictx
+            db = getattr(self.main_window, 'project_db', None)
+            do_export = QtWidgets.QMessageBox.question(
+                self.main_window,
+                "Export Rules & Prompt?",
+                "Also export the rules and prompt files (rules.md, copilot_prompt.txt) "
+                "for manual/external use?",
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if do_export == QtWidgets.QMessageBox.StandardButton.Yes:
+                with open(os.path.join(output_dir, "rules.md"), 'w', encoding='utf-8') as f:
+                    f.write(_aictx.get_rules(db))
+                with open(os.path.join(output_dir, "copilot_prompt.txt"), 'w', encoding='utf-8') as f:
+                    f.write(_aictx.get_prompt(db))
+
             QtWidgets.QMessageBox.information(
                 self.main_window,
                 "Generation Complete",
@@ -1626,27 +1577,51 @@ Please process the test cases below and generate the low-level designs in place.
 
     def _get_port_col_name(self) -> str:
         """
-        Name of the column identifying a port. Prefers an explicit
-        PortSearchColumn, then a stored DB meta, then any column whose name
-        contains 'port' (excluding the Port State/Status column). The fallback
-        is essential for imported projects, where the port column is plain
-        Static Text (e.g. "Port Name") — without it grouping silently no-ops.
+        Name of the column identifying a port — the key rows are grouped by in
+        Grouped mode. Resolution order: a PortSearchColumn, then a stored DB
+        meta, then any column whose name contains 'port'.
+
+        Crucially, the port column is NEVER the operations column, and never a
+        derived helper column (match/init/cyclic) or a state/review/result
+        column. This matters because a project can use a Port-Search column to
+        hold the *operations* (which get fuzzy-matched against ELF symbols) while
+        the actual port sits in a plain Static-Text column (e.g. "Port Name").
+        Without excluding the operations column, grouping would key on the
+        operations — all distinct — and collapse nothing, so every operation
+        renders as its own test case instead of grouping under its port.
         """
+        ops_col = self._get_ops_col_name()
+        cols = []
         if hasattr(self.main_window, 'arch_controller'):
-            from Application_Logic.Logic_Column_Types import PortSearchColumn
-            for col in self.main_window.arch_controller.active_columns:
-                if isinstance(col, PortSearchColumn):
-                    return col.name
+            cols = list(self.main_window.arch_controller.active_columns)
+
+        def _eligible(name: str) -> bool:
+            if ops_col and name == ops_col:
+                return False
+            nl = name.lower()
+            if "(match)" in nl or "(init)" in nl or "(cyclic)" in nl:
+                return False
+            if "state" in nl or "status" in nl or "review" in nl or "result" in nl:
+                return False
+            return True
+
+        from Application_Logic.Logic_Column_Types import PortSearchColumn
+
+        # 1. A PortSearchColumn used as the port (the common Excel-import case) —
+        #    but not when that search column is itself the operations column.
+        for col in cols:
+            if isinstance(col, PortSearchColumn) and _eligible(col.name):
+                return col.name
+        # 2. Explicit DB meta, if ever set.
         db = getattr(self.main_window, 'project_db', None)
-        if db and db.is_open:
+        if db and getattr(db, 'is_open', False):
             val = db.get_meta("port_column_name")
-            if val:
+            if val and _eligible(val):
                 return val
-        if hasattr(self.main_window, 'arch_controller'):
-            for col in self.main_window.arch_controller.active_columns:
-                name_lower = col.name.lower()
-                if "port" in name_lower and "state" not in name_lower and "status" not in name_lower:
-                    return col.name
+        # 3. Any other column whose name names a port (e.g. imported "Port Name").
+        for col in cols:
+            if "port" in col.name.lower() and _eligible(col.name):
+                return col.name
         return ""
 
     def _get_ops_col_name(self) -> str:

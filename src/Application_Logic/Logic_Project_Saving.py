@@ -125,11 +125,20 @@ class ProjectSaver:
                 main_window.project_db = db
                 main_window.arch_controller.set_project_db(db)
             elif db.db_path != path:
-                # Save-As: close current DB, copy to new path, reopen
+                # Save-As: checkpoint the WAL into the main DB file FIRST, then
+                # close + copy. Without the checkpoint, recent commits may still
+                # live only in the -wal sidecar, which shutil.copy2 (main file
+                # only) would not carry to the new path — silent data loss.
+                src_path = db.db_path
+                try:
+                    db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    db.commit()
+                except Exception:
+                    pass
                 db.close()
                 import shutil
-                if os.path.exists(db.db_path):
-                    shutil.copy2(db.db_path, path)
+                if src_path and os.path.exists(src_path):
+                    shutil.copy2(src_path, path)
                 db.open(path)
                 main_window.project_db = db
                 main_window.arch_controller.set_project_db(db)

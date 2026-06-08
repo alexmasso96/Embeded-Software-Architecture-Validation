@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import datetime
 import copy
 from typing import List, Optional
+from .Logic_File_Locking import FileLockManager
 from PyQt6.QtCore import QAbstractListModel, Qt, QModelIndex, QMimeData, QByteArray, QDataStream, QIODevice
 from PyQt6.QtGui import QColor, QFont
 
@@ -156,7 +157,8 @@ class ReleaseManager:
 
     def create_release(self, name: str, description: str = "",
                        copy_from_active: bool = False,
-                       elf_path=None, elf_hash=None, elf_data=None) -> ReleaseModel:
+                       elf_path=None, elf_hash=None, elf_data=None,
+                       baseline_previous: bool = False) -> ReleaseModel:
         if any(r.name == name for r in self.releases):
             raise ValueError(f"Release '{name}' already exists.")
 
@@ -171,12 +173,23 @@ class ReleaseManager:
             sort_order=0
         )
 
+        active = self.get_active_release()
+
+        # baseline the previous release if requested
+        if baseline_previous and active:
+            active.is_baseline = True
+            if self._db and active.id is not None:
+                self._db.update_release(active.id, is_baseline=1)
+                # NC-4: the explicit Freeze/Unfreeze *button* logs the event; the
+                # auto-baseline-on-create flow keeps a clean history snapshot
+                # (the new release's creation is itself the record), so we do NOT
+                # log here — it would be cloned into the new release by the
+                # subsequent copy_release_history and pollute the snapshot.
+
         data: dict = {"rows": []}
-        if copy_from_active:
-            active = self.get_active_release()
-            if active:
-                data = copy.deepcopy(self._load_data(active))
-                data.pop("database", None)  # strip legacy ELF blob if present
+        if copy_from_active and active:
+            data = copy.deepcopy(self._load_data(active))
+            data.pop("database", None)  # strip legacy ELF blob if present
 
         if elf_data:
             # Legacy: caller may pass an elf_data blob — we ignore it (ELF lives in DB now)
@@ -192,6 +205,9 @@ class ReleaseManager:
                 sort_order=0
             )
             self._db.save_release_rows(new_release.id, data.get("rows", []))
+            # Snapshot history to new release
+            if copy_from_active and active and active.id is not None:
+                self._db.copy_release_history(active.id, new_release.id)
             self._db.commit()
 
         # Shift existing sort orders
@@ -203,6 +219,28 @@ class ReleaseManager:
         self.active_release_index = 0
         self.save_registry()
         return new_release
+
+    def log_baseline_event(self, release, frozen: bool):
+        """NC-4: record a baseline freeze/unfreeze in the change history so it is
+        plainly visible — logged against BOTH the affected release and the
+        active/main release (so it shows up on the main project timeline too)."""
+        if not self._db:
+            return
+        actor = FileLockManager.get_username()
+        action = "Froze" if frozen else "Unfroze"
+        desc = f"{action} baseline '{getattr(release, 'name', '')}'"
+        targets = set()
+        if getattr(release, "id", None) is not None:
+            targets.add(release.id)
+        active = self.get_active_release()
+        if active and active.id is not None:
+            targets.add(active.id)
+        for rid in targets:
+            try:
+                self._db.add_history_entry(description=desc, model_name="",
+                                           username=actor, release_id=rid)
+            except Exception:
+                pass
 
     def create_baseline(self, release_index: int, baseline_name: str,
                         layout_data=None, active_model_data=None) -> ReleaseModel:
@@ -236,16 +274,20 @@ class ReleaseManager:
             elf_hash=src.elf_hash,
             sort_order=len(self.releases)
         )
-        self._db.save_release_rows(new_id, snapshot_data.get("rows", []))
+        # NC-5: the baseline is created frozen (is_baseline=1); populate its
+        # snapshot once via the explicit bypass, then it is DB-write-protected.
+        self._db.save_release_rows(new_id, snapshot_data.get("rows", []), _allow_frozen=True)
         col_meta = snapshot_data.get("column_metadata", {})
         if col_meta:
-            self._db.save_release_column_metadata(new_id, col_meta)
+            self._db.save_release_column_metadata(new_id, col_meta, _allow_frozen=True)
         results = snapshot_data.get("release_results", {})
         if results:
-            self._db.save_release_results(new_id, results)
+            self._db.save_release_results(new_id, results, _allow_frozen=True)
 
-        # Copy architecture model rows into a snapshot set keyed by baseline release id
-        # (models are shared in the DB; baseline is just a frozen release record)
+        # Snapshot history to the baseline
+        if src.id is not None:
+            self._db.copy_release_history(src.id, new_id)
+
         if layout_data:
             self._db.set_meta(f"baseline_layout_{new_id}", __import__("json").dumps(layout_data))
 

@@ -58,6 +58,11 @@ class MasterPasswordSetupDialog(QtWidgets.QDialog):
         self.btn_ok = QtWidgets.QPushButton("Set Password", self)
         self.btn_ok.setStyleSheet("background-color: #2a82da; color: white; font-weight: bold; padding: 6px 12px;")
         self.btn_ok.clicked.connect(self.validate_and_accept)
+        # Submit on Enter from either field, and make "Set Password" the default.
+        self.btn_ok.setDefault(True)
+        self.btn_ok.setAutoDefault(True)
+        self.txt_password.returnPressed.connect(self.validate_and_accept)
+        self.txt_confirm.returnPressed.connect(self.validate_and_accept)
         
         self.btn_cancel = QtWidgets.QPushButton("Cancel", self)
         self.btn_cancel.clicked.connect(self.reject)
@@ -114,6 +119,10 @@ class MasterPasswordPromptDialog(QtWidgets.QDialog):
         self.btn_ok = QtWidgets.QPushButton("Verify", self)
         self.btn_ok.setStyleSheet("background-color: #2a82da; color: white; font-weight: bold; padding: 6px 12px;")
         self.btn_ok.clicked.connect(self.accept)
+        # Enter in the password field submits; "Verify" is the default button.
+        self.btn_ok.setDefault(True)
+        self.btn_ok.setAutoDefault(True)
+        self.txt_password.returnPressed.connect(self.accept)
         
         self.btn_cancel = QtWidgets.QPushButton("Cancel", self)
         self.btn_cancel.clicked.connect(self.reject)

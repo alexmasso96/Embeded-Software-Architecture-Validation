@@ -6,7 +6,9 @@
 
 Architecture Validator Pro is a **PyQt6** desktop application for validating embedded software architectures against ELF binary files. It parses ELF/DWARF debug info to extract symbols, functions, structures, and global variables, then uses fuzzy matching to map architecture ports to the real software symbols in the firmware.
 
-A project is persisted as a **single SQLite file** (`MyProject.arch`). All architecture data, software releases, ELF symbol data, baselines, test-case templates, and change history live in that one database.
+As of **v2.0** it is a six-tab workbench: *Architecture Test*, *Test Case Design*, *AI Test Generation* (Tab 3), *Advanced AI Chat* (Tab 4), *Code Map* (Tab 5), and *Change Log* (Tab 6). ELF parsing is backed by a **native Rust extension** (`rust_elf_parser`) with a `pyelftools` fallback; the AI tabs add source mind-maps, agentic source-grounded chat, and AI test-case generation across Copilot/Anthropic/OpenAI/Gemini; the Code Map joins ELF facts to C source as a visual call graph; and the Change Log diffs releases.
+
+A project is persisted as a **single SQLite file** (`MyProject.arch`, inside a per-project folder). All architecture data, software releases, ELF symbol data, baselines, test-case templates, AI mind-maps/diffs, and change history live in that one database.
 
 ## Data Flow
 
@@ -42,8 +44,11 @@ ProjectSaver (Logic_Project_Saving.py)
 
 ### Core
 
+#### `native/parser_rust/` — Native Rust ELF parser (`rust_elf_parser`)
+A PyO3 Rust extension (built with **maturin**) that parses ELF symbols + DWARF with parallel traversal and `mmap`. Exposes `parse_elf(path)` (JSON) and `compute_md5(path)`. Bundled into the app as a hidden import; CI builds it on all three platforms.
+
 #### `core/elf_parser.py` — ELF Binary Parser (~1310 lines)
-Parses ELF files using `pyelftools`. Extracts the symbol table and DWARF debug info (function parameters, structures, global variables), and provides disassembly via **Capstone** for sub-call analysis. Two persistence modes back the SQLite design:
+Parses ELF files. The native `rust_elf_parser` is tried first (`parser_backend == "rust_elf_parser"`); `_try_native_extract()` maps its JSON onto the in-memory contract and falls back transparently to **`pyelftools`** on any error. Extracts the symbol table and DWARF debug info (function parameters, structures, global variables), and provides disassembly via **Capstone** for sub-call analysis. The active backend is surfaced in `get_statistics()` (`parser_backend`). Two persistence modes back the SQLite design:
 - `flush_to_db(db)` — bulk-inserts parsed data into the project DB on first save, then clears the in-RAM lists and runs `gc.collect()` to keep memory flat.
 - `load_from_db(db, elf_hash)` — DB-backed mode that serves lookups straight from the database without rehydrating the full object lists.
 - `export_elf_cache()` / `import_elf_cache_to_db()` — portable JSON cache for fast re-import of a previously parsed binary.
@@ -108,8 +113,38 @@ Wraps **rapidfuzz** for fuzzy symbol matching. Loads only name strings from the 
 #### `Application_Logic/Logic_TestCase_Design.py` — Test Case Designer (~1790 lines)
 `TestCaseDesignController` drives the Test Case Design tab: the Markdown template editor with `[Column]` token + `#if` conditional autocomplete, the live preview, operation grouping (Grouped/Independent), and the bulk/individual `.md` generation. Includes the template tokenizer/evaluator and the in-app help dialog.
 
-#### `Application_Logic/Logic_History.py` — Change Log (~50 lines)
-`HistoryManager` reads/writes the read-only, ASPICE-style change history from the DB.
+#### `Application_Logic/Logic_History.py` — Change Log
+`HistoryManager` reads/writes the release-scoped, ASPICE-style change history from the DB (each entry carries user + timestamp + `release_id`). Descriptions are obfuscated at rest and protected by an append-only HMAC hash-chain (`db.verify_history_chain()`).
+
+### AI, Code Map & Change Log subsystems (v2.0)
+
+#### `Application_Logic/Logic_AI_Credentials.py` — Encrypted credential store
+Per-user, Fernet-encrypted `credentials.aikeys` (OS-appropriate config dir). Holds API keys and the Copilot OAuth token; the project file never stores keys.
+
+#### `Application_Logic/Logic_AI_Providers.py` — Provider adapters + agentic loop
+Adapters for Copilot / Anthropic / OpenAI / Gemini behind one interface (`generate`, `generate_with_tools`), a `_post_and_json` helper, a per-provider tool-calling **capability matrix** (native JSON tools for direct keys; `[READ: …]` text-fallback for Copilot), `MODEL_CONTEXT_WINDOWS`, and circuit breakers (turns / calls / cumulative bytes).
+
+#### `Application_Logic/Logic_AI_Context.py` — Context, mind map, diffs
+Pure (no-Qt) builders: `build_mind_map`/`mind_map_to_text` (version-dispatched v1/v2 renderers), `hash_source_tree`/`diff_source_folders`/`compute_diff_hash`, `mindmap_is_stale`, `parse_requirements_file`, and the separate prompt/rules meta keys.
+
+#### `Application_Logic/Logic_Code_Index.py` — C source indexer
+Ported `deep_code_indexer` (stdlib-only): `build_index(path) -> CodeIndex` with `functions`/`globals`/`call_graph`/`file_functions` and `find_functions_by_keywords`/`extract_keywords`.
+
+#### `Application_Logic/Logic_AI_Tools.py` — Sandboxed read-only tool set
+`ToolExecutor` exposing `read_file`/`list_files`/`search_code`/`get_mind_map`/`get_requirements`/`get_diff`/`get_function`/`get_call_graph`, all confined by a realpath + `os.sep` **path-jail** to the source root.
+
+#### `Application_Logic/Logic_Code_Map.py` — ELF↔C joiner
+`build_code_map(parser, code_index)` joins DWARF facts to the C call graph **by function name** (with C++ demangling) into a `CodeMap` consumed by the mind map and the Code Map tab.
+
+#### Tab controllers
+- `Logic_AI_Generation.py` — Tab 3 (AI Test Generation) controller; threaded generate, write-back, model-change context reset.
+- `Logic_AI_Chat.py` — Tab 4 (Advanced AI Chat) controller; mind-map/diff generation, requirements import, agentic chat.
+- `Logic_Code_Map_Tab.py` (+ `UI/widgets_code_map.py`) — Tab 5 (Code Map) viewer.
+- `Logic_Change_Log_Tab.py` (+ `UI/widgets_change_log.py`) — Tab 6 (Change Log) diff viewer.
+- `Logic_AI_ProviderPanel.py` — `ProviderPanelMixin` shared by the AI tabs (provider/model picker, status pill), parameterised by per-tab meta keys.
+
+#### AI dialogs (`UI/`)
+`Dialog_AI_Configure.py` (provider sign-in / API keys) and `Dialog_AI_Help.py` (provider help & troubleshooting).
 
 #### `Application_Logic/Logic_Security.py` — Master Password (~130 lines)
 `SecurityManager` (bcrypt hashing/verification) plus the master-password setup/prompt dialogs. Gates **Test Mode**.
@@ -202,15 +237,20 @@ ELF data is parsed once, flushed to SQLite keyed by `elf_hash`, and then served 
 
 ## Project File Structure (`.arch` SQLite database)
 
-A project is **one SQLite file**, not a directory. A few transient sidecar files may sit alongside it:
+The project is **one SQLite file**. As of v2.0 it is created inside a **per-project
+folder** (named after the project) so the database and its sidecars stay together:
 
 ```
-MyProject.arch              # the SQLite database (the whole project)
-MyProject.arch.lock         # exclusive-edit lock (owner + heartbeat), when held
-MyProject.arch.dirty        # unsaved-changes / temp-state marker
-MyProject.arch.integrity    # integrity hash
-MyProject.arch.elf_caches/  # exported ELF JSON caches for fast re-import
+MyProject/                      # per-project folder (v2.0)
+  MyProject.arch                # the SQLite database (the whole project)
+  MyProject.arch.lock           # exclusive-edit lock (owner + heartbeat), when held
+  MyProject.arch.dirty          # unsaved-changes / temp-state marker
+  MyProject.arch.elf_caches/    # exported ELF JSON caches for fast re-import
+  Test Case Design/             # generated high-level test-case design .md files
 ```
+
+The integrity HMAC is stored *inside* the database (`project_meta.integrity_hmac`),
+not as a sidecar.
 
 ### Database schema (tables)
 
@@ -226,9 +266,13 @@ MyProject.arch.elf_caches/  # exported ELF JSON caches for fast re-import
 | `releases` | Software releases + baselines (elf_hash, parent, active flag) |
 | `release_rows` | Per-release row data |
 | `release_column_metadata` / `release_results` | Per-release column metadata and validation results |
-| `elf_index` | One row per imported ELF (`elf_hash` → path, timestamp) |
+| `elf_index` | One row per imported ELF (`elf_hash` → path, timestamp, `parser_backend`) |
 | `elf_symbols`, `elf_functions`, `elf_structures`, `elf_global_vars` | Parsed ELF data, keyed by `elf_hash` (shared across releases) |
-| `history` | Read-only ASPICE change log (timestamp, user, model, description) |
+| `history` | Release-scoped change log (`timestamp, user, model, description, release_id, entry_hmac`); descriptions obfuscated + HMAC hash-chained |
+| `ai_model_mindmaps` | Per-model compact mind map (+ `code_map_json`), source/diff hash, builder version |
+| `ai_code_diffs` | Per-file unified diffs between a current and previous source folder |
+
+`DB_SCHEMA_VERSION = 3`. New tables/columns are additive (`CREATE TABLE IF NOT EXISTS` / guarded `ALTER TABLE`), so existing projects upgrade transparently. The two AI cache tables and machine-specific path/requirements meta keys are excluded from the integrity digest; the journal mode is chosen per project location (WAL locally, DELETE on network/UNC drives).
 
 ## File Naming Conventions
 

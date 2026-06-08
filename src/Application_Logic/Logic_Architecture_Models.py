@@ -225,6 +225,11 @@ class ArchitectureManager:
             return self.models[self.active_model_index]
         return None
 
+    @property
+    def active_model_id(self) -> Optional[int]:
+        active = self.get_active_model()
+        return active.id if active else None
+
     def get_real_index_from_visible(self, visible_index: int) -> int:
         visible_count = 0
         for i, m in enumerate(self.models):
