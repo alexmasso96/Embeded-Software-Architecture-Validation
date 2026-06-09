@@ -141,6 +141,16 @@ class AIChangeLogController(QtCore.QObject):
             return
         self.load_data()
 
+    def apply_edit_mode(self, enabled: bool):
+        """View-Only: disable diff computation and AI change-log generation (both
+        write to the DB). The side-by-side diff viewer itself stays usable."""
+        tip = "" if enabled else "Disabled in View-Only mode — acquire the edit lock to use this."
+        for btn in (getattr(self.tab_widget, "btn_compute_diffs", None),
+                    getattr(self, "btn_gen_ai_log", None)):
+            if btn is not None:
+                btn.setEnabled(enabled)
+                btn.setToolTip(tip)
+
     def load_data(self):
         db = self._db()
         arch = self._arch()
@@ -272,9 +282,14 @@ class AIChangeLogController(QtCore.QObject):
             diffs = diff_source_folders(current_path, previous_path)
             return diff_hash, diffs
 
-        if loader.run_task(run_diff_task, curr_dir, prev_dir):
+        import os as _os
+        db.set_activity("diff", "in_progress",
+                        f"{_os.path.basename(prev_dir)} → {_os.path.basename(curr_dir)}")
+        ran = loader.run_task(run_diff_task, curr_dir, prev_dir)
+        db.set_activity("", "idle")
+        if ran:
             diff_hash, diffs = loader.result
-            
+
             # Save diffs to database
             db.save_code_diffs(active_model_id, diff_hash, diffs)
             
@@ -356,7 +371,9 @@ class AIChangeLogController(QtCore.QObject):
 
         self.btn_gen_ai_log.setEnabled(False)
         self.btn_gen_ai_log.setText("Generating Change Log via AI...")
-        
+        if db:
+            db.set_activity("ailog", "in_progress", active_model_name)
+
         self.ai_worker = AIChangeLogWorker(pid, model, prompt, self)
         self.ai_worker.finished_ok.connect(self.on_ai_finished)
         self.ai_worker.failed.connect(self.on_ai_failed)
@@ -365,7 +382,10 @@ class AIChangeLogController(QtCore.QObject):
     def on_ai_finished(self, text):
         self.btn_gen_ai_log.setEnabled(True)
         self.btn_gen_ai_log.setText("Generate AI Change Log (requires AI Token)")
-        
+        _db0 = self._db()
+        if _db0:
+            _db0.set_activity("", "idle")
+
         self.tab_widget.txt_ai_changelog.setMarkdown(text)
         
         # Save to DB
@@ -383,4 +403,7 @@ class AIChangeLogController(QtCore.QObject):
     def on_ai_failed(self, err_msg):
         self.btn_gen_ai_log.setEnabled(True)
         self.btn_gen_ai_log.setText("Generate AI Change Log (requires AI Token)")
+        _db0 = self._db()
+        if _db0:
+            _db0.set_activity("", "idle")
         QtWidgets.QMessageBox.critical(self.main_window, "AI Error", f"Failed to generate AI change log:\n{err_msg}")

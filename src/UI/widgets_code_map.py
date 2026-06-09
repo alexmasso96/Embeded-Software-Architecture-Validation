@@ -1,4 +1,4 @@
-from PyQt6.QtCore import Qt, QPointF, QRegularExpression
+from PyQt6.QtCore import Qt, QPointF, QRegularExpression, QTimer
 from PyQt6.QtGui import QColor, QBrush, QPen, QFont, QPainter, QPainterPath, QSyntaxHighlighter, QTextCharFormat
 from PyQt6.QtWidgets import QGraphicsView, QGraphicsRectItem, QGraphicsSimpleTextItem, QGraphicsPathItem, QGraphicsItem
 
@@ -110,8 +110,18 @@ class NodeItem(QGraphicsRectItem):
         self.setToolTip(f"Double-click to center on {label}")
 
     def mouseDoubleClickEvent(self, event):
-        if self.controller:
-            self.controller.focus_function(self.label)
+        # focus_function() rebuilds the scene via scene.clear(), which deletes THIS
+        # node while its event is still on the call stack — calling it inline (and
+        # then super()) is a use-after-free that crashes when navigating to a
+        # caller/callee node. Capture the target into locals (so the deferred call
+        # never touches the soon-to-be-deleted node) and run it after the event
+        # unwinds via a 0ms timer.
+        ctrl = self.controller
+        label = self.label
+        if ctrl:
+            QTimer.singleShot(0, lambda: ctrl.focus_function(label))
+            event.accept()
+            return
         super().mouseDoubleClickEvent(event)
 
 

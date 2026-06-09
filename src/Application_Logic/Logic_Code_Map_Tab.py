@@ -15,25 +15,69 @@ logger = logging.getLogger(__name__)
 MAX_GRAPH_NODES = 60
 
 
+class _CodeMapWorker(QtCore.QThread):
+    """Builds the C source index + joined code map off the UI thread.
+
+    Mirrors the existing _MindMapWorker/_GenWorker pattern: emits phase progress
+    for the in-pane overlay and returns the finished code-map dict to the main
+    thread, which owns the DB write (keeps all writes single-threaded)."""
+    progress = QtCore.pyqtSignal(str)
+    finished_ok = QtCore.pyqtSignal(object)   # code_map dict
+    failed = QtCore.pyqtSignal(str)
+
+    def __init__(self, parser, source_dir, parent=None):
+        super().__init__(parent)
+        self.parser = parser
+        self.source_dir = source_dir
+
+    def run(self):
+        try:
+            code_index = None
+            if self.source_dir and os.path.exists(self.source_dir):
+                self.progress.emit("Indexing source files…")
+                from Application_Logic.Logic_Code_Index import build_index
+                code_index = build_index(self.source_dir)
+            self.progress.emit("Building code map (call graph & symbol join)…")
+            from Application_Logic.Logic_Code_Map import build_code_map
+            code_map = build_code_map(self.parser, code_index,
+                                      source_root=self.source_dir or "")
+            self.finished_ok.emit(code_map)
+        except Exception as e:  # noqa: BLE001 — surface any failure to the UI
+            self.failed.emit(str(e))
+
+
 class AICodeMapController(QtCore.QObject):
     def __init__(self, main_window):
         super().__init__(main_window)
         self.main_window = main_window
         self.ui = main_window.ui
-        
+
         self.dataset = None
         self.callers_map = {}
         self.focused_func = None
         self.linked_source_dir = None
-        
+        self._cm_worker = None
+        self._cm_active_model_id = None
+        self.graph_overlay = None
+
         self.scene = QtWidgets.QGraphicsScene()
         # Disable BSP indexing to speed up scene modifications on large graphs
         self.scene.setItemIndexMethod(QtWidgets.QGraphicsScene.ItemIndexMethod.NoIndex)
-        
+
         self.tab_widget = QtWidgets.QWidget()
         self._tab_index = self.ui.tabWidget.addTab(self.tab_widget, "Code Map")
         self._build_ui()
-        
+
+        appins = QtWidgets.QApplication.instance()
+        if appins is not None:
+            appins.aboutToQuit.connect(self._cleanup)
+
+    def _cleanup(self):
+        w = self._cm_worker
+        if w is not None and w.isRunning():
+            w.requestInterruption()
+            w.wait(3000)
+
     def _db(self):
         return getattr(self.main_window, "project_db", None)
 
@@ -166,13 +210,33 @@ class AICodeMapController(QtCore.QObject):
             return
         self.load_data()
 
+    def apply_edit_mode(self, enabled: bool):
+        """View-Only: disable the code-map rebuild (it writes to the DB). Linking a
+        local source folder stays enabled — it only feeds the read-only source view
+        and its meta write is skipped by the read-only guard."""
+        if hasattr(self, "btn_rebuild_map"):
+            self.btn_rebuild_map.setEnabled(enabled)
+            self.btn_rebuild_map.setToolTip(
+                "" if enabled else "Disabled in View-Only mode — acquire the edit lock to rebuild.")
+
     def load_data(self):
         db = self._db()
         arch = self._arch()
         if not db or not arch:
             self.code_viewer.setPlaceholderText("// Open a project database to load the Code Map.")
             return
-            
+
+        # Recovery: restore the linked source folder, and surface a hint if a prior
+        # indexing run was interrupted (crash) so the user knows to rebuild.
+        saved_dir = db.get_meta("code_map_source_dir", "")
+        if isinstance(saved_dir, str) and saved_dir and not self.linked_source_dir:
+            self.linked_source_dir = saved_dir
+            self.lbl_status.setText(f"Linked: {saved_dir}")
+        if db.get_meta("code_map_index_state", "") == "in_progress":
+            self.lbl_status.setText(
+                "⚠ Previous Code Map indexing was interrupted — click "
+                "'Index & Rebuild Code Map' to finish it.")
+
         # Get active model
         active_model_id = getattr(arch.model_manager, "active_model_id", None)
         if active_model_id is None:
@@ -202,12 +266,23 @@ class AICodeMapController(QtCore.QObject):
                     self.callers_map[target] = set()
                 self.callers_map[target].add(fName)
                 
+        # Build the selector from real functions only. Defensive at display time so
+        # even code maps saved before the parser-level filter (compiler internals,
+        # data/type symbols) show a clean list without needing a rebuild.
+        from core.elf_parser import keep_function_name
+        data_names = set(self.dataset.get("global_variables", {})) | set(self.dataset.get("structures", {}))
         self.func_list.clear()
-        fNames = sorted(self.dataset["functions"].keys())
+        fNames = [n for n in sorted(self.dataset["functions"].keys())
+                  if keep_function_name(n) and n not in data_names]
         for name in fNames:
             self.func_list.addItem(name)
-            
-        default_focus = "main" if "main" in self.dataset["functions"] else fNames[0]
+
+        if not fNames:
+            self.lbl_name.setText("--")
+            self.scene.clear()
+            self.code_viewer.setPlainText("// No functions to display for this model.")
+            return
+        default_focus = "main" if "main" in fNames else fNames[0]
         self.focus_function(default_focus)
 
     def filter_functions(self):
@@ -284,8 +359,34 @@ class AICodeMapController(QtCore.QObject):
             return
         self.linked_source_dir = dir_path
         self.lbl_status.setText(f"Linked: {dir_path}")
+        # Persist immediately so the link survives a crash/restart (recovery).
+        db = self._db()
+        if db:
+            db.set_meta("code_map_source_dir", dir_path)
+            db.commit()
         if self.focused_func:
             self.load_source_code(self.focused_func)
+
+    # ------------------------------------------------------------------
+    # In-pane "working" overlay over the graph view (non-modal — avoids the
+    # LoadingDialog app-modal pitfall).
+    # ------------------------------------------------------------------
+    def _show_graph_overlay(self, text):
+        if self.graph_overlay is None:
+            self.graph_overlay = QtWidgets.QLabel(self.view)
+            self.graph_overlay.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            self.graph_overlay.setWordWrap(True)
+            self.graph_overlay.setStyleSheet(
+                "background-color: rgba(20, 18, 33, 220); color: #E5E7EB;"
+                " font-size: 15px; font-weight: bold; padding: 16px;")
+        self.graph_overlay.setText(text)
+        self.graph_overlay.setGeometry(self.view.rect())
+        self.graph_overlay.show()
+        self.graph_overlay.raise_()
+
+    def _hide_graph_overlay(self):
+        if self.graph_overlay is not None:
+            self.graph_overlay.hide()
 
     def rebuild_code_map_from_linked_folder(self):
         db = self._db()
@@ -293,29 +394,66 @@ class AICodeMapController(QtCore.QObject):
         if not db or not arch or not getattr(arch, 'parser', None):
             QtWidgets.QMessageBox.warning(self.main_window, "Rebuild Code Map", "No project database or symbols loaded.")
             return
-            
+
         active_model_id = getattr(arch.model_manager, "active_model_id", None)
         if active_model_id is None:
             QtWidgets.QMessageBox.warning(self.main_window, "Rebuild Code Map", "No active architecture model.")
             return
 
-        # Build code index from the linked source folder if exists
-        code_index = None
-        if self.linked_source_dir and os.path.exists(self.linked_source_dir):
-            from Application_Logic.Logic_Code_Index import build_index
-            code_index = build_index(self.linked_source_dir)
-            
+        if self._cm_worker is not None and self._cm_worker.isRunning():
+            return
+
+        # Persist the source location + mark indexing in-progress BEFORE the heavy
+        # work starts. If the app crashes mid-index, load_data() finds the folder
+        # already linked and warns that a rebuild is needed — no redo from scratch.
+        if self.linked_source_dir:
+            db.set_meta("code_map_source_dir", self.linked_source_dir)
+        db.set_meta("code_map_index_state", "in_progress")
+        db.commit()
+
+        self._cm_active_model_id = active_model_id
+        self.btn_rebuild_map.setEnabled(False)
+        self._show_graph_overlay("Generating Code Map…")
+        db.set_activity("codemap", "in_progress")
+
+        self._cm_worker = _CodeMapWorker(arch.parser, self.linked_source_dir, self)
+        self._cm_worker.progress.connect(self._show_graph_overlay)
+        self._cm_worker.finished_ok.connect(self._on_codemap_done)
+        self._cm_worker.failed.connect(self._on_codemap_failed)
+        self._cm_worker.start()
+
+    def _on_codemap_done(self, code_map):
+        # DB write stays on the main thread (single-writer); then silently drop the
+        # overlay and present the freshly built map.
+        db = self._db()
         try:
-            from Application_Logic.Logic_Code_Map import build_code_map
-            code_map = build_code_map(arch.parser, code_index, source_root=self.linked_source_dir or "")
-            db.save_model_code_map(active_model_id, json.dumps(code_map))
-            self.load_data() # Reload visual explorer
-            QtWidgets.QMessageBox.information(
-                self.main_window, "Success",
-                "Code Map successfully rebuilt and saved locally!"
-            )
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self.main_window, "Error", f"Failed to rebuild Code Map:\n{e}")
+            if db and self._cm_active_model_id is not None:
+                db.save_model_code_map(self._cm_active_model_id, json.dumps(code_map))
+                db.set_meta("code_map_index_state", "done")
+                db.commit()
+        except Exception as e:  # noqa: BLE001
+            self._hide_graph_overlay()
+            self.btn_rebuild_map.setEnabled(True)
+            QtWidgets.QMessageBox.critical(self.main_window, "Error", f"Failed to save Code Map:\n{e}")
+            return
+        if db:
+            db.set_activity("", "idle")
+        self._hide_graph_overlay()
+        self.btn_rebuild_map.setEnabled(True)
+        self.load_data()   # silently present the map
+
+    def _on_codemap_failed(self, msg):
+        db = self._db()
+        if db:
+            try:
+                db.set_meta("code_map_index_state", "failed")
+                db.set_activity("", "idle")
+                db.commit()
+            except Exception:
+                pass
+        self._hide_graph_overlay()
+        self.btn_rebuild_map.setEnabled(True)
+        QtWidgets.QMessageBox.critical(self.main_window, "Error", f"Failed to rebuild Code Map:\n{msg}")
 
     def load_source_code(self, fName):
         if not self.linked_source_dir:

@@ -11,10 +11,11 @@ from .Logic_Loading_Window import LoadingDialog
 
 
 class NewProjectController(QMainWindow):
-    def __init__(self, main_window=None, project_db=None):
+    def __init__(self, main_window=None, project_db=None, db_path=None):
         super().__init__()
         self.main_window = main_window
-        self.project_db = project_db   # ProjectDatabase opened before dialog shown
+        self.project_db = project_db   # ProjectDatabase — opened inside the worker
+        self.db_path = db_path          # where to open it (WAL test runs off-thread)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.ui = UI.win_new_project_dialogue.Ui_win_new_project_dialogue()
         self.ui.setupUi(self)
@@ -55,14 +56,32 @@ class NewProjectController(QMainWindow):
         except RuntimeError:
             pass
 
+    def _ensure_db_open(self):
+        """Open the project DB on the (background) worker thread so the WAL/journal
+        test + schema creation never freeze the UI. Logs flow to the loading window."""
+        import logging
+        log = logging.getLogger(__name__)
+        if self.project_db is not None and not self.project_db.is_open and self.db_path:
+            log.info("Preparing project database…")
+            self.project_db.open(self.db_path)
+
+    def _open_db_task(self):
+        """Worker task for the 'Start Empty' path: just open the DB (WAL test)."""
+        self._ensure_db_open()
+        return True
+
     def _parse_logic(self, mode, file_path):
         """Runs on the background thread."""
+        import logging
+        self._ensure_db_open()
         parser = ELFParser()
         if self.main_window and getattr(self.main_window, 'test_mode', False):
             parser.test_mode = True
 
         if mode == 'ELF':
             parser.load_elf(file_path)
+            logging.getLogger(__name__).info(
+                f"Using ELF parser backend: {parser.parser_backend}")
             if self.project_db and self.project_db.is_open:
                 # Stream directly to DB — never accumulates full ELF in RAM
                 parser.extract_all_streaming_to_db(self.project_db)
@@ -151,6 +170,13 @@ class NewProjectController(QMainWindow):
     def start_empty_handler(self):
         if self._closing:
             return
+        # Open the DB (WAL test + schema) off the UI thread, with feedback, even for
+        # an empty project — that step is what freezes on slow/EDR storage.
+        if self.project_db is not None and not self.project_db.is_open:
+            loader = LoadingDialog(self)
+            if not loader.run_task(self._open_db_task):
+                self.show_message("Error", f"Failed: {loader.error_msg}", QMessageBox.Icon.Critical)
+                return
         self._start_empty = True
         self._safe_close()
 

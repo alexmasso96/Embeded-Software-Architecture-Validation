@@ -243,10 +243,10 @@ class AIChatController(ProviderPanelMixin, QtCore.QObject):
         # Requirements
         rgrp = QtWidgets.QGroupBox("Requirements")
         rl = QtWidgets.QHBoxLayout(rgrp)
-        btn_reqs = QtWidgets.QPushButton("Import Requirements…")
-        btn_reqs.clicked.connect(self._import_requirements)
+        self.btn_reqs = QtWidgets.QPushButton("Import Requirements…")
+        self.btn_reqs.clicked.connect(self._import_requirements)
         self.lbl_reqs = QtWidgets.QLabel("(none)")
-        rl.addWidget(btn_reqs); rl.addWidget(self.lbl_reqs, 1)
+        rl.addWidget(self.btn_reqs); rl.addWidget(self.lbl_reqs, 1)
         lay.addWidget(rgrp)
 
         # Mind map
@@ -285,6 +285,7 @@ class AIChatController(ProviderPanelMixin, QtCore.QObject):
         pl.addWidget(tabs)
         prrow = QtWidgets.QHBoxLayout()
         bsave = QtWidgets.QPushButton("Save"); bsave.clicked.connect(self._save_prompt_rules)
+        self.btn_save_prompt = bsave
         breset = QtWidgets.QPushButton("Reset to default"); breset.clicked.connect(self._reset_prompt_rules)
         prrow.addWidget(bsave); prrow.addWidget(breset); prrow.addStretch()
         pl.addLayout(prrow)
@@ -336,6 +337,18 @@ class AIChatController(ProviderPanelMixin, QtCore.QObject):
         self._refresh_reqs_status()
         self._refresh_mindmap_buttons()
 
+    def apply_edit_mode(self, enabled: bool):
+        """View-Only sessions can't write to the shared DB: disable the mind-map /
+        diff / requirements / prompt-save actions (chat Q&A stays available, it's
+        read-only). Buttons get a tooltip so the lock is self-explanatory."""
+        tip = "" if enabled else "Disabled in View-Only mode — acquire the edit lock to use this."
+        for btn in (getattr(self, "btn_gen_mm", None), getattr(self, "btn_gen_mm_all", None),
+                    getattr(self, "btn_gen_diffs", None), getattr(self, "btn_reqs", None),
+                    getattr(self, "btn_save_prompt", None)):
+            if btn is not None:
+                btn.setEnabled(enabled)
+                btn.setToolTip(tip)
+
     # ------------------------------------------------------------------
     # Source sync (anti-loop)
     # ------------------------------------------------------------------
@@ -383,13 +396,21 @@ class AIChatController(ProviderPanelMixin, QtCore.QObject):
         )
         if not path:
             return
+        # Parse off the UI thread — pandas/openpyxl reads of a large sheet (each
+        # read scanned by EDR) otherwise freeze the window. run_task keeps the UI
+        # responsive and returns synchronously.
+        from Application_Logic.Logic_Loading_Window import LoadingDialog
+        loader = LoadingDialog(self.main_window)
         try:
-            reqs = ctx.parse_requirements_file(path)
-        except Exception as e:  # noqa: BLE001
-            QtWidgets.QMessageBox.warning(self.main_window, "Requirements", str(e))
-            return
-        self._set_meta(ctx.META_REQUIREMENTS, json.dumps(reqs))
-        self._refresh_reqs_status()
+            loader.ui.lbl_loading_text.setText("Importing requirements…")
+        except Exception:
+            pass
+        if loader.run_task(ctx.parse_requirements_file, path):
+            reqs = loader.result
+            self._set_meta(ctx.META_REQUIREMENTS, json.dumps(reqs))
+            self._refresh_reqs_status()
+        else:
+            QtWidgets.QMessageBox.warning(self.main_window, "Requirements", str(loader.error_msg))
 
     def _refresh_reqs_status(self):
         raw = self._meta(ctx.META_REQUIREMENTS)
@@ -503,6 +524,10 @@ class AIChatController(ProviderPanelMixin, QtCore.QObject):
         if self._mm_worker is not None and self._mm_worker.isRunning():
             return
         self._busy(True)
+        db = self._db()
+        if db is not None and getattr(db, "is_open", False):
+            detail = jobs[0][1] if len(jobs) == 1 else f"{len(jobs)} models"
+            db.set_activity("diff" if diff_only_label else "mindmap", "in_progress", detail)
         from Application_Logic.Logic_Loading_Window import LoadingDialog
         # Non-modal (MEMORY: never app-modal show()/close()).
         self._mm_loading = LoadingDialog(self.main_window)
@@ -519,6 +544,7 @@ class AIChatController(ProviderPanelMixin, QtCore.QObject):
         if getattr(self, "_mm_loading", None):
             self._mm_loading.close(); self._mm_loading.deleteLater(); self._mm_loading = None
         self._busy(False)
+        self._clear_activity()
         self.lbl_mm_status.setText(f"Built {n} mind map(s).")
         self._refresh_mindmap_buttons()
 
@@ -526,7 +552,13 @@ class AIChatController(ProviderPanelMixin, QtCore.QObject):
         if getattr(self, "_mm_loading", None):
             self._mm_loading.close(); self._mm_loading.deleteLater(); self._mm_loading = None
         self._busy(False)
+        self._clear_activity()
         QtWidgets.QMessageBox.critical(self.main_window, "Mind Map", msg)
+
+    def _clear_activity(self):
+        db = self._db()
+        if db is not None and getattr(db, "is_open", False):
+            db.set_activity("", "idle")
 
     def _busy(self, busy):
         for b in (self.btn_gen_mm, self.btn_gen_mm_all, self.btn_gen_diffs):

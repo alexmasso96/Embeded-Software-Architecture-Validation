@@ -1257,38 +1257,74 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
 
         from PyQt6.QtCore import QCoreApplication
 
-        loading = None
-        if show_progress and self.main_window and self.main_window.isVisible():
-            from .Logic_Loading_Window import LoadingDialog
-            loading = LoadingDialog(self.main_window)
-            loading.ui.lbl_loading_text.setText(progress_label)
-            # Non-modal on purpose: this runs synchronously on the UI thread, so an
-            # app-modal session adds nothing and, shown via show()/close() instead
-            # of exec(), can leave a dangling modal session on macOS that silently
-            # disables the sidebar buttons until the app is restarted.
-            loading.show()
-            QCoreApplication.processEvents()
+        # Phase 1 (interactive only): warm the fuzzy-match caches OFF the UI thread
+        # behind a responsive modal. rapidfuzz's process.extract releases the GIL,
+        # so the heavy scoring of every port against the symbol pool runs without
+        # freezing the window. The apply loop below then hits warm lru_caches.
+        if (show_progress and self.main_window and self.main_window.isVisible()
+                and QtWidgets.QApplication.instance() is not None):
+            self._prewarm_matches_offthread(search_cols, row_count, progress_label)
 
         self.table.blockSignals(True)
         try:
+            # Phase 2: apply matches to the table (UI thread — widget updates can't
+            # be off-threaded; after the prewarm these are cache hits, so it's fast).
             for row in range(row_count):
                 for col_idx, col_obj in search_cols:
                     text = self.get_cell_value(row, col_idx)
                     if text:
                         # lazy defaults to False -> eager match, populates (Match) column now
                         col_obj.on_change(self.table, row, col_idx, text, self)
-                if loading is not None and (row % 25 == 0 or row == row_count - 1):
-                    loading.append_log(f"Matched {row + 1}/{row_count} rows...")
+                if show_progress and (row % 25 == 0 or row == row_count - 1):
                     QCoreApplication.processEvents()
         finally:
             self.table.blockSignals(False)
             self.hook_comboboxes()
             self.refresh_init_column_state()
             self.refresh_cyclic_column_state()
-            if loading is not None:
-                loading.close()
-                loading.deleteLater()
-                QCoreApplication.processEvents()
+
+    def _prewarm_matches_offthread(self, search_cols, row_count, progress_label):
+        """Pre-compute every search cell's fuzzy matches on a worker thread so the
+        rapidfuzz scoring (GIL-released) doesn't block the UI. Populates the
+        matcher's lru_caches; the subsequent apply loop reads them as cache hits."""
+        jobs = []
+        for row in range(row_count):
+            for col_idx, col_obj in search_cols:
+                text = self.get_cell_value(row, col_idx)
+                if text:
+                    jobs.append((text, type(col_obj).__name__))
+        if not jobs:
+            return
+        matcher = self.matcher
+
+        def _warm():
+            import logging as _lg
+            seen = set()
+            total = len(jobs)
+            for i, (text, kind) in enumerate(jobs):
+                if (text, kind) in seen:
+                    continue
+                seen.add((text, kind))
+                try:
+                    if kind == "FunctionSearchColumn":
+                        matcher.find_top_function_matches(text, limit=10)
+                    elif kind == "VariableSearchColumn":
+                        matcher.find_top_variable_matches(text, limit=10)
+                    else:
+                        matcher.find_top_matches(text, limit=10)
+                except Exception:
+                    pass
+                if i % 50 == 0 or i == total - 1:
+                    _lg.getLogger(__name__).info(f"Loading symbol matches… {i + 1}/{total}")
+            return True
+
+        from .Logic_Loading_Window import LoadingDialog
+        loader = LoadingDialog(self.main_window)
+        try:
+            loader.ui.lbl_loading_text.setText(progress_label)
+        except Exception:
+            pass
+        loader.run_task(_warm)
 
     def get_cell_value(self, row, col_idx):
         """Helper to get text value of a cell, checking widgets first."""

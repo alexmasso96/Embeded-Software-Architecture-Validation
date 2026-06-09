@@ -55,6 +55,45 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Compiler-internal symbol filtering
+# ---------------------------------------------------------------------------
+# Toolchains emit huge numbers of assembler labels (".L123", ".LANCHOR0", ".LC0")
+# and compiler/runtime internals ("_start", "__aeabi_*", "_GLOBAL__*"). On a real
+# firmware ELF these dwarf the genuine functions (e.g. ~319k ".L*" labels vs ~12k
+# real functions) and are NEVER architecture ports — they only add noise to the
+# Code Map function selector and slow indexing/code-map builds by ~30x.
+#
+# They are dropped from the *function* set by default. Flip COMPILER_INTERNALS to
+# True (in source) if you ever need them back; symbol matching is unaffected because
+# real architecture ports never resolve to these names.
+COMPILER_INTERNALS = False
+
+
+def is_compiler_internal(name: str) -> bool:
+    """True for assembler labels / compiler-internal symbol names."""
+    if not name:
+        return True
+    # Assembler/local labels: ".L*", ".LANCHOR*", ".LC*", ".text", ...
+    if name.startswith('.'):
+        return True
+    # Compiler/runtime internals: "_start", "__aeabi_*", "_GLOBAL__*", "_u8", ...
+    if name.startswith('_'):
+        return True
+    return False
+
+
+def keep_function_name(name: str) -> bool:
+    """Whether a function symbol should be kept in the Code Map function set.
+
+    Honors the COMPILER_INTERNALS switch so the filter is a single, source-level
+    decision applied consistently across every parser backend and DB-insert path.
+    """
+    if COMPILER_INTERNALS:
+        return True
+    return not is_compiler_internal(name)
+
+
 @dataclass
 class Symbol:
     """Represents a symbol extracted from an ELF file."""
@@ -302,7 +341,8 @@ class ELFParser:
             self.functions = []
             
             self.symbols = [Symbol(**s) for s in data["symbols"]]
-            self.functions = [Function(**f) for f in data["functions"]]
+            self.functions = [Function(**f) for f in data["functions"]
+                              if keep_function_name(f.get("name", ""))]
             self.structures = data["structures"]
             self.global_vars_dwarf = data["global_vars"]
             
@@ -406,6 +446,8 @@ class ELFParser:
             
         self.functions = []
         for f in data.get("functions", []):
+            if not keep_function_name(f.get("name", "")):
+                continue
             self.functions.append(Function(
                 name=f["name"],
                 address=f["address"],
@@ -457,7 +499,7 @@ class ELFParser:
             
         logger.info("Filtering function symbols...")
         for symbol in self.symbols:
-            if symbol.symbol_type == 'STT_FUNC':
+            if symbol.symbol_type == 'STT_FUNC' and keep_function_name(symbol.name):
                 yield Function(
                     name=symbol.name, address=symbol.address, size=symbol.size, parameters=[]
                 )
@@ -821,7 +863,7 @@ class ELFParser:
         func_symbols = []   # only the STT_FUNC subset kept for phase 2
         for sym in self._generate_symbols():
             sym_batch.append(sym)
-            if sym.symbol_type == 'STT_FUNC':
+            if sym.symbol_type == 'STT_FUNC' and keep_function_name(sym.name):
                 func_symbols.append(sym)
             if len(sym_batch) >= BATCH:
                 db.bulk_insert_symbols(self.md5_hash, sym_batch)

@@ -20,9 +20,14 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import logging
 import os
 import re
 from typing import Dict, List, Optional
+
+# Progress for the long file-by-file diff surfaces in the LoadingDialog / mind-map
+# loading window (both attach a handler to the root logger).
+logger = logging.getLogger(__name__)
 
 # Meta keys in project_meta
 META_RULES = "ai_rules_md"
@@ -523,8 +528,14 @@ def diff_source_folders(current_root: str, previous_root: str,
     prev = {rel: (ap, size, mtime) for rel, ap, size, mtime in _iter_source_files(previous_root, exts)}
     results: List[Dict] = []
     all_rel = sorted(set(cur) | set(prev))
+    total = len(all_rel)
+    logger.info("Comparing %d source files…", total)
 
-    for rel in all_rel:
+    for idx, rel in enumerate(all_rel):
+        # Periodic progress — on EDR machines each read is scanned, so this can be
+        # slow; the loading window shows it's making progress rather than hung.
+        if total and (idx % 25 == 0 or idx == total - 1):
+            logger.info("Diffing files… %d/%d", idx + 1, total)
         if len(results) >= max_files:
             results.append({"file_path": "(truncated)", "status": "modified",
                             "unified_diff": f"(diff truncated: more than {max_files} files)"})
@@ -850,9 +861,11 @@ def parse_requirements_file(file_path: str, max_rows: int = 500) -> List[Dict]:
     at max_rows with a sentinel row.
     """
     from Application_Logic.Logic_Rhapsody_Import import read_file
+    logger.info("Reading requirements sheet: %s", os.path.basename(file_path))
     columns, rows = read_file(file_path)
     if not columns:
         return []
+    logger.info("Parsing %d requirement row(s)…", len(rows))
 
     def _pick(hints):
         for h in hints:

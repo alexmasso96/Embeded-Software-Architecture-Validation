@@ -1,3 +1,54 @@
+# v2.1.0 — Performance, Responsiveness & Multi-User Safety
+
+A focused follow-up to v2.0.0: the heavy operations that used to freeze the window
+now run off the UI thread with clear progress, the Code Map is dramatically faster
+and cleaner, and concurrent multi-user access can no longer corrupt a shared project.
+
+---
+
+## ⚡ Responsiveness — heavy work moved off the UI thread
+No more "Not Responding" during long operations; each now shows progress (and which
+ELF parser backend is in use):
+- **New project:** the SQLite WAL/journal-mode test + schema creation and the ELF
+  parse run on a background worker, in a single log window that reports the chosen
+  journal mode and whether the **native Rust** or **pyelftools** backend was used.
+- **Code Map generation & source indexing:** run on a worker behind a non-blocking
+  "Generating Code Map…" overlay. The linked source folder and index state are now
+  persisted *before* indexing, so a crash mid-index recovers gracefully instead of
+  forcing the user to redo everything.
+- **Saving:** explicit saves run the integrity HMAC + WAL checkpoint off-thread
+  behind a responsive "Saving…" dialog (auto-save behaviour unchanged).
+- **Fuzzy matching**, **release diffing**, and **AI requirements import** also run
+  off-thread with progress feedback.
+
+## 🧹 Code Map: faster, cleaner, no crashes
+- **Symbol-noise filter:** assembler labels (`.L*`) and compiler/runtime internals
+  (`_` / `__`) are dropped from the function set (re-enable in source via the
+  `COMPILER_INTERNALS` switch). On a real firmware ELF this cut ~347k "functions"
+  down to ~12k — far faster indexing and a clean function selector. Symbol matching
+  against architecture ports is unaffected.
+- **Variables/types are no longer listed as functions** in the selector.
+- **Crash fixed:** navigating to a caller/callee node no longer crashes (a
+  use-after-free when the graph rebuilt mid-click).
+
+## 🔒 Multi-user safety
+- **View-Only is now truly read-only:** the database connection is opened with a
+  hard write-block (`PRAGMA query_only`), and the AI actions that write to the shared
+  project (mind-map, code-map rebuild, diff compute, AI generation, AI change-log)
+  are disabled in View-Only — so two sessions can no longer issue concurrent writes
+  that could corrupt the file.
+- **Activity awareness:** the editor broadcasts long-running actions (mind-map /
+  diff / code-map "in progress"), and View-Only sessions show a banner so viewers
+  know data is being generated and will refresh once it finishes.
+
+## 🛠 Other
+- Fixed a latent `NameError` in the database layer that would surface on the
+  network-drive journal-mode fallback path.
+
+**Tests:** 394 logic-layer tests passing.
+
+---
+
 # v2.0.0 — AI, Code Mapping & Configuration Management
 
 A major release. Architecture Validator Pro grows from an ELF↔architecture matcher

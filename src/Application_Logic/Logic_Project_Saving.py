@@ -5,6 +5,7 @@ Save / load a .arch SQLite project file.
 The "dirty" concept is tracked via a sidecar .dirty flag file.
 """
 import os
+import logging
 import hashlib
 import hmac
 import json
@@ -12,6 +13,8 @@ from PyQt6 import QtWidgets
 
 from .Logic_Database import ProjectDatabase
 from core.elf_parser import ELFParser
+
+logger = logging.getLogger(__name__)
 
 
 class ProjectSaver:
@@ -113,9 +116,33 @@ class ProjectSaver:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def save_project(main_window, path: str, is_temp: bool = False):
+    def save_project(main_window, path: str, is_temp: bool = False, progress: bool = False):
+        """Save the project.
+
+        Split into two phases so the slow, EDR-amplified file I/O never freezes
+        the UI:
+          * Phase 1 (this method, MAIN thread): everything that reads Qt widgets —
+            the Save-As DB handoff, flushing the live table, and collecting the
+            test-case-design text. Widgets must only be touched on the GUI thread.
+          * Phase 2 (`_persist`, off-thread when progress=True): all DB writes,
+            ELF-cache export, integrity HMAC and WAL checkpoint. These touch only
+            the DB / managers / files, never widgets.
+
+        progress=True runs Phase 2 in a worker behind a responsive modal
+        (LoadingDialog.run_task — the safe exec() form, see the modal pitfall
+        memory) and still returns (success, msg) synchronously, so every existing
+        caller is unchanged. progress=False (default, and auto-save) runs Phase 2
+        inline, preserving prior behaviour for headless/scripted callers.
+        """
         if not getattr(main_window, 'edit_mode', True):
             return False, "Saving is disabled in View-Only mode."
+
+        # Re-entrancy guard: a modal save pumps the event loop, so the auto-save /
+        # other timers can fire mid-save. A second concurrent save would write the
+        # same DB connection from two paths — refuse it.
+        if getattr(main_window, '_save_in_progress', False):
+            return False, "A save is already in progress."
+        main_window._save_in_progress = True
         try:
             db: ProjectDatabase = getattr(main_window, 'project_db', None)
             if db is None or not db.is_open:
@@ -143,103 +170,148 @@ class ProjectSaver:
                 main_window.project_db = db
                 main_window.arch_controller.set_project_db(db)
 
-            # 1. Flush current table rows to DB
+            # --- Phase 1: gather everything that reads Qt widgets (MAIN thread) ---
+            # 1. Flush current table rows to DB (reads the live QTableWidget)
             main_window.arch_controller.flush_current_data_to_model()
-
-            # 2. Column layout
+            # 2. Column layout + settings (get_project_data reads the table)
             full_data = main_window.arch_controller.get_project_data()
-            db.save_column_layout(full_data.get("config", []))
-
-            # 3. Settings
             settings = full_data.get("settings", {})
             settings["auto_save_interval"] = getattr(main_window, 'auto_save_interval', 'immediate')
-            for k, v in settings.items():
-                db.set_meta(k, v)
-
-            # 4. Master password hash
-            master_hash = getattr(main_window, 'master_password_hash', None)
-            if master_hash:
-                db.set_meta("master_password_hash", master_hash)
-
-            # 5. Test-case design
+            # 3. Test-case design text (reads QLineEdit/QPlainTextEdit)
+            tc_payload = None
             if hasattr(main_window, 'test_case_controller'):
                 tc = main_window.test_case_controller
-                db.set_test_case_design({
+                tc_payload = {
                     "project_title": tc.get_project_title(),
                     "design_template": tc.get_design_template(),
                     "operation_grouping": tc.get_operation_grouping(),
-                })
+                }
+            payload = {
+                "config": full_data.get("config", []),
+                "settings": settings,
+                "tc": tc_payload,
+                "master_hash": getattr(main_window, 'master_password_hash', None),
+            }
 
-            # 6. ELF data: flush parser to DB (first save) and export cache JSON only when changed
-            if main_window.parser:
-                parser: ELFParser = main_window.parser
-                if parser.md5_hash and not db.has_elf(parser.md5_hash):
-                    # Still in-memory — flush to DB now
-                    parser.flush_to_db(db)
-                elif parser.md5_hash and not parser._db:
-                    parser._db = db
-                    parser._active_elf_hash = parser.md5_hash
-
-                # Export cache JSON only when the ELF hash changed or the file is missing
-                if parser._db and parser._active_elf_hash:
-                    last_exported = db.get_meta("last_exported_elf_hash")
-                    cache_dir = ProjectSaver._elf_cache_dir(path)
-                    cache_file = os.path.join(
-                        cache_dir, f"elf_{parser._active_elf_hash}.json"
-                    )
-                    if (parser._active_elf_hash != last_exported
-                            or not os.path.exists(cache_file)):
-                        parser.export_elf_cache(cache_dir)
-                        db.set_meta("last_exported_elf_hash", parser._active_elf_hash)
-
-            # 7. Release registry + ELF hash linkage
-            active_release = main_window.arch_controller.release_manager.get_active_release()
-            if active_release and main_window.parser and main_window.parser.md5_hash:
-                if not active_release.elf_hash:
-                    active_release.elf_hash = main_window.parser.md5_hash
-                    active_release.elf_path = str(main_window.parser.elf_path or "")
-            main_window.arch_controller.release_manager.save_registry()
-            main_window.arch_controller.model_manager.save_registry()
-            # Persist EVERY model's rows (not just the active one). Models created
-            # during a multi-sheet import live only in data_cache until now.
-            main_window.arch_controller.model_manager.save_all_model_data()
-
-            # 8. History
-            if not hasattr(main_window, 'history_manager') or main_window.history_manager is None:
-                from .Logic_History import HistoryManager
-                main_window.history_manager = HistoryManager(db)
+            # --- Phase 2: persist (DB / files / managers only — no widgets) ---
+            use_modal = (progress and not is_temp
+                         and isinstance(main_window, QtWidgets.QWidget)
+                         and not getattr(main_window, 'test_mode', False)
+                         and QtWidgets.QApplication.instance() is not None)
+            if use_modal:
+                from .Logic_Loading_Window import LoadingDialog
+                loader = LoadingDialog(main_window)
+                try:
+                    loader.ui.lbl_loading_text.setText("Saving project…")
+                except Exception:
+                    pass
+                ok = loader.run_task(ProjectSaver._persist, main_window, db, path, payload, is_temp)
+                if not ok:
+                    return False, f"Failed to save project: {loader.error_msg}"
             else:
-                main_window.history_manager.set_db(db)
-
-            # Integrity stamp: HMAC over canonical logical content, stored INSIDE
-            # the DB (so it travels with the file and can't desync like the old
-            # sidecar). Must be the last content write before commit; it is
-            # excluded from the digest so it isn't self-referential.
-            if not is_temp:
-                master_hash = db.get_meta("master_password_hash")
-                integrity = ProjectSaver.compute_integrity_hmac(db, master_hash)
-                db.set_meta("integrity_hmac", integrity)
-
-            db.commit()
-
-            if not is_temp:
-                ProjectSaver.cleanup_temp(path)
-
-                if db.is_open:
-                    db.execute("PRAGMA wal_checkpoint(FULL)")
-
-                # Remove any stale sidecar left by the old file-byte scheme.
-                legacy_sidecar = path + ".integrity"
-                if os.path.exists(legacy_sidecar):
-                    try:
-                        os.remove(legacy_sidecar)
-                    except Exception:
-                        pass
+                ProjectSaver._persist(main_window, db, path, payload, is_temp)
 
             return True, "Project saved successfully." + (" (Temp)" if is_temp else "")
 
         except Exception as e:
             return False, f"Failed to save project: {e}"
+        finally:
+            main_window._save_in_progress = False
+
+    @staticmethod
+    def _persist(main_window, db, path, payload, is_temp):
+        """Phase 2 of save: DB writes, ELF cache, integrity HMAC, WAL checkpoint.
+
+        Touches only the DB connection, the (widget-free) model/release managers,
+        the parser and the filesystem — safe to run on a worker thread. Progress
+        is logged so it streams into the LoadingDialog console."""
+        logger.info("Writing project metadata…")
+        # 2. Column layout
+        db.save_column_layout(payload.get("config", []))
+
+        # 3. Settings
+        for k, v in payload.get("settings", {}).items():
+            db.set_meta(k, v)
+
+        # 4. Master password hash
+        master_hash = payload.get("master_hash")
+        if master_hash:
+            db.set_meta("master_password_hash", master_hash)
+
+        # 5. Test-case design
+        if payload.get("tc") is not None:
+            db.set_test_case_design(payload["tc"])
+
+        # 6. ELF data: flush parser to DB (first save) and export cache JSON only when changed
+        if main_window.parser:
+            parser: ELFParser = main_window.parser
+            if parser.md5_hash and not db.has_elf(parser.md5_hash):
+                # Still in-memory — flush to DB now
+                logger.info("Writing ELF data to project database…")
+                parser.flush_to_db(db)
+            elif parser.md5_hash and not parser._db:
+                parser._db = db
+                parser._active_elf_hash = parser.md5_hash
+
+            # Export cache JSON only when the ELF hash changed or the file is missing
+            if parser._db and parser._active_elf_hash:
+                last_exported = db.get_meta("last_exported_elf_hash")
+                cache_dir = ProjectSaver._elf_cache_dir(path)
+                cache_file = os.path.join(
+                    cache_dir, f"elf_{parser._active_elf_hash}.json"
+                )
+                if (parser._active_elf_hash != last_exported
+                        or not os.path.exists(cache_file)):
+                    logger.info("Exporting ELF cache…")
+                    parser.export_elf_cache(cache_dir)
+                    db.set_meta("last_exported_elf_hash", parser._active_elf_hash)
+
+        # 7. Release registry + ELF hash linkage
+        active_release = main_window.arch_controller.release_manager.get_active_release()
+        if active_release and main_window.parser and main_window.parser.md5_hash:
+            if not active_release.elf_hash:
+                active_release.elf_hash = main_window.parser.md5_hash
+                active_release.elf_path = str(main_window.parser.elf_path or "")
+        logger.info("Saving models and releases…")
+        main_window.arch_controller.release_manager.save_registry()
+        main_window.arch_controller.model_manager.save_registry()
+        # Persist EVERY model's rows (not just the active one). Models created
+        # during a multi-sheet import live only in data_cache until now.
+        main_window.arch_controller.model_manager.save_all_model_data()
+
+        # 8. History
+        if not hasattr(main_window, 'history_manager') or main_window.history_manager is None:
+            from .Logic_History import HistoryManager
+            main_window.history_manager = HistoryManager(db)
+        else:
+            main_window.history_manager.set_db(db)
+
+        # Integrity stamp: HMAC over canonical logical content, stored INSIDE
+        # the DB (so it travels with the file and can't desync like the old
+        # sidecar). Must be the last content write before commit; it is
+        # excluded from the digest so it isn't self-referential.
+        if not is_temp:
+            logger.info("Computing integrity stamp…")
+            master_hash = db.get_meta("master_password_hash")
+            integrity = ProjectSaver.compute_integrity_hmac(db, master_hash)
+            db.set_meta("integrity_hmac", integrity)
+
+        db.commit()
+
+        if not is_temp:
+            ProjectSaver.cleanup_temp(path)
+
+            if db.is_open:
+                logger.info("Checkpointing database…")
+                db.execute("PRAGMA wal_checkpoint(FULL)")
+
+            # Remove any stale sidecar left by the old file-byte scheme.
+            legacy_sidecar = path + ".integrity"
+            if os.path.exists(legacy_sidecar):
+                try:
+                    os.remove(legacy_sidecar)
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # Load

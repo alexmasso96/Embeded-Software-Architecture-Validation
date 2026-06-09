@@ -197,6 +197,7 @@ class AIGenerationController(ProviderPanelMixin, QtCore.QObject):
         rrow = QtWidgets.QHBoxLayout()
         btn_save_pr = QtWidgets.QPushButton("Save")
         btn_save_pr.clicked.connect(self._save_prompt_rules)
+        self.btn_save_pr = btn_save_pr
         btn_reset_pr = QtWidgets.QPushButton("Reset to default")
         btn_reset_pr.clicked.connect(self._reset_prompt_rules)
         rrow.addWidget(btn_save_pr)
@@ -307,6 +308,20 @@ class AIGenerationController(ProviderPanelMixin, QtCore.QObject):
             self._refresh_providers()
             self.refresh_hlt_files()
             self._load_prompt_rules()
+
+    def apply_edit_mode(self, enabled: bool):
+        """View-Only: disable generation, write-back, and prompt/rules save (they
+        write low-level design files into the project and edit the HLT design)."""
+        tip = "" if enabled else "Disabled in View-Only mode — acquire the edit lock to use this."
+        for btn in (getattr(self, "btn_generate", None), getattr(self, "btn_save_pr", None)):
+            if btn is not None:
+                btn.setEnabled(enabled)
+                btn.setToolTip(tip)
+        # Write-back has its own state (only after a generation produced output);
+        # never force it on — just keep it off in View-Only.
+        if getattr(self, "btn_writeback", None) is not None:
+            self.btn_writeback.setEnabled(enabled and bool(self._generated))
+            self.btn_writeback.setToolTip(tip)
 
     # ------------------------------------------------------------------
     # Source / HLT files
@@ -460,6 +475,8 @@ class AIGenerationController(ProviderPanelMixin, QtCore.QObject):
         self.btn_writeback.setEnabled(False)
         self.btn_generate.setEnabled(False)
         self.btn_stop.setEnabled(True)
+        if db is not None and getattr(db, "is_open", False):
+            db.set_activity("aigen", "in_progress", self._parsed.get("model_name", ""))
 
         self._worker = _GenWorker(
             pid, model,
@@ -498,6 +515,7 @@ class AIGenerationController(ProviderPanelMixin, QtCore.QObject):
         self.btn_writeback.setEnabled(True)
         self.lbl_outfile.setText(f"Written: {path}")
         self.out_thoughts.appendPlainText(f"Done. Wrote {path}")
+        self._clear_activity()
         # Seed the chat conversation with the generated context.
         self._chat = [{"role": "assistant", "content": "Low-level test cases generated."}]
 
@@ -505,6 +523,12 @@ class AIGenerationController(ProviderPanelMixin, QtCore.QObject):
         self.btn_generate.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.out_thoughts.appendPlainText(f"⚠ {msg}")
+        self._clear_activity()
+
+    def _clear_activity(self):
+        db = self._db()
+        if db is not None and getattr(db, "is_open", False):
+            db.set_activity("", "idle")
 
     # ------------------------------------------------------------------
     # Write back

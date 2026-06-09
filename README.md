@@ -6,7 +6,7 @@ Point it at an `.elf` file and an architecture export, and it parses the binary'
 
 Built with Python and PyQt6.
 
-> 📷 _Screenshot coming soon._
+![Architecture Validator Pro — the validation workspace](/Media/images/hero_screenshot.png "The validation workspace: architecture ports matched to real ELF symbols, with review status and per-release port state")
 
 ---
 
@@ -43,17 +43,19 @@ Reads compiled `.elf` files and pulls out the symbols, functions, structures, an
 ### 🤖 AI test-case generation, agentic chat & mind maps
 Generate **low-level, HiL-debugger-style test designs** from your high-level test cases and the real C source, across **GitHub Copilot, Anthropic, OpenAI, and Gemini** (keys stored encrypted, per-user, never in the project). An **Advanced AI Chat** indexes your source into a compact **mind map** and answers questions agentically with read-only, sandboxed tools (`read_file`, `search_code`, `get_call_graph`, …) — grounded in the actual code. Import requirements (CSV/XLSX) and compute file-by-file source diffs between releases.
 
-> 📷 _Screenshot coming soon._
+![AI Test Generation — low-level HiL test designs from high-level cases](/Media/images/ai_test_generation.png "AI Test Generation — generate low-level, HiL-debugger-style test designs from your high-level test cases and the real C source")
+
+![Advanced AI Chat — agentic Q&A grounded in the firmware](/Media/images/advanced_ai_chat.png "Advanced AI Chat — answers questions agentically with read-only, sandboxed tools, grounded in the source mind map and call graph")
 
 ### 🗺️ Code Map
 A visual **call-graph + source explorer** that joins the ELF/DWARF facts (addresses, sizes, params, structs, globals) to the C source by function name — depth-bounded caller/callee graph, matched-globals panel, and a syntax-highlighted source view. Rebuildable offline (no AI tokens).
 
-> 📷 _Screenshot coming soon._
+![Code Map — call-graph explorer joined to the C source](/Media/images/code_map.png "Code Map — depth-bounded caller/callee graph with function details, matched globals, and a syntax-highlighted source view")
 
 ### 📜 Change Log
 A **git-style side-by-side diff** between releases (file browser, old/new with synchronized scrolling and add/delete highlighting), plus an optional AI-generated change-log summary.
 
-> 📷 _Screenshot coming soon._
+![Change Log — side-by-side release diff](/Media/images/change_log.png "Change Log — git-style side-by-side diff between releases with synchronized scrolling and add/delete highlighting")
 
 ### 📥 Flexible architecture import
 Bring your architecture in from **Excel or CSV**. Rhapsody path-based exports are detected automatically and routed through a dedicated import flow, and the classic sheet-per-model spreadsheet format is supported too.

@@ -313,6 +313,66 @@ class ApplicationWindow(QMainWindow):
         if hasattr(self, 'arch_controller') and hasattr(self.arch_controller, 'refresh_all_column_locking'):
             self.arch_controller.refresh_all_column_locking()
 
+        # 8. Multi-user safety: in View-Only, harden the DB connection against ANY
+        # write (PRAGMA query_only) and disable the AI generation actions that write
+        # to the shared DB, so two sessions can't issue concurrent writes.
+        db = getattr(self, 'project_db', None)
+        if db is not None and getattr(db, 'is_open', False):
+            db.set_read_only(not edit_mode)
+        for ctrl_name in ('ai_controller', 'ai_chat_controller',
+                          'code_map_controller', 'changelog_controller'):
+            ctrl = getattr(self, ctrl_name, None)
+            if ctrl is not None and hasattr(ctrl, 'apply_edit_mode'):
+                ctrl.apply_edit_mode(edit_mode)
+
+        # 9. View-Only sessions poll the editor's broadcast activity so they know
+        # when a mind-map/diff/code-map build is happening (data updates when done).
+        self._update_viewer_poll(edit_mode)
+
+    def _update_viewer_poll(self, edit_mode):
+        if not hasattr(self, 'viewer_poll_timer'):
+            self.viewer_poll_timer = QTimer(self)
+            self.viewer_poll_timer.timeout.connect(self._poll_viewer_activity)
+        if edit_mode:
+            self.viewer_poll_timer.stop()
+            self._set_activity_banner(None)
+        else:
+            if not self.viewer_poll_timer.isActive():
+                self.viewer_poll_timer.start(5000)
+            self._poll_viewer_activity()  # show immediately, don't wait 5s
+
+    def _poll_viewer_activity(self):
+        db = getattr(self, 'project_db', None)
+        if db is None or not getattr(db, 'is_open', False) or getattr(self, 'edit_mode', True):
+            self._set_activity_banner(None)
+            return
+        act = db.get_activity()
+        if act and act.get("state") == "in_progress":
+            labels = {
+                "mindmap": "generating a mind map", "codemap": "rebuilding the code map",
+                "diff": "computing release diffs", "aigen": "generating test cases",
+                "ailog": "generating the AI change log",
+            }
+            what = labels.get(act.get("op", ""), act.get("op") or "working")
+            detail = act.get("detail", "")
+            user = act.get("user", "another user")
+            txt = f"⏳ {user} is {what}" + (f" ({detail})" if detail else "") + " — data will update when finished."
+            self._set_activity_banner(txt)
+        else:
+            self._set_activity_banner(None)
+
+    def _set_activity_banner(self, text):
+        if not hasattr(self, 'viewer_activity_label'):
+            self.viewer_activity_label = QtWidgets.QLabel("", self)
+            self.viewer_activity_label.setStyleSheet("color:#E0A800; font-weight:bold;")
+            self.ui.statusbar.addPermanentWidget(self.viewer_activity_label)
+        if text:
+            self.viewer_activity_label.setText(text)
+            self.viewer_activity_label.show()
+        else:
+            self.viewer_activity_label.setText("")
+            self.viewer_activity_label.hide()
+
     def update_edit_menu(self):
         """Updates the text and enabled states of the dynamic Edit menu items."""
         if not self.current_project_file:
@@ -459,13 +519,16 @@ class ApplicationWindow(QMainWindow):
 
         from Application_Logic.Logic_Database import ProjectDatabase
         project_db = ProjectDatabase()
-        project_db.open(file_path)
+        # The DB open (WAL/journal test + schema creation) is deferred into the
+        # New-Project worker thread so slow/EDR storage no longer freezes the UI;
+        # progress shows in the loading window.
         self.project_db = project_db
 
         # Step 3: ELF / JSON import — parser streams directly to DB
-        dialog = App_Logic.NewProjectController(self, project_db=project_db)
+        dialog = App_Logic.NewProjectController(self, project_db=project_db, db_path=file_path)
         if not dialog.exec():
-            project_db.close()
+            if getattr(project_db, "is_open", False):
+                project_db.close()
             try:
                 os.remove(file_path)
             except OSError:
@@ -491,7 +554,7 @@ class ApplicationWindow(QMainWindow):
         self.set_app_mode(True)
 
         # Flush layout / release registry / master password to DB
-        success, msg = ProjectSaver.save_project(self, file_path)
+        success, msg = ProjectSaver.save_project(self, file_path, progress=True)
         if success:
             self.ui.statusbar.showMessage("Project created successfully.")
         else:
@@ -499,7 +562,9 @@ class ApplicationWindow(QMainWindow):
 
     def save_project(self):
         if self.current_project_file:
-            success, msg = ProjectSaver.save_project(self, self.current_project_file)
+            # Explicit Save: show the responsive "Saving…" dialog (heavy I/O runs
+            # off the UI thread). Auto-save uses its own inline path below.
+            success, msg = ProjectSaver.save_project(self, self.current_project_file, progress=True)
             self.ui.statusbar.showMessage(msg)
             if not success:
                 QMessageBox.critical(self, "Save Error", msg)
@@ -537,7 +602,7 @@ class ApplicationWindow(QMainWindow):
             if self.current_project_file and getattr(self, 'edit_mode', True):
                 FileLockManager.release_lock(self.current_project_file)
 
-            success, msg = ProjectSaver.save_project(self, file_path)
+            success, msg = ProjectSaver.save_project(self, file_path, progress=True)
             self.ui.statusbar.showMessage(msg)
             if success:
                 self.current_project_file = file_path
@@ -708,7 +773,8 @@ class ApplicationWindow(QMainWindow):
         interval_str = self.auto_save_map.get(action, "immediate")
         self.set_auto_save_interval(interval_str)
         if self.current_project_file and getattr(self, 'edit_mode', True):
-            self.save_project()
+            # Inline (no modal) — this is a background settings-change save.
+            ProjectSaver.save_project(self, self.current_project_file, progress=False)
 
     def set_auto_save_interval(self, interval_str):
         self.auto_save_interval = interval_str
@@ -748,7 +814,9 @@ class ApplicationWindow(QMainWindow):
     def auto_save_trigger(self):
         if self.current_project_file and getattr(self, 'edit_mode', True):
             if ProjectSaver.has_temp_changes(self.current_project_file):
-                self.save_project()
+                # Inline (no modal popup on a timer). The re-entrancy guard in
+                # save_project skips this if a modal save is already running.
+                ProjectSaver.save_project(self, self.current_project_file, progress=False)
 
     def show_history_dialog(self):
         if not hasattr(self, 'history_manager') or not self.history_manager:

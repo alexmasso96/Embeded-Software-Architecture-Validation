@@ -321,10 +321,23 @@ def test_code_map_tab_folder_linking():
             assert "void main() {" in code_text
             assert "return;" in code_text
             
-            # Test double click NodeItem focus to verify it calls focus_function
+            # Double-click must DEFER focus_function (focus rebuilds the scene via
+            # scene.clear(), which deletes this node mid-event → use-after-free crash)
+            # and must NOT call super() afterwards on the navigation path.
             node = wcm.NodeItem(0, 0, 100, 50, "main", "center", controller)
+            deferred = []
+            fake_event = MagicMock()
             with patch.object(controller, "focus_function") as mock_focus, \
+                 patch("PyQt6.QtCore.QTimer.singleShot",
+                       side_effect=lambda ms, fn: deferred.append(fn)), \
                  patch("PyQt6.QtWidgets.QGraphicsRectItem.mouseDoubleClickEvent") as mock_super:
-                node.mouseDoubleClickEvent(None)
+                node.mouseDoubleClickEvent(fake_event)
+                # Focus is scheduled, not run inline.
+                mock_focus.assert_not_called()
+                assert len(deferred) == 1
+                # Running the scheduled callback performs the focus.
+                deferred[0]()
                 mock_focus.assert_called_with("main")
-                mock_super.assert_called_once_with(None)
+                # Event consumed; super() is NOT invoked on the navigation path.
+                fake_event.accept.assert_called_once()
+                mock_super.assert_not_called()

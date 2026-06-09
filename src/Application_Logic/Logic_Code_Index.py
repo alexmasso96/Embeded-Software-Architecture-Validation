@@ -565,8 +565,11 @@ def _extract_functions(content: str, relpath: str, known_types: Set[str]) -> Lis
             func_name = match.group('funcname')
             params_str = match.group('params').strip()
 
-            # Filter out false positives
-            if func_name in C_KEYWORDS or func_name in _BUILTIN_TYPES:
+            # Filter out false positives: keywords, built-in types, *_t/*_st/*_type
+            # patterns, and project typedefs/enum tags (e.g. "u16", "st"). These are
+            # data/type names, never functions — they must not reach the Code Map.
+            if (func_name in C_KEYWORDS or func_name in _BUILTIN_TYPES
+                    or _is_type_keyword(func_name) or func_name in known_types):
                 i += 1
                 continue
             # Skip if it looks like a macro invocation (all caps and short)

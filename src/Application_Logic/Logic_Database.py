@@ -24,6 +24,11 @@ _JOURNAL_MODE = os.environ.get("ARCH_SQLITE_JOURNAL_MODE", "WAL").upper()
 _PERF_LOG = os.environ.get("ARCH_PERF_LOG", "0") == "1"
 _perf_logger = logging.getLogger("arch.perf")
 
+# Module logger (used by open()/_apply_journal_mode — these messages surface in the
+# New-Project loading window). Was previously referenced but never defined; the
+# branches that used it (network-drive fallbacks) just never ran in dev/tests.
+logger = logging.getLogger(__name__)
+
 
 @contextmanager
 def _timed(label: str, **extra):
@@ -214,6 +219,10 @@ class ProjectDatabase:
     def __init__(self):
         self.db_path: Optional[str] = None
         self._conn: Optional[sqlite3.Connection] = None
+        # View-Only sessions set this; a hard SQLite-level backstop (PRAGMA
+        # query_only) plus skip-guards on the KV writers so a viewer can never
+        # mutate the shared file even via an un-gated code path.
+        self.read_only: bool = False
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -233,15 +242,18 @@ class ProjectDatabase:
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self.journal_mode = self._apply_journal_mode(db_path)
+        logger.info(f"Journal mode: {self.journal_mode}")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
+        logger.info("Creating/validating project database schema…")
         self._create_schema()
 
     def _apply_journal_mode(self, db_path: str) -> str:
         """Finding F: pick a safe SQLite journal mode for the project's location.
         WAL on local disks; DELETE on network/UNC drives (WAL corrupts there).
         Honors the ARCH_SQLITE_JOURNAL_MODE override."""
+        logger.info("Testing WAL/journal mode for this storage location…")
         override = os.environ.get("ARCH_SQLITE_JOURNAL_MODE")
         if override:
             mode = override.upper()
@@ -288,6 +300,19 @@ class ProjectDatabase:
     def commit(self):
         if self._conn:
             self._conn.commit()
+
+    def set_read_only(self, flag: bool):
+        """Toggle the View-Only backstop. `PRAGMA query_only=ON` makes the SQLite
+        connection refuse every write at the engine level — a hard guarantee that a
+        viewer can't corrupt the shared file regardless of which code path runs. The
+        `read_only` flag also lets the lightweight KV writers skip silently so normal
+        read-only navigation doesn't raise."""
+        self.read_only = bool(flag)
+        if self._conn is not None:
+            try:
+                self._conn.execute("PRAGMA query_only=%s" % ("ON" if flag else "OFF"))
+            except Exception:
+                pass
 
     def execute(self, sql: str, params=()):
         return self._conn.execute(sql, params)
@@ -538,6 +563,8 @@ class ProjectDatabase:
         return row[0] if row else default
 
     def set_meta(self, key: str, value):
+        if self.read_only:
+            return  # View-Only: silently ignore incidental metadata writes.
         with self._conn:
             self._conn.execute(
                 "INSERT OR REPLACE INTO project_meta (key, value) VALUES (?, ?)",
@@ -547,6 +574,36 @@ class ProjectDatabase:
     def get_all_meta(self) -> dict:
         cur = self._conn.execute("SELECT key, value FROM project_meta")
         return {r[0]: r[1] for r in cur.fetchall()}
+
+    # ------------------------------------------------------------------
+    # Multi-user activity broadcast (editor writes; View-Only sessions poll)
+    # ------------------------------------------------------------------
+    _ACTIVITY_KEY = "activity_status"
+
+    def set_activity(self, op: str, state: str, detail: str = ""):
+        """Editor broadcasts a long-running AI op ('mindmap'/'codemap'/'diff'/…)
+        so other sessions can surface it. state is 'in_progress' or 'idle'. Goes
+        through set_meta (skipped for read-only viewers, which never generate)."""
+        import json, datetime
+        from Application_Logic.Logic_File_Locking import FileLockManager
+        payload = {
+            "op": op, "state": state, "detail": detail,
+            "user": FileLockManager.get_username(),
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        }
+        self.set_meta(self._ACTIVITY_KEY, json.dumps(payload))
+
+    def get_activity(self):
+        """Returns the current activity dict (fresh read so a poller sees the
+        latest committed value), or None."""
+        import json
+        raw = self.get_meta(self._ACTIVITY_KEY)
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except (ValueError, TypeError):
+            return None
 
     # ------------------------------------------------------------------
     # AI Part 2 — mind map (per architecture model)
@@ -785,6 +842,8 @@ class ProjectDatabase:
         return row[0] if row else default
 
     def set_ui_state(self, key: str, value):
+        if self.read_only:
+            return  # View-Only: silently ignore incidental UI-state writes.
         with self._conn:
             self._conn.execute(
                 "INSERT OR REPLACE INTO ui_state (key, value) VALUES (?, ?)",
@@ -1133,10 +1192,17 @@ class ProjectDatabase:
                 )
 
     def bulk_insert_functions(self, elf_hash: str, functions):
+        # Drop compiler-internal / assembler-label symbols (.L*, _*, __*) at the
+        # single DB-insert chokepoint so the elf_functions table — what the Code Map
+        # reads — is clean regardless of which parser backend or path produced it.
+        from core.elf_parser import keep_function_name
         BATCH = 2000
         with self._conn:
             batch = []
             for function in functions:
+                name = function.get("name", "") if isinstance(function, dict) else getattr(function, "name", "")
+                if not keep_function_name(name):
+                    continue
                 batch.append(function)
                 if len(batch) < BATCH:
                     continue
