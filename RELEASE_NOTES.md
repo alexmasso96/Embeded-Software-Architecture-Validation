@@ -1,51 +1,81 @@
-# v2.1.0 — Performance, Responsiveness & Multi-User Safety
+# v2.1.1 — Release-Keyed Source, Code Map IDE Features & a Major Bug-Fix Pass
 
-A focused follow-up to v2.0.0: the heavy operations that used to freeze the window
-now run off the UI thread with clear progress, the Code Map is dramatically faster
-and cleaner, and concurrent multi-user access can no longer corrupt a shared project.
+Source code now lives **inside the project database, keyed by release** — no more
+scattered folder pickers. The Code Map gained IDE-grade navigation and works even
+when the ELF carries no call tree, imports run under one continuous progress
+window, and a long list of crashes and rough edges from 2.1.0 are fixed.
 
 ---
 
-## ⚡ Responsiveness — heavy work moved off the UI thread
-No more "Not Responding" during long operations; each now shows progress (and which
-ELF parser backend is in use):
-- **New project:** the SQLite WAL/journal-mode test + schema creation and the ELF
-  parse run on a background worker, in a single log window that reports the chosen
-  journal mode and whether the **native Rust** or **pyelftools** backend was used.
-- **Code Map generation & source indexing:** run on a worker behind a non-blocking
-  "Generating Code Map…" overlay. The linked source folder and index state are now
-  persisted *before* indexing, so a crash mid-index recovers gracefully instead of
-  forcing the user to redo everything.
-- **Saving:** explicit saves run the integrity HMAC + WAL checkpoint off-thread
-  behind a responsive "Saving…" dialog (auto-save behaviour unchanged).
-- **Fuzzy matching**, **release diffing**, and **AI requirements import** also run
-  off-thread with progress feedback.
+## ✨ Source code in the project, keyed by release
+The four separate source-folder pickers (AI Test Generation, AI Chat current/
+previous, Code Map, Change Log) are gone, replaced by one consistent flow:
+- **Map / Import Source Code** in the Release Selection window is now the single
+  place a folder is picked. The import runs on a background worker with per-file
+  progress, and stores the files **gzip-compressed in the `.arch` database**,
+  keyed by release (excluded from the integrity digest, so saves stay fast).
+- **Everywhere else shows a release dropdown** instead of a folder picker — AI
+  chat, test generation, the Code Map, and the Change Log all read the selected
+  release's source straight from the database.
+- **Mind maps and code maps are now stored per (model, release)**, so adding an
+  intermediary release (e.g. a 1.5 after 2.0 exists) keeps every release's
+  index intact and independent.
+- **Unload Source** removes a release's source blobs while keeping its mind map
+  and code map — regression checks don't force a re-import or regeneration.
 
-## 🧹 Code Map: faster, cleaner, no crashes
-- **Symbol-noise filter:** assembler labels (`.L*`) and compiler/runtime internals
-  (`_` / `__`) are dropped from the function set (re-enable in source via the
-  `COMPILER_INTERNALS` switch). On a real firmware ELF this cut ~347k "functions"
-  down to ~12k — far faster indexing and a clean function selector. Symbol matching
-  against architecture ports is unaffected.
-- **Variables/types are no longer listed as functions** in the selector.
-- **Crash fixed:** navigating to a caller/callee node no longer crashes (a
-  use-after-free when the graph rebuilt mid-click).
+## 🗺 Code Map: IDE navigation + works without a call tree
+- **Hover tooltips** in the source viewer for functions (signature, return type,
+  location), globals (type), and `#define` macros (their values — now persisted
+  into the code map).
+- **Ctrl-click (Cmd-click on macOS) on a function name jumps to it** — the graph
+  re-centers and its source loads; holding the modifier shows a link-style
+  underline and pointing-hand cursor.
+- **ELF without a call tree?** The map now probes whether the binary actually
+  carries call information (stripped/ET_REL binaries often don't) and falls back
+  to the **source-derived call graph** automatically instead of running a futile
+  disassembly pass.
+- **Crash fixed:** the Code Map build no longer shares the UI thread's database
+  connection — the worker opens its own connection and commits the finished map
+  durably, with the main thread safely gated during the build.
 
-## 🔒 Multi-user safety
-- **View-Only is now truly read-only:** the database connection is opened with a
-  hard write-block (`PRAGMA query_only`), and the AI actions that write to the shared
-  project (mind-map, code-map rebuild, diff compute, AI generation, AI change-log)
-  are disabled in View-Only — so two sessions can no longer issue concurrent writes
-  that could corrupt the file.
-- **Activity awareness:** the editor broadcasts long-running actions (mind-map /
-  diff / code-map "in progress"), and View-Only sessions show a banner so viewers
-  know data is being generated and will refresh once it finishes.
+## 🚦 Port-state propagation is now user-confirmed
+When a model leaves **In Work**, a new confirmation dialog lists the unique ports
+still marked In Work (with selectable Port Name / Port State columns), all
+pre-ticked with Select All/None — **you choose exactly which ports follow the
+model's new state**; Cancel changes nothing. No more silent cascades.
 
-## 🛠 Other
-- Fixed a latent `NameError` in the database layer that would surface on the
-  network-drive journal-mode fallback path.
+## 📦 Imports: one continuous window, cleaner results
+- **ELF import → Code Map generation now runs under a single loading window**
+  with step-by-step narration (journal-mode test, parser backend, Parsing /
+  Decoding / Writing phases) — the visible freeze between the two phases is gone.
+- **Rhapsody import cleanup:** unmapped Mapped-Function/Parameter column families
+  are dropped automatically, and the untouched default `Architecture_1`
+  placeholder is removed once real models are imported.
 
-**Tests:** 394 logic-layer tests passing.
+## ⚡ Performance
+- **The native Rust ELF parser now releases the Python GIL** during parsing and
+  hashing — the UI keeps painting while large binaries parse. This was the
+  single biggest cause of "(not responding)" on EDR-protected machines.
+- **Model switching is much faster:** switching persists only the active-model
+  id instead of rewriting the whole registry, and skips flushing clean tables.
+
+## 🤖 AI quality-of-life
+- **AI Change Log crash fixed** ("Type Dict cannot be instantiated") and the
+  model dropdown now sends the real model id to the provider.
+- **AI chat renders markdown** with distinct bubbles for You / tool calls / AI /
+  system messages.
+- **Mind-map status per model:** the model dropdown marks ✓/○ for mind-map
+  existence, the Generate/Regenerate button flips accordingly, and a status line
+  shows "no mind map / ready / regenerate recommended".
+
+## 🛠 Dialog & correctness fixes
+- **Model delete works again** — the styled confirmation dialog's result was
+  never recognized, so Delete silently no-op'd; same fix applied to the release
+  locate/create prompts. The stray extra "OK" button is gone, the manager
+  dialogs got the consistent dark theme, and the sidebar refreshes after the
+  manager closes regardless of how it was dismissed.
+
+**Tests:** 471 logic-layer tests passing.
 
 ---
 
