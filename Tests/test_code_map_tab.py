@@ -14,7 +14,8 @@ sys.path.append(os.path.abspath("src"))
 app = QApplication.instance() or QApplication(sys.argv)
 
 from main import ApplicationWindow
-from Application_Logic.Logic_Code_Map_Tab import AICodeMapController, MAX_GRAPH_NODES
+from Application_Logic.Logic_Code_Map_Tab import MAX_GRAPH_NODES
+from UI.tab_code_map import AICodeMapController
 from UI import widgets_code_map as wcm
 
 def test_code_map_tab_initialization():

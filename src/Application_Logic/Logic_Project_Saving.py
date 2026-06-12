@@ -9,8 +9,8 @@ import logging
 import hashlib
 import hmac
 import json
-from PyQt6 import QtWidgets
 
+from .qt_compat import gui_active
 from .Logic_Database import ProjectDatabase
 from core.elf_parser import ELFParser
 
@@ -195,11 +195,10 @@ class ProjectSaver:
 
             # --- Phase 2: persist (DB / files / managers only — no widgets) ---
             use_modal = (progress and not is_temp
-                         and isinstance(main_window, QtWidgets.QWidget)
                          and not getattr(main_window, 'test_mode', False)
-                         and QtWidgets.QApplication.instance() is not None)
+                         and gui_active(main_window))
             if use_modal:
-                from .Logic_Loading_Window import LoadingDialog
+                from UI.loading_window import LoadingDialog
                 loader = LoadingDialog(main_window)
                 try:
                     loader.ui.lbl_loading_text.setText("Saving project…")

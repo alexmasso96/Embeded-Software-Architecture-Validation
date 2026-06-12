@@ -14,7 +14,7 @@ A consuming controller must:
 """
 from PyQt6 import QtCore, QtWidgets
 
-from . import Logic_AI_Providers as providers
+from Application_Logic import Logic_AI_Providers as providers
 
 
 class _ModelDiscoverThread(QtCore.QThread):

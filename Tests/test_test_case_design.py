@@ -14,8 +14,8 @@ app = QApplication.instance() or QApplication(sys.argv)
 
 import UI
 from Application_Logic.Logic_Project_Saving import ProjectSaver
-from Application_Logic.Logic_Architecture_Table import ArchitectureTabController
-from Application_Logic.Logic_TestCase_Design import TestCaseDesignController
+from UI.architecture_table import ArchitectureTabController
+from UI.test_case_design import TestCaseDesignController
 from main import ApplicationWindow
 
 

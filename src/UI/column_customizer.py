@@ -1,3 +1,6 @@
+"""Column customizer dialog (Qt) — moved from Application_Logic/Logic_Column_Customizer.py
+in Phase 0 of the pywebview migration. TODO(Phase 1): extract the rename/delete validation
+rules into the logic layer so the API can enforce them server-side."""
 from PyQt6  import QtWidgets, QtCore, QtGui
 
 

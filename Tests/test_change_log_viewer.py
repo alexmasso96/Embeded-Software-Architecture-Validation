@@ -11,7 +11,8 @@ from PyQt6 import QtWidgets
 sys.path.append(os.path.abspath("src"))
 
 from Application_Logic.Logic_Database import ProjectDatabase
-from Application_Logic.Logic_Change_Log_Tab import parse_and_align_diff, AIChangeLogController
+from Application_Logic.Logic_Change_Log_Tab import parse_and_align_diff
+from UI.tab_change_log import AIChangeLogController
 from UI.widgets_change_log import ChangeLogWidget
 from Tests.test_helpers import make_project_db
 
@@ -138,8 +139,8 @@ def test_changelog_viewer_tab_setup():
         window.ui.setupUi(window)
         window.project_db = db
         
-        from Application_Logic.Logic_Architecture_Table import ArchitectureTabController
-        from Application_Logic.Logic_AI_Chat import AIChatController
+        from UI.architecture_table import ArchitectureTabController
+        from UI.tab_ai_chat import AIChatController
         
         # Make controllers
         window.arch_controller = ArchitectureTabController(window)

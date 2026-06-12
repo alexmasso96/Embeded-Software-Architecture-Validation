@@ -10,7 +10,7 @@ sys.path.append(os.path.abspath("src"))
 from PyQt6.QtWidgets import QApplication, QDialog
 app = QApplication.instance() or QApplication(sys.argv)
 
-from Application_Logic.Logic_Loading_Window import LoadingDialog, TaskWorker
+from UI.loading_window import LoadingDialog, TaskWorker
 
 
 def test_run_task_success_returns_result():

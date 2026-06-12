@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import QApplication
 app = QApplication.instance() or QApplication(sys.argv)
 
 import UI  # noqa: F401  (ensure UI package initialised)
-from Application_Logic.Logic_New_Project import NewProjectController
+from UI.new_project_window import NewProjectController
 from Application_Logic.Logic_Database import ProjectDatabase
 from core.elf_parser import ELFParser
 
@@ -99,7 +99,7 @@ def test_open_elf_handler_success():
                    return_value=(ELF, "")), \
              patch("PyQt6.QtWidgets.QInputDialog.getText",
                    return_value=("R1.0", True)), \
-             patch("Application_Logic.Logic_New_Project.LoadingDialog",
+             patch("UI.new_project_window.LoadingDialog",
                    return_value=fake_loader), \
              patch.object(ctrl, "show_message") as mock_show:
             ctrl.open_elf_handler()
@@ -134,7 +134,7 @@ def test_open_json_handler_success():
                    return_value=("/tmp/cache.json", "")), \
              patch("PyQt6.QtWidgets.QInputDialog.getText",
                    return_value=("R2.0", True)), \
-             patch("Application_Logic.Logic_New_Project.LoadingDialog",
+             patch("UI.new_project_window.LoadingDialog",
                    return_value=fake_loader), \
              patch.object(ctrl, "show_message") as mock_show:
             ctrl.open_json_handler()
@@ -155,7 +155,7 @@ def test_open_elf_handler_failure_shows_error():
                return_value=(ELF, "")), \
          patch("PyQt6.QtWidgets.QInputDialog.getText",
                return_value=("R1.0", True)), \
-         patch("Application_Logic.Logic_New_Project.LoadingDialog",
+         patch("UI.new_project_window.LoadingDialog",
                return_value=fake_loader), \
          patch.object(ctrl, "show_message") as mock_show:
         ctrl.open_elf_handler()

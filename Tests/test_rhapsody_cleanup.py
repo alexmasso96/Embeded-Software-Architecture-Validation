@@ -20,7 +20,7 @@ app = QApplication.instance() or QApplication(sys.argv)
 
 import UI
 from Application_Logic.Logic_Architecture_Models import ArchitectureManager
-from Application_Logic.Logic_Architecture_Table import ArchitectureTabController
+from UI.architecture_table import ArchitectureTabController
 from Tests.test_helpers import make_project_db
 
 

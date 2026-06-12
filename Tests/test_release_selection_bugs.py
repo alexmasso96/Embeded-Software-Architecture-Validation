@@ -11,7 +11,7 @@ sys.path.append(os.path.abspath("src"))
 
 from Application_Logic.Logic_Release_Manager import ReleaseManager
 from Application_Logic.Logic_Database import ProjectDatabase
-from Application_Logic.Logic_Architecture_Table import ArchitectureTabController
+from UI.architecture_table import ArchitectureTabController
 from UI.Dialog_Release_Selection import ReleaseSelectionDialog
 from Tests.test_helpers import make_project_db
 
@@ -256,7 +256,7 @@ def test_empty_project_excel_import_json_import_edgecase():
         assert match_col_idx != -1
         
         widget = controller.table.cellWidget(0, match_col_idx)
-        from Application_Logic.Logic_Column_Types import LazyComboBox
+        from UI.column_types import LazyComboBox
         assert isinstance(widget, LazyComboBox)
         assert widget.currentText() == "TargetFunc"
         

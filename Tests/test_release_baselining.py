@@ -12,7 +12,7 @@ sys.path.append(os.path.abspath("src"))
 
 from Application_Logic.Logic_Release_Manager import ReleaseManager
 from Application_Logic.Logic_Database import ProjectDatabase
-from Application_Logic.Logic_Architecture_Table import ArchitectureTabController
+from UI.architecture_table import ArchitectureTabController
 from UI.Dialog_Release_Selection import ReleaseSelectionDialog
 from Tests.test_helpers import make_project_db
 
@@ -175,15 +175,15 @@ def test_dialog_lock_unlock_actions(mock_get_text, mock_critical, mock_info, moc
         assert dialog.btn_toggle_lock.text() == "🔓 Unfreeze Baseline"
         
         # Click Unlock -> mock wrong password
-        with patch('Application_Logic.Logic_Security.MasterPasswordPromptDialog.exec', return_value=True), \
-             patch('Application_Logic.Logic_Security.MasterPasswordPromptDialog.get_password', return_value="wrong"):
+        with patch('UI.Dialog_Master_Password.MasterPasswordPromptDialog.exec', return_value=True), \
+             patch('UI.Dialog_Master_Password.MasterPasswordPromptDialog.get_password', return_value="wrong"):
             dialog.on_toggle_lock()
             mock_critical.assert_called_with(dialog, "Access Denied", "Incorrect master password.")
             assert r_b.is_baseline is True
             
         # Click Unlock -> mock correct password
-        with patch('Application_Logic.Logic_Security.MasterPasswordPromptDialog.exec', return_value=True), \
-             patch('Application_Logic.Logic_Security.MasterPasswordPromptDialog.get_password', return_value="master123"):
+        with patch('UI.Dialog_Master_Password.MasterPasswordPromptDialog.exec', return_value=True), \
+             patch('UI.Dialog_Master_Password.MasterPasswordPromptDialog.get_password', return_value="master123"):
             dialog.on_toggle_lock()
             mock_info.assert_called_with(dialog, "Success", "Baseline 'Baseline_B' has been unfrozen. You can now edit its table data.")
             assert r_b.is_baseline is False

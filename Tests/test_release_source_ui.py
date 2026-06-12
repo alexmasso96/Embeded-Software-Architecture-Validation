@@ -19,7 +19,7 @@ app = QApplication.instance() or QApplication(sys.argv)
 
 import UI
 from Application_Logic.Logic_Database import ProjectDatabase
-from Application_Logic.Logic_Architecture_Table import ArchitectureTabController
+from UI.architecture_table import ArchitectureTabController
 from UI.Dialog_Release_Selection import ReleaseSelectionDialog
 from Tests.test_helpers import make_project_db
 

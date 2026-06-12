@@ -12,7 +12,7 @@ from PyQt6 import QtCore
 from main import ApplicationWindow
 from Application_Logic.Logic_Project_Saving import ProjectSaver
 from Application_Logic.Logic_Database import ProjectDatabase
-from Application_Logic.Logic_Column_Types import ReleaseResultColumn
+from UI.column_types import ReleaseResultColumn
 
 # Ensure QApplication is initialized
 app = QApplication.instance() or QApplication(sys.argv)

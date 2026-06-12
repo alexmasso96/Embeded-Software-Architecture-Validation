@@ -122,7 +122,7 @@ def test_load_and_exit_baseline():
     # are pure UI chrome here and destabilise the headless event loop, so we stub them
     # out and exercise the actual baseline load/exit logic only.
     with tempfile.TemporaryDirectory() as tmp, \
-         patch("Application_Logic.Logic_Loading_Window.LoadingDialog", return_value=MagicMock()), \
+         patch("UI.loading_window.LoadingDialog", return_value=MagicMock()), \
          patch.object(QApplication, "processEvents"):
         window, proj = _window_with_project(tmp)
         ctrl = window.arch_controller

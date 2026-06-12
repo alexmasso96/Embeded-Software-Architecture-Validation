@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6 import QtCore
 app = QApplication.instance() or QApplication(sys.argv)
 
-from Application_Logic.Logic_Column_Customizer import ColumnCustomizer
+from UI.column_customizer import ColumnCustomizer
 
 LOGIC_OPTIONS = ["Port Search", "Function Search", "Static Text", "Link", "Last Result"]
 

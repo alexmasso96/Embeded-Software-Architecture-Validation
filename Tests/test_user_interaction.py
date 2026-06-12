@@ -10,7 +10,7 @@ sys.path.append(os.path.abspath("src"))
 from PyQt6.QtWidgets import QApplication, QTableWidget, QTableWidgetItem, QComboBox
 app = QApplication.instance() or QApplication(sys.argv)
 
-from Application_Logic.Logic_User_Interaction import UserInteractionLogic as UIL
+from UI.user_interaction import UserInteractionLogic as UIL
 
 
 def test_mark_and_clear_manual_override():

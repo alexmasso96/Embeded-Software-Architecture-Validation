@@ -133,7 +133,7 @@ def test_project_isolation():
             mode = header.sectionResizeMode(i)
             assert mode == QHeaderView.ResizeMode.Interactive
 
-        from Application_Logic.Logic_Column_Types import LastResultColumn, ReleaseResultColumn
+        from UI.column_types import LastResultColumn, ReleaseResultColumn
         assert window.arch_controller.available_logics.get("Last Result") is LastResultColumn
 
         # Test creating release result columns
@@ -175,7 +175,7 @@ def test_project_isolation():
         # ---- Duplicate Last Result prevention ----
         print("Testing duplicate Last Result column prevention...")
         from PyQt6 import QtWidgets
-        from Application_Logic.Logic_Column_Customizer import ColumnCustomizer
+        from UI.column_customizer import ColumnCustomizer
 
         customizer = ColumnCustomizer(
             current_config=[("Last Result", "Last Result", True)],

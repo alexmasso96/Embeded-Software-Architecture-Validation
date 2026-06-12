@@ -27,9 +27,9 @@ app = QApplication.instance() or QApplication(sys.argv)
 
 import UI
 import openpyxl
-from Application_Logic.Logic_Architecture_Table import ArchitectureTabController
+from UI.architecture_table import ArchitectureTabController
 from Application_Logic.Logic_Architecture_Models import ArchitectureManager
-from Application_Logic.Logic_Column_Types import PortSearchColumn
+from UI.column_types import PortSearchColumn
 from Tests.test_helpers import make_project_db
 
 
@@ -165,8 +165,8 @@ def test_excel_import_matches_all_models():
 
         with patch('PyQt6.QtWidgets.QFileDialog.getOpenFileName',
                    MagicMock(return_value=(xls, "x"))), \
-             patch('Application_Logic.Logic_Architecture_Import.ImportModeDialog') as MM, \
-             patch('Application_Logic.Logic_Architecture_Import.ImportConfirmationDialog') as MC, \
+             patch('UI.Dialog_Architecture_Import.ImportModeDialog') as MM, \
+             patch('UI.Dialog_Architecture_Import.ImportConfirmationDialog') as MC, \
              patch('PyQt6.QtWidgets.QMessageBox.information'), \
              patch('PyQt6.QtWidgets.QMessageBox.warning'):
             mi = MagicMock(); mi.exec.return_value = True; mi.selected_mode = "automated"

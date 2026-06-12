@@ -10,8 +10,8 @@ sys.path.append(os.path.abspath("src"))
 from PyQt6.QtWidgets import QApplication
 app = QApplication.instance() or QApplication(sys.argv)
 
-from Application_Logic.Logic_Security import (
-    SecurityManager,
+from Application_Logic.Logic_Security import SecurityManager
+from UI.Dialog_Master_Password import (
     MasterPasswordSetupDialog,
     MasterPasswordPromptDialog,
 )

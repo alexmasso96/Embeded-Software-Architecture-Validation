@@ -1,22 +1,31 @@
 import logging
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from .events import Emitter
 
-class Signaller (QObject):
+
+class Signaller:
     """
-    A helper to send strings across threads or to the UI safely
+    A file-like object that publishes everything written to it as a
+    ``"text"`` event. Subscribers (e.g. a log console) register with
+    ``signaller.events.on("text", fn)``.
+
+    Delivery is synchronous on the writing thread — UI subscribers must
+    marshal onto their GUI thread themselves (see ``_LogRelay`` in
+    ``UI/loading_window.py``).
     """
 
-    text_received = pyqtSignal(str)
+    def __init__(self):
+        self.events = Emitter()
 
-    def write (self, text):
-        self.text_received.emit(str(text))
+    def write(self, text):
+        self.events.emit("text", str(text))
 
-    def flush (self):
+    def flush(self):
         # Needed for a file-like object compatibility
         pass
 
-class QtLoggingHandler(logging.Handler):
+
+class EmitterLoggingHandler(logging.Handler):
     """
     A custom logging handler that sends records to the signaller
     """

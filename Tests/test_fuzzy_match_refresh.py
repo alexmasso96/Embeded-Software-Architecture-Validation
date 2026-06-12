@@ -17,8 +17,8 @@ from PyQt6.QtWidgets import QApplication, QMainWindow, QComboBox, QTableWidgetIt
 app = QApplication.instance() or QApplication(sys.argv)
 
 import UI
-from Application_Logic.Logic_Architecture_Table import ArchitectureTabController
-from Application_Logic.Logic_Column_Types import (
+from UI.architecture_table import ArchitectureTabController
+from UI.column_types import (
     FunctionSearchColumn, PortSearchColumn, VariableSearchColumn,
 )
 

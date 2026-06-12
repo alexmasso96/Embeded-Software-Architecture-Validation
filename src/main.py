@@ -54,12 +54,18 @@ class ApplicationWindow(QMainWindow):
         self.ui.setupUi(self)
 
         # Initialize the specialized controllers
-        self.arch_controller = App_Logic.ArchitectureTabController(self)
-        self.test_case_controller = App_Logic.TestCaseDesignController(self)
-        self.ai_controller = App_Logic.AIGenerationController(self)
-        self.ai_chat_controller = App_Logic.AIChatController(self)
-        self.code_map_controller = App_Logic.AICodeMapController(self)
-        self.changelog_controller = App_Logic.AIChangeLogController(self)
+        from UI.architecture_table import ArchitectureTabController
+        from UI.test_case_design import TestCaseDesignController
+        self.arch_controller = ArchitectureTabController(self)
+        self.test_case_controller = TestCaseDesignController(self)
+        from UI.tab_ai_generation import AIGenerationController
+        self.ai_controller = AIGenerationController(self)
+        from UI.tab_ai_chat import AIChatController
+        self.ai_chat_controller = AIChatController(self)
+        from UI.tab_code_map import AICodeMapController
+        self.code_map_controller = AICodeMapController(self)
+        from UI.tab_change_log import AIChangeLogController
+        self.changelog_controller = AIChangeLogController(self)
         
         #initialize parser storage
         self.parser = None
@@ -496,7 +502,8 @@ class ApplicationWindow(QMainWindow):
         file_path = os.path.join(project_dir, f"{base_name}.arch")
 
         # Step 2: Master password — set after the user has chosen where to save
-        from Application_Logic.Logic_Security import MasterPasswordSetupDialog, SecurityManager
+        from Application_Logic.Logic_Security import SecurityManager
+        from UI.Dialog_Master_Password import MasterPasswordSetupDialog
         pw_dialog = MasterPasswordSetupDialog(self)
         if not pw_dialog.exec():
             QMessageBox.warning(self, "Cancelled", "Project creation cancelled because a master password is required.")
@@ -525,7 +532,8 @@ class ApplicationWindow(QMainWindow):
         self.project_db = project_db
 
         # Step 3: ELF / JSON import — parser streams directly to DB
-        dialog = App_Logic.NewProjectController(self, project_db=project_db, db_path=file_path)
+        from UI.new_project_window import NewProjectController
+        dialog = NewProjectController(self, project_db=project_db, db_path=file_path)
         if not dialog.exec():
             if getattr(project_db, "is_open", False):
                 project_db.close()
@@ -707,7 +715,8 @@ class ApplicationWindow(QMainWindow):
         if success:
             if getattr(self, 'integrity_mismatch', False):
                 # Prompt the user for master password (Feature 4)
-                from Application_Logic.Logic_Security import MasterPasswordPromptDialog, SecurityManager
+                from Application_Logic.Logic_Security import SecurityManager
+                from UI.Dialog_Master_Password import MasterPasswordPromptDialog
 
                 # Read stored password hash from DB
                 master_password_hash = None
@@ -846,7 +855,8 @@ class ApplicationWindow(QMainWindow):
             QMessageBox.warning(self, "Test Mode", "A master password must be configured on the project to enter Test Mode.")
             return
             
-        from Application_Logic.Logic_Security import MasterPasswordPromptDialog, SecurityManager
+        from Application_Logic.Logic_Security import SecurityManager
+        from UI.Dialog_Master_Password import MasterPasswordPromptDialog
         prompt = MasterPasswordPromptDialog(self, "Enter Master Password to Enter Test Mode:")
         if prompt.exec():
             entered = prompt.get_password()

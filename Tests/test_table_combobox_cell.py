@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import QApplication, QTableWidget, QComboBox
 
 app = QApplication.instance() or QApplication(sys.argv)
 
-from Application_Logic.Logic_Architecture_Table import ArchitectureTabController
+from UI.architecture_table import ArchitectureTabController
 
 
 def _bind_cell_of_widget(table):

@@ -1,7 +1,8 @@
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QListView,
                                QPushButton, QLabel, QMessageBox, QAbstractItemView)
 from PyQt6.QtCore import Qt
-from Application_Logic.Logic_Architecture_Models import ArchitectureManager, ArchitectureListModel
+from Application_Logic.Logic_Architecture_Models import ArchitectureManager
+from UI.list_models import ArchitectureListModel
 from .Dialog_Architecture_Edit import ArchitectureEditDialog
 from .Dialog_Restore_Model import RestoreModelDialog
 from .Dialog_Port_Propagation import PortPropagationDialog

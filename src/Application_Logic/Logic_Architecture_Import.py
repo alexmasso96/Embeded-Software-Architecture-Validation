@@ -2,6 +2,11 @@
 Architecture Table — Excel Import Mixin
 Handles import_architecture_excel and the word-similarity helper it relies on.
 Supports both legacy sheet-per-model Excel format and Rhapsody path-based exports.
+
+Phase 0 (pywebview migration): no Qt imports. Notifications/file pickers go
+through the controller-provided callbacks (UI/controller_feedback.py); the
+interactive import dialogs are still driven from here but imported lazily —
+that whole state machine moves behind the HTTP API in Phase 1.
 """
 import logging
 import os
@@ -9,20 +14,13 @@ import re
 
 logger = logging.getLogger(__name__)
 
-from PyQt6 import QtWidgets
 from rapidfuzz import fuzz
 
-from .Logic_Column_Types import (
-    PortSearchColumn, FunctionSearchColumn, VariableSearchColumn,
-    LinkColumn, PortStateColumn, _match_style,
-)
+# NOTE: the legacy Qt column classes (UI.column_types) are imported lazily
+# inside the methods that need them — this mixin only executes as part of the
+# Qt table controller, but the module must stay importable without PyQt6.
+# The lasting column identity is the logic_key strings in active_config.
 from .Logic_Project_Saving import ProjectSaver
-from UI.Dialog_Architecture_Import import (
-    ImportModeDialog,
-    ManualImportDialog,
-    FuzzyMatchPromptDialog,
-    ImportConfirmationDialog,
-)
 
 
 class ArchitectureImportMixin:
@@ -54,37 +52,20 @@ class ArchitectureImportMixin:
                 seen.add(id(m))
                 unique_models.append(m)
 
-        loading = None
-        if (self.matcher and unique_models
-                and self.main_window and self.main_window.isVisible()):
-            from PyQt6.QtCore import QCoreApplication
-            from .Logic_Loading_Window import LoadingDialog
-            loading = LoadingDialog(self.main_window)
-            loading.ui.lbl_loading_text.setText(
-                "Importing — matching symbols, please wait...")
-            # Deliberately NON-modal: matching runs synchronously on the UI thread
-            # (the loop already blocks interaction), so an app-modal session here
-            # buys nothing and, when shown via show()/close() rather than exec(),
-            # can leave a dangling modal session on macOS that silently kills the
-            # sidebar buttons until the app is restarted.
-            loading.show()
-            QCoreApplication.processEvents()
+        def _match_all(progress_log):
+            for i, model in enumerate(unique_models, 1):
+                self._match_model_data_inplace(model)
+                progress_log(f"Matched {i}/{len(unique_models)}: {model.name}")
 
-        try:
-            if self.matcher:
-                from PyQt6.QtCore import QCoreApplication
-                for i, model in enumerate(unique_models, 1):
-                    self._match_model_data_inplace(model)
-                    if loading is not None:
-                        loading.append_log(
-                            f"Matched {i}/{len(unique_models)}: {model.name}")
-                        QCoreApplication.processEvents()
-        finally:
-            if loading is not None:
-                from PyQt6.QtCore import QCoreApplication
-                loading.close()
-                loading.deleteLater()
-                QCoreApplication.processEvents()
+        if self.matcher and unique_models:
+            if self.main_window and self.main_window.isVisible():
+                # busy() shows a non-modal LoadingDialog and pumps the event
+                # loop on every log line (matching runs synchronously on the
+                # UI thread, so the loop already blocks interaction).
+                with self.busy("Importing — matching symbols, please wait...") as log:
+                    _match_all(log)
+            else:
+                _match_all(lambda msg: None)
 
         # Refresh the view for whichever model is currently active so its newly
         # imported, freshly matched rows are shown. The active model's rows were
@@ -110,6 +91,10 @@ class ArchitectureImportMixin:
         if not rows:
             return
 
+        from UI.column_types import (
+            PortSearchColumn, FunctionSearchColumn, VariableSearchColumn,
+            _match_style,
+        )
         specs = []
         for i, col_obj in enumerate(self.active_columns):
             if isinstance(col_obj, (PortSearchColumn, FunctionSearchColumn,
@@ -265,10 +250,10 @@ class ArchitectureImportMixin:
         Auto-detects Rhapsody path-based exports and routes to a dedicated flow;
         otherwise runs the legacy sheet-per-model dialog state-machine.
         """
-        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self.main_window, "Import Excel / CSV File", "",
-            "Excel / CSV Files (*.xlsx *.xls *.csv)",
-            options=QtWidgets.QFileDialog.Option(0)
+        from UI.column_types import PortSearchColumn, LinkColumn, PortStateColumn
+
+        file_path = self.ask_open_file(
+            "Import Excel / CSV File", "Excel / CSV Files (*.xlsx *.xls *.csv)"
         )
         if not file_path:
             return
@@ -284,8 +269,8 @@ class ArchitectureImportMixin:
 
         # -- Legacy sheet-per-model Excel flow (unchanged) --
         if file_path.lower().endswith('.csv'):
-            QtWidgets.QMessageBox.warning(
-                self.main_window, "Unsupported Format",
+            self.notify_warning(
+                "Unsupported Format",
                 "CSV files are only supported for Rhapsody path-based exports.\n"
                 "The selected file does not appear to be in that format."
             )
@@ -296,19 +281,27 @@ class ArchitectureImportMixin:
             xls = pd.ExcelFile(file_path)
             sheet_names = xls.sheet_names
         except Exception as e:
-            QtWidgets.QMessageBox.critical(
-                self.main_window,
+            self.notify_error(
                 "Import Error",
                 f"Failed to load sheet names from Excel file:\n{str(e)}",
             )
             return
 
         if not sheet_names:
-            QtWidgets.QMessageBox.warning(
-                self.main_window, "Import Warning",
+            self.notify_warning(
+                "Import Warning",
                 "No sheets found in the selected Excel file."
             )
             return
+
+        # Interactive dialogs — imported lazily so this module stays Qt-free;
+        # the whole dialog flow moves behind the HTTP API in Phase 1.
+        from UI.Dialog_Architecture_Import import (
+            ImportModeDialog,
+            ManualImportDialog,
+            FuzzyMatchPromptDialog,
+            ImportConfirmationDialog,
+        )
 
         # --- Dialog state-machine ---
         existing_models = [m.name for m in self.model_manager.models]
@@ -509,14 +502,13 @@ class ArchitectureImportMixin:
                 self.main_window, self.main_window.current_project_file
             )
             if not success:
-                QtWidgets.QMessageBox.warning(
-                    self.main_window, "Save Warning",
+                self.notify_warning(
+                    "Save Warning",
                     f"Import completed but project could not be saved:\n{msg}",
                 )
                 return
 
-        QtWidgets.QMessageBox.information(
-            self.main_window,
+        self.notify_info(
             "Import Completed",
             f"Import finished successfully.\nTotal new ports imported: {total_imported_ports}",
         )
@@ -531,6 +523,7 @@ class ArchitectureImportMixin:
         derived from the full path column and only P10_SW_Arch_Public rows are
         imported.  Multi-operation cells expand into one row per operation.
         """
+        from UI.column_types import PortSearchColumn, LinkColumn, PortStateColumn
         from Application_Logic.Logic_Rhapsody_Import import (
             read_file, get_model_preview, build_import_data,
             detect_required_interface_col,
@@ -540,10 +533,7 @@ class ArchitectureImportMixin:
         try:
             columns, rows = read_file(file_path)
         except Exception as e:
-            QtWidgets.QMessageBox.critical(
-                self.main_window, "Import Error",
-                f"Failed to read file:\n{e}"
-            )
+            self.notify_error("Import Error", f"Failed to read file:\n{e}")
             return
 
         # Detect the "Required Interface" source column so rows with a blank
@@ -551,8 +541,8 @@ class ArchitectureImportMixin:
         required_col = detect_required_interface_col(columns, path_col)
         model_preview = get_model_preview(rows, path_col, required_col)
         if not model_preview:
-            QtWidgets.QMessageBox.warning(
-                self.main_window, "Import Warning",
+            self.notify_warning(
+                "Import Warning",
                 "No P10_SW_Arch_Public rows found in this file."
             )
             return
@@ -592,8 +582,8 @@ class ArchitectureImportMixin:
         new_columns = dialog.new_columns
 
         if not col_mapping:
-            QtWidgets.QMessageBox.warning(
-                self.main_window, "Import Warning",
+            self.notify_warning(
+                "Import Warning",
                 "No columns were selected for import."
             )
             return
@@ -703,14 +693,13 @@ class ArchitectureImportMixin:
                 self.main_window, self.main_window.current_project_file
             )
             if not success:
-                QtWidgets.QMessageBox.warning(
-                    self.main_window, "Save Warning",
+                self.notify_warning(
+                    "Save Warning",
                     f"Import completed but project could not be saved:\n{msg}"
                 )
                 return
 
-        QtWidgets.QMessageBox.information(
-            self.main_window,
+        self.notify_info(
             "Import Completed",
             f"Rhapsody import finished.\nTotal new rows imported: {total_imported}"
         )

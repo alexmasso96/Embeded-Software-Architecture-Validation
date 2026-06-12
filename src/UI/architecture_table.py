@@ -1,23 +1,26 @@
 from PyQt6 import QtWidgets, QtCore, QtGui
 import logging
 import os
-from .Logic_Project_Saving import ProjectSaver
+from Application_Logic.Logic_Project_Saving import ProjectSaver
 
 logger = logging.getLogger(__name__)
-from .Logic_Symbol_Matcher import SymbolMatcher
-from .Logic_Column_Customizer import ColumnCustomizer
-from .Logic_Column_Types import TableColumn, PortSearchColumn, FunctionSearchColumn, VariableSearchColumn, ReviewColumn, InitColumn, CyclicColumn, PortStateColumn, LastResultColumn, ReleaseResultColumn, LinkColumn
-from .Logic_User_Interaction import UserInteractionLogic
-from .Logic_Architecture_Models import ArchitectureManager, ArchitectureListModel
-from .Logic_Release_Manager import ReleaseManager
+from Application_Logic.Logic_Symbol_Matcher import SymbolMatcher
+from UI.column_customizer import ColumnCustomizer
+from UI.column_types import TableColumn, PortSearchColumn, FunctionSearchColumn, VariableSearchColumn, ReviewColumn, InitColumn, CyclicColumn, PortStateColumn, LastResultColumn, ReleaseResultColumn, LinkColumn
+from UI.user_interaction import UserInteractionLogic
+from Application_Logic.Logic_Architecture_Models import ArchitectureManager
+from UI.list_models import ArchitectureListModel
+from Application_Logic.Logic_Release_Manager import ReleaseManager
 from UI.Dialog_Architecture_Edit import ArchitectureEditDialog
 from UI.Dialog_Restore_Model import RestoreModelDialog
-from .Logic_Architecture_IO import ArchitectureIOMixin
-from .Logic_Architecture_Baseline import ArchitectureBaselineMixin
-from .Logic_Architecture_Import import ArchitectureImportMixin
+from UI.controller_feedback import ControllerFeedbackMixin
+from UI.architecture_io import ArchitectureIOMixin
+from Application_Logic.Logic_Architecture_Baseline import ArchitectureBaselineMixin
+from Application_Logic.Logic_Architecture_Import import ArchitectureImportMixin
 
 
-class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, ArchitectureImportMixin):
+class ArchitectureTabController(ControllerFeedbackMixin, ArchitectureIOMixin,
+                                ArchitectureBaselineMixin, ArchitectureImportMixin):
     """
     Handles all logic related to the Architecture Validation Tab
     """
@@ -726,7 +729,7 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         if not db or not db.is_open:
             return
 
-        from .Logic_User_Interaction import UserInteractionLogic
+        from UI.user_interaction import UserInteractionLogic
         dirty = set(self._dirty_rows)  # snapshot
         rows_to_upsert = {}
         for row_idx in dirty:
@@ -927,7 +930,7 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         
         # UI Responsiveness: Helper to keep window alive
         from PyQt6.QtCore import QCoreApplication, Qt
-        from .Logic_Loading_Window import LoadingDialog
+        from UI.loading_window import LoadingDialog
         
         # Create and show loading dialog (Modal to block interaction but allow painting)
         loading = LoadingDialog(self.main_window)
@@ -1329,7 +1332,7 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
                     _lg.getLogger(__name__).info(f"Loading symbol matches… {i + 1}/{total}")
             return True
 
-        from .Logic_Loading_Window import LoadingDialog
+        from UI.loading_window import LoadingDialog
         loader = LoadingDialog(self.main_window)
         try:
             loader.ui.lbl_loading_text.setText(progress_label)

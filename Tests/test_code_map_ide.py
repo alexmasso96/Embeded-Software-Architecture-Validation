@@ -22,7 +22,7 @@ app = QApplication.instance() or QApplication(sys.argv)
 
 from Application_Logic import Logic_Code_Map as cm
 from Application_Logic.Logic_Code_Index import CodeIndex
-from Application_Logic.Logic_Code_Map_Tab import AICodeMapController
+from UI.tab_code_map import AICodeMapController
 
 
 # ── 1. defines persisted into the code map ───────────────────────────────────

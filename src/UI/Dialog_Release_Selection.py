@@ -243,7 +243,7 @@ class ReleaseSelectionDialog(QDialog):
         except Exception:
             pass
 
-        from Application_Logic.Logic_Loading_Window import LoadingDialog
+        from UI.loading_window import LoadingDialog
         loader = LoadingDialog(self)
         loader.ui.lbl_loading_text.setText(f"Importing source for {release.name}…")
         ok = loader.run_task(self._import_source_task, db.db_path, release.id, folder)
@@ -391,7 +391,8 @@ class ReleaseSelectionDialog(QDialog):
                 QMessageBox.warning(self, "Unfreeze Baseline", "A master password must be configured on the project to unlock a baseline.")
                 return
 
-            from Application_Logic.Logic_Security import MasterPasswordPromptDialog, SecurityManager
+            from Application_Logic.Logic_Security import SecurityManager
+            from UI.Dialog_Master_Password import MasterPasswordPromptDialog
             prompt = MasterPasswordPromptDialog(self, "Enter Master Password to Unfreeze Baseline:")
             if prompt.exec():
                 entered = prompt.get_password()
@@ -485,7 +486,7 @@ class ReleaseSelectionDialog(QDialog):
                     cache_dir = db.db_path + ".elf_caches"
                     cache_file = os.path.join(cache_dir, f"elf_{release.elf_hash}.json")
                     if os.path.exists(cache_file):
-                        from Application_Logic.Logic_Loading_Window import LoadingDialog
+                        from UI.loading_window import LoadingDialog
                         loader = LoadingDialog(self)
                         loader.ui.lbl_loading_text.setText(f"Loading local cache for release {release.name}...")
                         if loader.run_task(self._parse_task, 'JSON', cache_file):
@@ -516,7 +517,7 @@ class ReleaseSelectionDialog(QDialog):
                             options=QFileDialog.Option(0)
                         )
                         if file_path:
-                            from Application_Logic.Logic_Loading_Window import LoadingDialog
+                            from UI.loading_window import LoadingDialog
                             loader = LoadingDialog(self)
                             loader.ui.lbl_loading_text.setText(f"Loading {os.path.basename(file_path)}...")
                             mode = 'ELF' if file_path.lower().endswith('.elf') else 'JSON'
@@ -676,7 +677,7 @@ class ReleaseSelectionDialog(QDialog):
                     # Update all rows' "Last Result" column values immediately in the table
                     self.controller.table.blockSignals(True)
                     try:
-                        from Application_Logic.Logic_Column_Types import LastResultColumn
+                        from UI.column_types import LastResultColumn
                         # Find the LastResultColumn index
                         last_res_col_idx = -1
                         last_res_col_obj = None
@@ -798,7 +799,7 @@ class ReleaseSelectionDialog(QDialog):
             return
             
         # 3. Parse File (Background)
-        from Application_Logic.Logic_Loading_Window import LoadingDialog
+        from UI.loading_window import LoadingDialog
         loader = LoadingDialog(self)
         
         mode = 'ELF' if file_path.lower().endswith('.elf') else 'JSON'

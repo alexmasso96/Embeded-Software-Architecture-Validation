@@ -6,10 +6,10 @@ from PyQt6 import QtWidgets, QtCore, QtGui
 from PyQt6.QtWidgets import QTableWidget, QComboBox, QTableWidgetItem
 import re
 from rapidfuzz import process, fuzz
-from .Logic_User_Interaction import UserInteractionLogic
+from UI.user_interaction import UserInteractionLogic
 
 if TYPE_CHECKING:
-    from .interfaces import IArchitectureController
+    from Application_Logic.interfaces import IArchitectureController
 
 def is_baseline_mode(controller) -> bool:
     """Helper to determine if the table is currently in baseline (read-only) view."""

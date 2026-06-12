@@ -7,7 +7,7 @@ from dataclasses import asdict
 sys.path.append(os.path.abspath("src"))
 
 from Application_Logic.Logic_Architecture_Models import ArchitectureManager, ArchitectureModel
-from Application_Logic.Logic_Architecture_Table import ArchitectureTabController
+from UI.architecture_table import ArchitectureTabController
 
 # Mock for MainWindow/UI
 class MockUI:
@@ -96,7 +96,7 @@ def reproduce_issue():
     # Click Row 1 -> Should be Model B.
     
     # Let's instantiate ListModel to verify index mapping
-    from Application_Logic.Logic_Architecture_Models import ArchitectureListModel
+    from UI.list_models import ArchitectureListModel
     list_model = ArchitectureListModel(mgr2)
     
     print("\nChecking Index Mapping:")

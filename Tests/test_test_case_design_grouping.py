@@ -16,8 +16,8 @@ import types
 
 sys.path.append(os.path.abspath("src"))
 
-from Application_Logic.Logic_TestCase_Design import TestCaseDesignController as TC
-from Application_Logic.Logic_Column_Types import (
+from UI.test_case_design import TestCaseDesignController as TC
+from UI.column_types import (
     PortSearchColumn, FunctionSearchColumn, VariableSearchColumn,
 )
 

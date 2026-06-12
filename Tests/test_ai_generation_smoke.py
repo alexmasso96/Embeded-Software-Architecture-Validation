@@ -15,7 +15,7 @@ app = QApplication.instance() or QApplication(sys.argv)
 
 import UI
 import pytest
-from Application_Logic.Logic_AI_Generation import AIGenerationController
+from UI.tab_ai_generation import AIGenerationController
 
 
 @pytest.fixture(autouse=True)

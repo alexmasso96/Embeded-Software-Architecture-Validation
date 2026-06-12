@@ -13,11 +13,11 @@ sys.path.append(os.path.abspath("src"))
 app = QApplication.instance() or QApplication(sys.argv)
 
 import UI
+from UI.test_case_design import TestCaseDesignController
 from Application_Logic.Logic_TestCase_Design import (
-    TestCaseDesignController,
     tokenize_partial_condition,
     tokenize_condition,
-    get_condition_suggestions_and_prefix
+    get_condition_suggestions_and_prefix,
 )
 from main import ApplicationWindow
 

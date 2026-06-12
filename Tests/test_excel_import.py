@@ -12,7 +12,7 @@ app = QApplication.instance() or QApplication(sys.argv)
 
 import UI
 from Application_Logic.Logic_Architecture_Models import ArchitectureManager
-from Application_Logic.Logic_Architecture_Table import ArchitectureTabController
+from UI.architecture_table import ArchitectureTabController
 from Tests.test_helpers import make_project_db
 import openpyxl
 
@@ -64,8 +64,8 @@ def test_import_flow():
         mock_file_dialog = MagicMock(return_value=(excel_path, "Excel Files (*.xlsx)"))
         
         with patch('PyQt6.QtWidgets.QFileDialog.getOpenFileName', mock_file_dialog), \
-             patch('Application_Logic.Logic_Architecture_Import.ImportModeDialog') as MockModeDialog, \
-             patch('Application_Logic.Logic_Architecture_Import.ImportConfirmationDialog') as MockConfirmDialog, \
+             patch('UI.Dialog_Architecture_Import.ImportModeDialog') as MockModeDialog, \
+             patch('UI.Dialog_Architecture_Import.ImportConfirmationDialog') as MockConfirmDialog, \
              patch('PyQt6.QtWidgets.QMessageBox.information'), \
              patch('PyQt6.QtWidgets.QMessageBox.warning'):
 

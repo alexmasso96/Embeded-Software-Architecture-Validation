@@ -12,12 +12,12 @@ from PyQt6 import QtWidgets
 _PERF_LOG = os.environ.get("ARCH_PERF_LOG", "0") == "1"
 _perf_logger = logging.getLogger("arch.perf")
 
-from .Logic_Column_Types import (
+from UI.column_types import (
     ReleaseResultColumn, ReviewColumn,
     PortSearchColumn, FunctionSearchColumn, VariableSearchColumn,
     PortStateColumn, LastResultColumn, LinkColumn, _match_style,
 )
-from .Logic_User_Interaction import UserInteractionLogic
+from UI.user_interaction import UserInteractionLogic
 
 
 class ArchitectureIOMixin:

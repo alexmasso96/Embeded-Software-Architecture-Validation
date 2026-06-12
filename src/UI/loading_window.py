@@ -3,9 +3,18 @@ import logging
 import os
 from PyQt6.QtWidgets import QDialog
 from PyQt6.QtGui import QIcon
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal
 import UI
-from .Logging_Handler import Signaller, QtLoggingHandler
+from Application_Logic.Logging_Handler import Signaller, EmitterLoggingHandler
+
+
+class _LogRelay(QObject):
+    """
+    Marshals Signaller "text" events (emitted on the worker thread) onto the
+    GUI thread via a queued Qt signal — the Emitter itself is thread-agnostic.
+    """
+    text = pyqtSignal(str)
+
 
 class TaskWorker (QThread):
     """
@@ -76,9 +85,11 @@ class LoadingDialog (QDialog):
 
         # Setup Redirection
         signaller = Signaller()
-        signaller.text_received.connect(self.append_log)
+        self._log_relay = _LogRelay()
+        self._log_relay.text.connect(self.append_log)
+        signaller.events.on("text", self._log_relay.text.emit)
 
-        self.log_handler = QtLoggingHandler(signaller)
+        self.log_handler = EmitterLoggingHandler(signaller)
         self.log_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
         logging.getLogger().addHandler(self.log_handler)
 

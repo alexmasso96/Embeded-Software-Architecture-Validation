@@ -168,7 +168,7 @@ def test_new_project_controller_close_is_idempotent(tmp_path):
     try:
         from PyQt6.QtWidgets import QApplication, QMainWindow
         app = QApplication.instance() or QApplication(sys.argv)
-        from Application_Logic.Logic_New_Project import NewProjectController
+        from UI.new_project_window import NewProjectController
     except Exception as e:  # pragma: no cover - environment without Qt
         pytest.skip(f"Qt unavailable: {e}")
     ctrl = NewProjectController(main_window=None, project_db=None)

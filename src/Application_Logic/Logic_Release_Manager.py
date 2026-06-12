@@ -3,8 +3,6 @@ import datetime
 import copy
 from typing import List, Optional
 from .Logic_File_Locking import FileLockManager
-from PyQt6.QtCore import QAbstractListModel, Qt, QModelIndex, QMimeData, QByteArray, QDataStream, QIODevice
-from PyQt6.QtGui import QColor, QFont
 
 
 @dataclass
@@ -400,86 +398,3 @@ class ReleaseManager:
         pass
 
 
-class ReleaseListModel(QAbstractListModel):
-    """Qt Model to bridge ReleaseManager data to QListView."""
-
-    ModelRole = Qt.ItemDataRole.UserRole + 1
-
-    def __init__(self, manager: ReleaseManager):
-        super().__init__()
-        self.manager = manager
-
-    def rowCount(self, parent=QModelIndex()):
-        return len(self.manager.releases)
-
-    def data(self, index, role):
-        if not index.isValid() or index.row() >= len(self.manager.releases):
-            return None
-        release = self.manager.releases[index.row()]
-        if role == Qt.ItemDataRole.DisplayRole:
-            name = release.name
-            if release.is_baseline:
-                name += " [BASELINE]"
-            return name
-        elif role == Qt.ItemDataRole.BackgroundRole:
-            if release.is_baseline:
-                return QColor("#d3d3d3")
-        elif role == Qt.ItemDataRole.ForegroundRole:
-            if index.row() == self.manager.active_release_index:
-                return QColor("white")
-        elif role == Qt.ItemDataRole.FontRole:
-            if index.row() == self.manager.active_release_index:
-                font = QFont()
-                font.setBold(True)
-                return font
-        elif role == self.ModelRole:
-            return release
-        return None
-
-    def refresh(self):
-        self.beginResetModel()
-        self.endResetModel()
-
-    def supportedDropActions(self):
-        return Qt.DropAction.MoveAction
-
-    def flags(self, index):
-        default_flags = super().flags(index)
-        if index.isValid():
-            return (default_flags | Qt.ItemFlag.ItemIsDragEnabled |
-                    Qt.ItemFlag.ItemIsDropEnabled |
-                    Qt.ItemFlag.ItemIsSelectable |
-                    Qt.ItemFlag.ItemIsEnabled)
-        return default_flags | Qt.ItemFlag.ItemIsDropEnabled
-
-    def mimeTypes(self):
-        return ['application/vnd.text.list']
-
-    def mimeData(self, indexes):
-        mime = QMimeData()
-        encoded_data = QByteArray()
-        stream = QDataStream(encoded_data, QIODevice.OpenModeFlag.WriteOnly)
-        for index in indexes:
-            if index.isValid():
-                stream.writeInt32(index.row())
-        mime.setData('application/vnd.text.list', encoded_data)
-        return mime
-
-    def dropMimeData(self, data, action, row, column, parent):
-        if action == Qt.DropAction.IgnoreAction:
-            return True
-        if not data.hasFormat('application/vnd.text.list'):
-            return False
-        if column > 0:
-            return False
-        encoded_data = data.data('application/vnd.text.list')
-        stream = QDataStream(encoded_data, QIODevice.OpenModeFlag.ReadOnly)
-        src_row = stream.readInt32()
-        if row == -1:
-            row = parent.row() if parent.isValid() else self.rowCount()
-        if row > src_row:
-            row -= 1
-        if self.manager.move_release(src_row, row):
-            self.refresh()
-            return True
-        return False
