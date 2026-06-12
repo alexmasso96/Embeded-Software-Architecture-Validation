@@ -219,10 +219,12 @@ jobs:
           Categories=Development;Utility;
           EOF
           
-          # Handle Debian versioning (strip 'v' prefix if present for compliance).
-          # Falls back to the pushed tag name when triggered by a tag push.
-          RAW_VERSION="${{ github.event.inputs.tag_name || github.ref_name }}"
-          VERSION="${RAW_VERSION#v}"
+          if [ "${{ github.ref_type }}" = "tag" ] || [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            RAW_VERSION="${{ github.event.inputs.tag_name || github.ref_name }}"
+            VERSION="${RAW_VERSION#v}"
+          else
+            VERSION="0.0.0-${GITHUB_SHA:0:8}"
+          fi
           
           # Create Debian control metadata file
           cat << EOF > debian-pkg/DEBIAN/control
