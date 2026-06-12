@@ -350,6 +350,12 @@ class ReleaseManager:
         self.save_registry()
         return True, "Deleted"
 
+    def selectable_releases(self) -> List[ReleaseModel]:
+        """#2E: the releases offered in every source/release picker — real software
+        releases only (exclude frozen baseline snapshots and soft-deleted ones).
+        Order matches the registry (newest first, since create_release inserts at 0)."""
+        return [r for r in self.releases if not r.is_baseline and not r.is_deleted]
+
     def get_active_release(self) -> Optional[ReleaseModel]:
         if 0 <= self.active_release_index < len(self.releases):
             return self.releases[self.active_release_index]

@@ -1171,17 +1171,7 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         else:
             self.matcher = SymbolMatcher(parser)
 
-        # Build and save an initial basic CodeMap if one doesn't exist yet for this model
         active_model_id = getattr(self.model_manager, 'active_model_id', None)
-        if db and db.is_open and active_model_id is not None and parser:
-            try:
-                if not db.get_model_code_map(active_model_id):
-                    from Application_Logic.Logic_Code_Map import build_code_map
-                    import json
-                    code_map = build_code_map(parser, None, source_root="")
-                    db.save_model_code_map(active_model_id, json.dumps(code_map))
-            except Exception as e:
-                logger.warning(f"Failed to build initial CodeMap on parser population: {e}")
 
         # Create the Release Node if name provided and not skipped
         if release_name and not skip_release_create:
@@ -1224,6 +1214,27 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
                      if r.name == release_name:
                          self.release_manager.set_active_release(i)
                          break
+
+        # #2E: build & save the initial CodeMap AFTER the release exists so it's keyed
+        # to the release the source/ELF came from (a brand-new release is active by
+        # now; on reload the existing release is already active). Was previously saved
+        # before create_release, which left it under the wrong release key.
+        if db and db.is_open and active_model_id is not None and parser:
+            try:
+                rid = db.get_active_release_id()
+                if not db.get_model_code_map(active_model_id, release_id=rid):
+                    import json
+                    # #1b: prefer the map the import worker already built under the
+                    # loading window (no main-thread beachball). Fall back to an
+                    # inline build for paths that don't go through ElfImportTask
+                    # (e.g. release reload).
+                    code_map = getattr(parser, "_initial_code_map", None)
+                    if code_map is None:
+                        from Application_Logic.Logic_Code_Map import build_code_map
+                        code_map = build_code_map(parser, None, source_root="")
+                    db.save_model_code_map(active_model_id, json.dumps(code_map), release_id=rid)
+            except Exception as e:
+                logger.warning(f"Failed to build initial CodeMap on parser population: {e}")
 
         # UI Feedback
         self.ui.statusbar.showMessage("Matcher ready. Enter Port Names to begin matching.")
@@ -1452,13 +1463,18 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         if real_index == self.model_manager.active_model_index:
             return
             
-        # 1. Save current table data to the OLD active model
-        self.flush_current_data_to_model()
+        # 1. Save current table data to the OLD active model — but only if it
+        # actually changed. Browsing between models used to do a full re-read of
+        # every cell + a full row rewrite on each switch even with no edits; the
+        # dirty-tracking (same one the autosave uses) lets us skip that.
+        if self._dirty_rows or self._full_flush_needed:
+            self.flush_current_data_to_model()
         self._dirty_rows.clear()
         self._row_snapshots.clear()
         self._full_flush_needed = False
 
-        # 2. Set new active model
+        # 2. Set new active model (persists only the active-model id, not the
+        # whole registry — see ArchitectureManager.set_active_model).
         self.model_manager.set_active_model(real_index)
         
         # 3. Load data
@@ -1484,16 +1500,19 @@ class ArchitectureTabController(ArchitectureIOMixin, ArchitectureBaselineMixin, 
         # This sidebar menu is triggered by right clicking the SIDEBAR.
         
         dialog = ArchitectureManagerDialog(self.model_manager, self.main_window)
-        if dialog.exec():
-            # Refresh list if models changed
-            self.list_model.refresh()
-            self.load_active_model_to_table()
-            # Reload ELF from the active release's cached database so symbol search stays current
-            active_release = self.release_manager.get_active_release()
-            if active_release and active_release.data_cache:
-                elf_data = active_release.data_cache.get("database", {})
-                if elf_data:
-                    ProjectSaver._populate_parser(self.main_window, elf_data)
+        dialog.exec()
+        # Always refresh after the manager closes — the manager mutates models
+        # (delete/restore/rename/reorder) in-memory and in the DB directly, so a
+        # close via the window X / Escape must still reflect those changes (the
+        # old `if dialog.exec():` skipped the refresh on reject → "can't delete").
+        self.list_model.refresh()
+        self.load_active_model_to_table()
+        # Reload ELF from the active release's cached database so symbol search stays current
+        active_release = self.release_manager.get_active_release()
+        if active_release and active_release.data_cache:
+            elf_data = active_release.data_cache.get("database", {})
+            if elf_data:
+                ProjectSaver._populate_parser(self.main_window, elf_data)
 
     def load_active_model_to_table(self):
         """Loads the currently active ArchitectureModel into the table"""

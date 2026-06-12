@@ -6,6 +6,14 @@ from PyQt6.QtGui import QColor, QFont
 from PyQt6 import QtGui
 
 
+def _cell_text(cell) -> str:
+    """Best-effort display text of a table cell (dict with widget_text/text, or a
+    bare value). Shared by port-state propagation (#8.1/#8.2) and the picker dialog."""
+    if isinstance(cell, dict):
+        return (cell.get("widget_text") or cell.get("text") or "").strip()
+    return str(cell).strip() if cell not in (None, "") else ""
+
+
 @dataclass
 class ArchitectureModel:
     name: str
@@ -146,6 +154,53 @@ class ArchitectureManager:
         self._db.save_model_rows(model.id, rows)
         self._db.save_model_metadata(model.id, model.metadata)
 
+    def propagate_status_to_ports(self, model, old_status, new_status,
+                                  port_state_columns=("Port State",),
+                                  selected_ports=None, port_name_column=None):
+        """#8.1/#8.2: When a model leaves 'In Work' (e.g. In Work → Released/Retired),
+        bump its rows' Port State from 'In Work' to the new model state.
+
+        Strictly scoped: only the In Work → other transition, and only port cells
+        whose value is still 'In Work' — Released / Retired / Deleted ports are left
+        untouched. Persists the changed rows. Returns the number of cells changed.
+
+        #8.2: the cascade is no longer silent — the caller (manager dialog) lets the
+        user confirm/select which ports follow. When ``selected_ports`` is given (an
+        iterable of port names), only rows whose ``port_name_column`` value is in that
+        set are updated; ``selected_ports=None`` keeps the original 'all In Work ports'
+        behaviour for back-compat.
+        """
+        if old_status != "In Work" or new_status == "In Work":
+            return 0
+        if model is None:
+            return 0
+        if model.data_cache is None:
+            self._load_model_data(model)
+        if not model.data_cache:
+            return 0
+        selected = set(selected_ports) if selected_ports is not None else None
+        rows = model.data_cache.get("rows", [])
+        changed = 0
+        for row in rows:
+            if selected is not None:
+                pname = _cell_text(row.get(port_name_column)) if port_name_column else ""
+                if pname not in selected:
+                    continue
+            for col_name in port_state_columns:
+                cell = row.get(col_name)
+                if not isinstance(cell, dict):
+                    continue
+                current = (cell.get("widget_text") or cell.get("text") or "").strip()
+                if current == "In Work":
+                    cell["text"] = new_status
+                    cell["widget_text"] = new_status
+                    changed += 1
+        if changed:
+            self.save_model_data(model)
+            if self._db:
+                self._db.commit()
+        return changed
+
     def save_all_model_data(self):
         """
         Persist every in-memory model's rows + metadata to the DB.
@@ -242,8 +297,16 @@ class ArchitectureManager:
     def set_active_model(self, index: int) -> Optional[ArchitectureModel]:
         if 0 <= index < len(self.models):
             self.active_model_index = index
-            self.save_registry()
-            return self.models[index]
+            # Switching the active model only needs to persist *which* model is
+            # active — not rewrite every model's registry row. The old
+            # save_registry() here made each model switch do N row-writes + a commit
+            # on the UI thread (a real cause of switch lag). The full registry is
+            # still saved on create/delete/rename and on project save.
+            m = self.models[index]
+            if self._db and m.id is not None:
+                self._db.set_ui_state("active_model_id", str(m.id))
+                self._db.commit()
+            return m
         return None
 
     def move_model(self, old_index: int, new_index: int) -> bool:

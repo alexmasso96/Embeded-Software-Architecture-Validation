@@ -1,4 +1,5 @@
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox, QPushButton, QDialogButtonBox
+from .StyledMessageBox import DIALOG_STYLESHEET
 
 class ArchitectureEditDialog(QDialog):
     def __init__(self, parent=None, name="", status="In Work"):
@@ -8,7 +9,8 @@ class ArchitectureEditDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Architecture Model")
         self.resize(300, 150)
-        
+        self.setStyleSheet(DIALOG_STYLESHEET)
+
         self.name = name
         self.status = status
         

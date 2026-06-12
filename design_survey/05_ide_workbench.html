@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Design 5 — IDE Workbench (VS Code-inspired)</title>
+<style>
+  :root {
+    --bg: #1e1f22; --panel: #191a1d; --rail: #141517; --card: #232428;
+    --border: #2c2d31; --sep: #28292d;
+    --accent: #3794ff; --green: #4ec964; --yellow: #e2b340; --red: #f06a5d; --grey: #8a8f98;
+    --text: #d6d8dd; --muted: #9095a0;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: #101113; color: var(--text);
+    font-family: 'Segoe UI',system-ui,-apple-system,sans-serif;
+    display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px;
+  }
+  .window {
+    width: 1280px; height: 800px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; overflow: hidden; box-shadow: 0 16px 48px rgba(0,0,0,.6);
+    display: flex; flex-direction: column;
+  }
+  .titlebar { height: 34px; background: var(--rail); display: flex; align-items: center; padding: 0 12px; gap: 14px; font-size: 12px; color: var(--muted); flex: none; border-bottom: 1px solid var(--border); }
+  .titlebar b { color: var(--text); font-weight: 600; }
+  .menu span { padding: 4px 7px; border-radius: 4px; cursor: pointer; }
+  .menu span:hover { background: var(--card); color: var(--text); }
+  .titlebar .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .editpill { font-size: 11px; color: var(--green); border: 1px solid rgba(78,201,100,.35); border-radius: 999px; padding: 2.5px 9px; }
+
+  .frame { flex: 1; display: flex; min-height: 0; }
+
+  /* Activity bar */
+  .activitybar { width: 48px; flex: none; background: var(--rail); border-right: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; padding: 8px 0; gap: 4px; }
+  .act { width: 38px; height: 38px; border-radius: 8px; border: 0; background: transparent; color: #6b7077; font-size: 17px; cursor: pointer; position: relative; }
+  .act:hover { color: var(--text); }
+  .act.on { color: var(--text); background: var(--card); }
+  .act.on::before { content:""; position: absolute; left: -5px; top: 22%; height: 56%; width: 2.5px; background: var(--accent); border-radius: 2px; }
+  .activitybar .grow { flex: 1; }
+
+  /* Explorer panel */
+  .explorer { width: 226px; flex: none; background: var(--panel); border-right: 1px solid var(--border); padding: 10px; font-size: 12.5px; display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
+  .ex-head { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; color: #6b7077; text-transform: uppercase; padding: 4px 6px 6px; display: flex; justify-content: space-between; }
+  .ex-head button { border: 0; background: transparent; color: #6b7077; cursor: pointer; }
+  .tree-row { display: flex; align-items: center; gap: 7px; padding: 4.5px 8px; border-radius: 5px; color: var(--muted); cursor: pointer; }
+  .tree-row:hover { background: var(--card); color: var(--text); }
+  .tree-row.active { background: rgba(55,148,255,.14); color: var(--text); }
+  .tree-row .n { margin-left: auto; font-size: 10.5px; color: #6b7077; }
+  .tree-kid { padding-left: 26px; }
+  .ex-card { margin-top: 8px; background: var(--card); border: 1px solid var(--border); border-radius: 7px; padding: 9px 10px; font-size: 11.5px; display: flex; flex-direction: column; gap: 6px; }
+  .ex-card .row { display: flex; justify-content: space-between; color: var(--muted); }
+  .ex-card .row b { color: var(--green); font-weight: 500; }
+  .ex-card select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 5px; font: inherit; font-size: 11px; padding: 2px 6px; }
+  .ex-actions { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .ex-actions button { border: 1px solid var(--border); background: var(--card); color: var(--text); border-radius: 6px; padding: 7px; font: inherit; font-size: 12px; cursor: pointer; }
+  .ex-actions .primary { background: #2a6acf; border-color: #2a6acf; color: #fff; font-weight: 600; }
+
+  /* Editor area with tabs */
+  .editor { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .tabs { display: flex; background: var(--panel); border-bottom: 1px solid var(--border); flex: none; }
+  .tab { padding: 9px 16px; font-size: 12.5px; color: var(--muted); border-right: 1px solid var(--border); cursor: pointer; display: flex; gap: 8px; align-items: center; }
+  .tab.on { background: var(--bg); color: var(--text); box-shadow: inset 0 2px 0 var(--accent); }
+  .breadcrumbs { padding: 6px 16px; font-size: 11.5px; color: #6b7077; border-bottom: 1px solid var(--sep); display: flex; gap: 7px; flex: none; }
+
+  .toolstrip { display: flex; gap: 6px; padding: 8px 14px; border-bottom: 1px solid var(--sep); flex: none; align-items: center; }
+  .ts-btn { border: 1px solid var(--border); background: var(--card); color: var(--text); border-radius: 6px; padding: 5.5px 11px; font: inherit; font-size: 12px; cursor: pointer; }
+  .ts-btn:hover { background: var(--raised, #2a2b30); }
+  .search { margin-left: auto; background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; font-size: 12px; color: var(--muted); width: 240px; }
+
+  .tablewrap { flex: 1; overflow: auto; min-height: 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  thead th { text-align: left; font-weight: 600; font-size: 11px; color: #6b7077; text-transform: uppercase; letter-spacing: .04em; padding: 8px 14px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg); }
+  tbody td { padding: 8px 14px; border-bottom: 1px solid var(--sep); }
+  tbody tr:hover { background: #222327; }
+  tbody tr.selected { background: rgba(55,148,255,.1); box-shadow: inset 2px 0 0 var(--accent); }
+  .mono { font-family: 'Cascadia Code','JetBrains Mono',Consolas,monospace; font-size: 11.5px; }
+  .dim td { opacity: .45; }
+  .conf { font-size: 10px; padding: 1.5px 6px; border-radius: 4px; margin-left: 8px; font-weight: 600; }
+  .c-hi { background: rgba(78,201,100,.15); color: var(--green); }
+  .c-mid { background: rgba(226,179,64,.15); color: var(--yellow); }
+  .c-low { background: rgba(240,106,93,.15); color: var(--red); }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 2.5px 9px; border-radius: 4px; font-size: 11.5px; font-weight: 600; cursor: pointer; }
+  .pill::after { content:"⌄"; font-size: 9px; opacity: .6; }
+  .p-green { background: rgba(78,201,100,.14); color: var(--green); }
+  .p-yellow { background: rgba(226,179,64,.14); color: var(--yellow); }
+  .p-red { background: rgba(240,106,93,.14); color: var(--red); }
+  .p-grey { background: rgba(138,143,152,.14); color: var(--grey); }
+  .kebab { border: 0; background: transparent; color: #6b7077; font-size: 14px; cursor: pointer; border-radius: 5px; padding: 1px 7px; }
+  tbody tr:hover .kebab { color: var(--text); }
+
+  /* Bottom panel — details of selected port (replaces right-click + hidden dialogs) */
+  .panel { height: 152px; flex: none; border-top: 1px solid var(--border); background: var(--panel); display: flex; flex-direction: column; }
+  .panel-tabs { display: flex; gap: 2px; padding: 6px 12px 0; font-size: 11.5px; border-bottom: 1px solid var(--sep); }
+  .panel-tabs span { padding: 5px 11px; color: var(--muted); cursor: pointer; border-radius: 6px 6px 0 0; }
+  .panel-tabs span.on { color: var(--text); background: var(--bg); border: 1px solid var(--sep); border-bottom-color: var(--bg); font-weight: 600; }
+  .panel-body { flex: 1; display: flex; gap: 24px; padding: 10px 16px; font-size: 12px; overflow: hidden; }
+  .pb-col { display: flex; flex-direction: column; gap: 5px; min-width: 180px; }
+  .pb-col .lbl { color: #6b7077; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; }
+  .pb-col .val { color: var(--text); }
+  .pb-actions { margin-left: auto; display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+  .pb-actions button { border: 1px solid var(--border); background: var(--card); color: var(--text); border-radius: 6px; padding: 5px 12px; font: inherit; font-size: 11.5px; cursor: pointer; }
+
+  .statusbar { height: 24px; background: #2a6acf; color: #eaf2ff; display: flex; align-items: center; gap: 16px; padding: 0 12px; font-size: 11px; flex: none; }
+  .statusbar .right { margin-left: auto; display: flex; gap: 16px; }
+</style>
+<link rel="stylesheet" href="shared/views.css">
+<style>
+  .window { --v-bg:#1e1f22; --v-panel:#232428; --v-raised:#2a2b30; --v-border:#2c2d31; --v-text:#d6d8dd; --v-muted:#9095a0; --v-accent:#3794ff; --v-ok:#4ec964; --v-warn:#e2b340; --v-err:#f06a5d; --v-ok-bg:rgba(78,201,100,.12); --v-err-bg:rgba(240,106,93,.12); --v-radius:7px; --v-mono:'Cascadia Code','JetBrains Mono',Consolas,monospace; }
+</style>
+<script defer src="shared/app.js"></script>
+</head>
+<body>
+<div class="window">
+  <div class="titlebar">
+    <b>Architecture Validator Pro</b>
+    <div class="menu"><span>File</span><span>Edit</span><span>View</span><span>Project</span><span>Help</span></div>
+    <div class="right"><span class="editpill">● Exclusive Edit</span><span>Demo_Project.arch — R1.2</span></div>
+  </div>
+
+  <div class="frame">
+    <div class="activitybar">
+      <button class="act on" title="Workspace">▦</button>
+      <button class="act" title="Test Design">✎</button>
+      <button class="act" title="AI Generation">✦</button>
+      <button class="act" title="AI Chat">◌</button>
+      <button class="act" title="Code Map">◉</button>
+      <button class="act" title="Change Log">↹</button>
+      <div class="grow"></div>
+      <button class="act" title="History">↻</button>
+      <button class="act" title="Settings">⚙</button>
+    </div>
+
+    <div class="explorer">
+      <div class="ex-head">Project Explorer <button>＋</button></div>
+      <div class="tree-row active">▾ ▣ DoorControl_ECU <span class="n">7</span></div>
+      <div class="tree-row tree-kid">Ports table</div>
+      <div class="tree-row tree-kid">Baselines (2)</div>
+      <div class="tree-row">▸ ▣ BatteryMgmt_ECU <span class="n">12</span></div>
+      <div class="ex-card">
+        <div class="row"><span>Release</span><select><option>R1.2</option><option>R1.1</option></select></div>
+        <div class="row"><span>ELF</span><b>✓ parsed</b></div>
+        <div class="row"><span>Source</span><b>✓ 41 files</b></div>
+      </div>
+      <div class="ex-actions">
+        <button class="primary">✦ Generate Test Cases</button>
+        <button>Create Baseline…</button>
+        <button>Load Baseline…</button>
+      </div>
+    </div>
+
+    <div class="editor">
+     <section class="view active v-col" data-view="workspace">
+      <div class="tabs">
+        <div class="tab on">▦ Validation Workspace</div>
+        <div class="tab">◉ Code Map — WLC_UpdateStateMachine</div>
+      </div>
+      <div class="breadcrumbs">Demo_Project <span>›</span> DoorControl_ECU <span>›</span> Validation Workspace</div>
+
+      <div class="toolstrip">
+        <button class="ts-btn" style="color:#9ccaff;border-color:rgba(55,148,255,.45)">＋ Add Port</button>
+        <button class="ts-btn">⇄ Re-match Symbols</button>
+        <button class="ts-btn">⇪ Import ⌄</button>
+        <button class="ts-btn">▦ Columns…</button>
+        <button class="ts-btn">⚲ Filter ⌄</button>
+        <div class="search">⌕ Search ports… (Ctrl+F)</div>
+      </div>
+
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>TC. ID</th><th>Input Port</th><th>Mapped Symbol</th><th>Init</th><th>Cyclic</th><th>Review</th><th>Port State</th><th></th></tr></thead>
+          <tbody>
+            <tr><td class="mono">TC_001</td><td>DoorLock_Cmd</td><td><span class="mono">DoorLock_Cmd</span><span class="conf c-hi">98%</span></td><td>Yes</td><td class="mono">10ms</td><td><span class="pill p-green">Reviewed</span></td><td><span class="pill p-green">Released</span></td><td><button class="kebab">⋯</button></td></tr>
+            <tr><td class="mono">TC_002</td><td>DoorUnlock_Cmd</td><td><span class="mono">DoorUnlock_Cmd</span><span class="conf c-hi">97%</span></td><td>Yes</td><td class="mono">10ms</td><td><span class="pill p-green">Reviewed</span></td><td><span class="pill p-green">Released</span></td><td><button class="kebab">⋯</button></td></tr>
+            <tr class="selected"><td class="mono">TC_003</td><td>WindowPos_Req</td><td><span class="mono">WindowPos_Req</span><span class="conf c-mid">91%</span></td><td>No</td><td class="mono">5ms</td><td><span class="pill p-yellow">In Review</span></td><td><span class="pill p-green">Released</span></td><td><button class="kebab">⋯</button></td></tr>
+            <tr><td class="mono">TC_004</td><td>MirrorFold_Cmd</td><td><span class="mono">MirrorFold_Cmd</span><span class="conf c-hi">95%</span></td><td>No</td><td class="mono">20ms</td><td><span class="pill p-green">Reviewed</span></td><td><span class="pill p-green">Released</span></td><td><button class="kebab">⋯</button></td></tr>
+            <tr class="dim"><td class="mono">TC_005</td><td>ChildLock_State</td><td><span class="mono">Lock_State</span><span class="conf c-low">62%</span></td><td>Yes</td><td class="mono">50ms</td><td><span class="pill p-red">Not Reviewed</span></td><td><span class="pill p-grey">Retired</span></td><td><button class="kebab">⋯</button></td></tr>
+            <tr><td class="mono">TC_006</td><td>DoorAjar_Status</td><td><span class="mono">DoorAjar_Status</span><span class="conf c-hi">99%</span></td><td>No</td><td class="mono">5ms</td><td><span class="pill p-green">Reviewed</span></td><td><span class="pill p-green">Released</span></td><td><button class="kebab">⋯</button></td></tr>
+            <tr><td class="mono">TC_007</td><td>CentralLock_Sync</td><td><span class="mono">CentralLock_Sync</span><span class="conf c-mid">88%</span></td><td>No</td><td class="mono">10ms</td><td><span class="pill p-red">Not Reviewed</span></td><td><span class="pill p-yellow">In Work</span></td><td><button class="kebab">⋯</button></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <div class="panel-tabs">
+          <span class="on">Port Details</span><span>Match Candidates</span><span>History</span><span>Background Jobs</span>
+        </div>
+        <div class="panel-body">
+          <div class="pb-col"><span class="lbl">Port</span><span class="val mono">WindowPos_Req</span><span class="lbl" style="margin-top:6px">Mapped Symbol</span><span class="val mono">WindowPos_Req @ 0x8001b40 · 91%</span></div>
+          <div class="pb-col"><span class="lbl">Init / Cyclic</span><span class="val">No · every 5 ms</span><span class="lbl" style="margin-top:6px">Last validated</span><span class="val">R1.1 — passed</span></div>
+          <div class="pb-col"><span class="lbl">Manual override</span><span class="val">No (auto-matched)</span><span class="lbl" style="margin-top:6px">Reviewed by</span><span class="val">—</span></div>
+          <div class="pb-actions">
+            <button>Pick match candidate…</button>
+            <button>Show in Code Map</button>
+            <button>Retire port…</button>
+          </div>
+        </div>
+      </div>
+     </section>
+     <section class="view" data-view="testdesign"></section>
+     <section class="view" data-view="aigen"></section>
+     <section class="view" data-view="aichat"></section>
+     <section class="view" data-view="codemap"></section>
+     <section class="view" data-view="changelog"></section>
+
+      <div class="statusbar">
+        <span>🔒 Exclusive Edit</span>
+        <span>Auto-saved 14:32</span>
+        <span class="right"><span>R1.2 · DoorControl_ECU</span><span>7 ports · 5 reviewed</span><span>⟳ idle</span></span>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

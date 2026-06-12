@@ -1002,24 +1002,36 @@ def _extract_typedefs(content: str) -> Set[str]:
 
 # ─── Build Index ─────────────────────────────────────────────────────────────
 
-def build_index(sw_path: str) -> CodeIndex:
+def build_index(source) -> CodeIndex:
     """
     Build a complete code index for any C/C++ software project.
-    
+
+    ``source`` may be a filesystem path (str) OR a SourceProvider (#2E) — the
+    latter lets the index be built from source stored in the DB keyed by release,
+    read lazily one file at a time. A path is coerced to a FilesystemSourceProvider
+    so existing callers/tests keep working unchanged.
+
     Two-pass approach:
       Pass 1: Headers → extract types, defines, enums, extern globals
       Pass 2: Sources → extract functions, module statics, build call graph
     """
+    from Application_Logic.Logic_Source_Store import as_provider
+    provider = as_provider(source)
     index = CodeIndex()
-    index.all_files = _scan_files(sw_path)
+    index.all_files = [
+        {"relpath": sf.rel_path, "ext": sf.ext,
+         "name": os.path.basename(sf.rel_path), "size": sf.size}
+        for sf in provider.list_files()
+    ]
 
     # Pass 1: Headers - discover types, defines, enums
     for finfo in index.all_files:
         if finfo["ext"] not in (".h", ".hpp", ".hh"):
             continue
         try:
-            with open(finfo["path"], "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
+            content = provider.read_file(finfo["relpath"])
+            if content is None:
+                continue
 
             # Extract defines
             defines = _extract_defines(content)
@@ -1050,8 +1062,9 @@ def build_index(sw_path: str) -> CodeIndex:
         if finfo["ext"] not in (".c", ".cpp", ".cc", ".cxx"):
             continue
         try:
-            with open(finfo["path"], "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
+            content = provider.read_file(finfo["relpath"])
+            if content is None:
+                continue
 
             # Extract defines from source files too
             defines = _extract_defines(content)

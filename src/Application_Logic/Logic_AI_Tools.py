@@ -63,11 +63,16 @@ def default_tools() -> List[Tool]:
 
 class ToolExecutor:
     def __init__(self, source_root: Optional[str], db=None,
-                 model_id: int = -1, diff_hash: str = ""):
+                 model_id: int = -1, diff_hash: str = "",
+                 provider=None, release_id=None):
+        # #2E: source may come from a DB release provider (preferred) or a legacy
+        # filesystem path. release_id pins per-release mind/code maps.
         self.source_root = source_root
         self.db = db
         self.model_id = model_id
         self.diff_hash = diff_hash
+        self.provider = provider
+        self.release_id = release_id
 
     # ------------------------------------------------------------------
     # Path jail
@@ -92,6 +97,15 @@ class ToolExecutor:
     # Tools
     # ------------------------------------------------------------------
     def read_file(self, path: str) -> str:
+        # #2E: DB release source — read the blob by rel_path (inherently sandboxed).
+        if self.provider is not None:
+            rel = (path or "").replace(os.sep, "/").lstrip("/")
+            data = self.provider.read_file(rel)
+            if data is None:
+                raise ToolError(f"Not a file in this release's source: {path}")
+            if len(data) > READ_CAP:
+                return data[:READ_CAP] + "\n/* ...truncated at 4MB... */"
+            return data
         target = self._contain(path)
         if not os.path.isfile(target):
             raise ToolError(f"Not a file: {path}")
@@ -102,9 +116,19 @@ class ToolExecutor:
         return data
 
     def list_files(self, pattern: str = "*") -> str:
+        pat = pattern or "*"
+        if self.provider is not None:
+            out = []
+            for sf in self.provider.list_files():
+                rel, n = sf.rel_path, os.path.basename(sf.rel_path)
+                if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(n, pat):
+                    out.append(rel)
+                    if len(out) >= MAX_LIST:
+                        out.append(f"(+more — refine the pattern; capped at {MAX_LIST})")
+                        return "\n".join(out)
+            return "\n".join(out) if out else "(no matching files)"
         self._contain(".")                       # ensures a sandbox is configured
         root = os.path.realpath(self.source_root)
-        pat = pattern or "*"
         out = []
         for dirpath, _dirs, names in os.walk(root):
             for n in names:
@@ -126,13 +150,30 @@ class ToolExecutor:
     def search_code(self, query: str, path: str = ".") -> str:
         if not query:
             raise ToolError("Empty query.")
+        q = query.lower()
+        if self.provider is not None:
+            prefix = "" if path in (".", "", None) else path.replace(os.sep, "/").rstrip("/") + "/"
+            out = []
+            for sf in self.provider.list_files():
+                if prefix and not sf.rel_path.startswith(prefix):
+                    continue
+                text = self.provider.read_file(sf.rel_path)
+                if text is None:
+                    continue
+                for i, line in enumerate(text.splitlines(), 1):
+                    if q in line.lower():
+                        out.append(f"{sf.rel_path}:{i}: {line.strip()[:200]}")
+                        if len(out) >= MAX_SEARCH_MATCHES:
+                            out.append(f"(+more — capped at {MAX_SEARCH_MATCHES})")
+                            return "\n".join(out)
+            return "\n".join(out) if out else "(no matches)"
         base = self._contain(path)
         files = [base] if os.path.isfile(base) else []
         if os.path.isdir(base):
             for dirpath, _dirs, names in os.walk(base):
                 files += [os.path.join(dirpath, n) for n in names
                           if n.lower().endswith(_SRC_EXTS)]
-        out, q = [], query.lower()
+        out = []
         for ap in files:
             try:
                 self._contain(self._rel(ap))      # re-validate
@@ -154,7 +195,7 @@ class ToolExecutor:
         if self.db is None:
             return "(no project database)"
         from . import Logic_AI_Context as ctx
-        mm = self.db.get_model_mindmap(self.model_id)
+        mm = self.db.get_model_mindmap(self.model_id, release_id=self.release_id)
         return ctx.mind_map_to_text(mm)
 
     def get_requirements(self) -> str:
@@ -187,7 +228,7 @@ class ToolExecutor:
     def get_function(self, name: str) -> str:
         if self.db is None:
             return "(no project database)"
-        code_map = self.db.get_model_code_map(self.model_id)
+        code_map = self.db.get_model_code_map(self.model_id, release_id=self.release_id)
         if not code_map or "functions" not in code_map:
             return "(no code map available)"
         
@@ -230,7 +271,7 @@ class ToolExecutor:
     def get_call_graph(self, name: str, depth: int = 1, direction: str = "both") -> str:
         if self.db is None:
             return "(no project database)"
-        code_map = self.db.get_model_code_map(self.model_id)
+        code_map = self.db.get_model_code_map(self.model_id, release_id=self.release_id)
         if not code_map or "functions" not in code_map:
             return "(no code map available)"
             

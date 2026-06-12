@@ -1,3 +1,4 @@
+import html
 import json
 import logging
 import os
@@ -5,8 +6,8 @@ from collections import deque
 from typing import Optional
 
 from PyQt6 import QtWidgets, QtCore
-from PyQt6.QtCore import Qt, QPointF
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import Qt, QPointF, QEvent
+from PyQt6.QtGui import QColor, QTextCursor, QTextCharFormat
 
 from UI import widgets_code_map as wcm
 
@@ -18,32 +19,100 @@ MAX_GRAPH_NODES = 60
 class _CodeMapWorker(QtCore.QThread):
     """Builds the C source index + joined code map off the UI thread.
 
-    Mirrors the existing _MindMapWorker/_GenWorker pattern: emits phase progress
-    for the in-pane overlay and returns the finished code-map dict to the main
-    thread, which owns the DB write (keeps all writes single-threaded)."""
+    Crash-safety: the worker uses its OWN SQLite connection (not the app's shared
+    one). Using a single connection from two threads is what crashes today when an
+    import / model-move runs during a build. Two separate connections never crash —
+    at worst they briefly contend on the file lock (handled by busy_timeout), and
+    that is WAL-independent (works in DELETE mode on network drives too). The worker
+    also writes the finished map on its own connection, so the result is committed
+    (durable) the moment the build finishes — independent of any project Save."""
     progress = QtCore.pyqtSignal(str)
     finished_ok = QtCore.pyqtSignal(object)   # code_map dict
     failed = QtCore.pyqtSignal(str)
 
-    def __init__(self, parser, source_dir, parent=None):
+    def __init__(self, db_path, elf_hash, elf_path, source_dir, model_id,
+                 release_id=None, parent=None):
         super().__init__(parent)
-        self.parser = parser
+        self.db_path = db_path
+        self.elf_hash = elf_hash
+        self.elf_path = elf_path
         self.source_dir = source_dir
+        self.model_id = model_id
+        self.release_id = release_id   # #2E: pin the release the map belongs to
 
     def run(self):
+        import json
+        from pathlib import Path
+        from Application_Logic.Logic_Database import ProjectDatabase
+        from core.elf_parser import ELFParser
+
+        wdb = ProjectDatabase()
         try:
+            # Own connection to the same .arch (lightweight: no journal/schema redo).
+            wdb.open(self.db_path, create_schema=False, apply_journal=False)
+
+            # Worker-side parser bound to the worker's own connection (DB-backed
+            # DWARF reads) + the ELF path (Capstone reads function bytes from disk).
+            wparser = ELFParser()
+            wparser.elf_path = Path(self.elf_path) if self.elf_path else None
+            wparser._db = wdb
+            wparser._active_elf_hash = self.elf_hash
+
+            from Application_Logic.Logic_Code_Map import build_code_map, elf_has_call_tree
+
+            # 2B/2C: probe whether the ELF actually yields a usable call tree
+            # (disassembly recovers real edges). A bare elf_functions row count
+            # isn't enough — a relocatable/ET_REL or stripped ELF has symbols but
+            # no disassemblable call edges. When there's no usable tree we route
+            # to the source-derived call graph as the primary edges (#2C).
+            has_call_tree = (bool(self.elf_path) and os.path.exists(self.elf_path)
+                             and elf_has_call_tree(wparser))
+            if has_call_tree:
+                self.progress.emit("ELF call tree available — joining symbols + disassembly.")
+            else:
+                self.progress.emit("No ELF call tree available — building the call graph "
+                                   "from the source code.")
+
             code_index = None
-            if self.source_dir and os.path.exists(self.source_dir):
+            from Application_Logic.Logic_Code_Index import build_index
+            # #2E: prefer source stored in the DB for this release (read on the
+            # worker's OWN connection — WAL-independent); else a linked local folder.
+            if (self.release_id is not None and wdb.has_release_source(self.release_id)):
+                self.progress.emit("Indexing release source from the database…")
+                from Application_Logic.Logic_Source_Store import DbReleaseSourceProvider
+                code_index = build_index(DbReleaseSourceProvider(wdb, self.release_id))
+            elif self.source_dir and os.path.exists(self.source_dir):
                 self.progress.emit("Indexing source files…")
-                from Application_Logic.Logic_Code_Index import build_index
                 code_index = build_index(self.source_dir)
+
+            # #2C: with no ELF call tree AND no source, the graph can only be a bare
+            # symbol list — tell the user how to get real edges instead.
+            if not has_call_tree and code_index is None:
+                self.progress.emit("⚠ No ELF call tree and no source linked — the call "
+                                   "graph will have no edges. Map/Import source for this "
+                                   "release (or link a local folder) to build it from source.")
+
             self.progress.emit("Building code map (call graph & symbol join)…")
-            from Application_Logic.Logic_Code_Map import build_code_map
-            code_map = build_code_map(self.parser, code_index,
-                                      source_root=self.source_dir or "")
+            # Pass the probe result so build_code_map doesn't re-disassemble to decide.
+            code_map = build_code_map(wparser, code_index, source_root=self.source_dir or "",
+                                      prefer_source_calls=not has_call_tree)
+
+            # Commit on the worker's own connection → durable immediately, no project
+            # Save required, nothing lost if the user doesn't hit Save afterwards.
+            self.progress.emit("Saving code map…")
+            if self.model_id is not None:
+                wdb.save_model_code_map(self.model_id, json.dumps(code_map),
+                                        release_id=self.release_id)
+                wdb.set_meta("code_map_index_state", "done")
+                wdb.commit()
             self.finished_ok.emit(code_map)
         except Exception as e:  # noqa: BLE001 — surface any failure to the UI
             self.failed.emit(str(e))
+        finally:
+            try:
+                wdb.close()
+            except Exception:
+                pass
 
 
 class AICodeMapController(QtCore.QObject):
@@ -177,14 +246,22 @@ class AICodeMapController(QtCore.QObject):
         # Folder Mapping Group
         folder_group = QtWidgets.QGroupBox("C Source Code Mapping")
         folder_layout = QtWidgets.QVBoxLayout(folder_group)
-        self.btn_select_dir = QtWidgets.QPushButton("Link Local Source Folder…")
+
+        # #2E: source is chosen by RELEASE (read from the DB). The local-folder link
+        # below remains as a fallback for releases without imported source.
+        folder_layout.addWidget(QtWidgets.QLabel("Source release:"))
+        self.cmb_release = QtWidgets.QComboBox()
+        self.cmb_release.currentIndexChanged.connect(self._on_release_changed)
+        folder_layout.addWidget(self.cmb_release)
+
+        self.btn_select_dir = QtWidgets.QPushButton("Link Local Folder (fallback)…")
         self.btn_select_dir.clicked.connect(self.select_source_directory)
         folder_layout.addWidget(self.btn_select_dir)
 
         self.btn_rebuild_map = QtWidgets.QPushButton("Index & Rebuild Code Map")
         self.btn_rebuild_map.clicked.connect(self.rebuild_code_map_from_linked_folder)
         folder_layout.addWidget(self.btn_rebuild_map)
-        
+
         self.lbl_status = QtWidgets.QLabel("No source folder linked.")
         self.lbl_status.setStyleSheet("font-size: 11px; color: #9CA3AF;")
         folder_layout.addWidget(self.lbl_status)
@@ -194,7 +271,14 @@ class AICodeMapController(QtCore.QObject):
         self.code_viewer = QtWidgets.QPlainTextEdit()
         self.code_viewer.setReadOnly(True)
         self.code_viewer.setPlaceholderText("// Source code will appear here after linking a local source folder...")
-        
+
+        # #2D: IDE-style hover tooltips + Ctrl/Cmd-click navigation. Mouse tracking
+        # lets us react to bare moves (no button held) so the link affordance can
+        # follow the cursor; one event filter on the viewport drives all of it.
+        self.code_viewer.setMouseTracking(True)
+        self.code_viewer.viewport().setMouseTracking(True)
+        self.code_viewer.viewport().installEventFilter(self)
+
         self.highlighter = wcm.CSyntaxHighlighter(self.code_viewer.document())
         right_layout.addWidget(self.code_viewer)
         
@@ -208,6 +292,33 @@ class AICodeMapController(QtCore.QObject):
     def on_tab_changed(self, index):
         if self.ui.tabWidget.widget(index) is not self.tab_widget:
             return
+        self._refresh_release_combo()
+        self.load_data()
+
+    # ------------------------------------------------------------------
+    # #2E — source release selection
+    # ------------------------------------------------------------------
+    def _refresh_release_combo(self):
+        from Application_Logic.Logic_Release_Source_Picker import populate_release_combo
+        db = self._db()
+        arch = self._arch()
+        rm = getattr(arch, "release_manager", None) if arch else None
+        if rm is None:
+            return
+        source_ids = db.get_release_ids_with_source() if db else set()
+        prefer = db.get_active_release_id() if db else None
+        populate_release_combo(self.cmb_release, rm, prefer_id=prefer,
+                               source_ids=source_ids)
+
+    def _selected_release_id(self):
+        rid = self.cmb_release.currentData()
+        if rid is not None:
+            return rid
+        db = self._db()
+        return db.get_active_release_id() if db else None
+
+    def _on_release_changed(self, _idx=0):
+        # Show the selected release's code map + source.
         self.load_data()
 
     def apply_edit_mode(self, enabled: bool):
@@ -243,7 +354,7 @@ class AICodeMapController(QtCore.QObject):
             self.code_viewer.setPlaceholderText("// No active architecture model selected.")
             return
             
-        code_map = db.get_model_code_map(active_model_id)
+        code_map = db.get_model_code_map(active_model_id, release_id=self._selected_release_id())
         if not code_map or "functions" not in code_map:
             self.dataset = None
             self.func_list.clear()
@@ -322,6 +433,116 @@ class AICodeMapController(QtCore.QObject):
         self.update_globals(fName)
         self.rebuild_graph()
         self.load_source_code(fName)
+
+    # ------------------------------------------------------------------
+    # #2D — IDE features: hover tooltips + Ctrl/Cmd-click navigation
+    # ------------------------------------------------------------------
+    def _word_at(self, pos):
+        """Identifier under a viewport QPoint, or '' if none."""
+        cursor = self.code_viewer.cursorForPosition(pos)
+        cursor.select(QTextCursor.SelectionType.WordUnderCursor)
+        return cursor.selectedText().strip()
+
+    def _is_known_function(self, word):
+        """True if `word` is a function in the loaded code map."""
+        return (bool(word) and bool(self.dataset)
+                and word in self.dataset.get("functions", {}))
+
+    def describe_symbol(self, word):
+        """Classify `word` against the loaded code map and return an HTML tooltip
+        string, or None if it isn't a known symbol. Pure (Qt-free) so it can be
+        unit-tested directly; dynamic text is HTML-escaped."""
+        if not word or not self.dataset:
+            return None
+        funcs = self.dataset.get("functions", {})
+        if word in funcs:
+            f = funcs[word]
+            sig = html.escape(f.get("signature") or f"{word}()")
+            ret = html.escape(f.get("return_type") or "void")
+            file = f.get("file") or ""
+            line = f.get("line_start", 0)
+            loc = html.escape(f"{file}:{line}" if file else "location unknown")
+            return (f"<b>{sig}</b><br/>"
+                    f"<i>function</i> · returns <code>{ret}</code><br/>{loc}")
+        gvars = self.dataset.get("global_variables", {})
+        if word in gvars:
+            return (f"<b>{html.escape(word)}</b><br/><i>global variable</i> · "
+                    f"<code>{html.escape(str(gvars[word]))}</code>")
+        defines = self.dataset.get("defines", {})
+        if word in defines:
+            val = defines[word]
+            val_str = f" {html.escape(str(val))}" if val not in (None, "") else ""
+            return f"<code>#define {html.escape(word)}{val_str}</code>"
+        return None
+
+    def eventFilter(self, obj, event):
+        # An installed filter can still be invoked while the controller/widget is
+        # being torn down (Qt delivers Leave/Hide events during destruction, after
+        # Python has begun clearing this object). Guard against the missing attr and
+        # an already-deleted C++ viewport so teardown never raises.
+        viewer = getattr(self, "code_viewer", None)
+        if viewer is None:
+            return False
+        try:
+            is_viewport = obj is viewer.viewport()
+        except RuntimeError:   # wrapped C++ object already deleted
+            return False
+        if is_viewport:
+            etype = event.type()
+            if etype == QEvent.Type.ToolTip:
+                return self._handle_tooltip(event)
+            if etype == QEvent.Type.MouseMove:
+                self._handle_link_hover(event)
+                return False
+            if etype == QEvent.Type.MouseButtonPress:
+                return self._handle_ctrl_click(event)
+            if etype == QEvent.Type.Leave:
+                self._clear_link_affordance()
+                return False
+        return super().eventFilter(obj, event)
+
+    def _handle_tooltip(self, event):
+        text = self.describe_symbol(self._word_at(event.pos()))
+        if text:
+            QtWidgets.QToolTip.showText(event.globalPos(), text, self.code_viewer)
+            return True
+        QtWidgets.QToolTip.hideText()
+        return False
+
+    def _handle_ctrl_click(self, event):
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            word = self._word_at(event.position().toPoint())
+            if self._is_known_function(word):
+                self._clear_link_affordance()
+                self.focus_function(word)
+                return True   # consume — don't just move the caret
+        return False
+
+    def _handle_link_hover(self, event):
+        if not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            self._clear_link_affordance()
+            return
+        pt = event.position().toPoint()
+        if self._is_known_function(self._word_at(pt)):
+            self.code_viewer.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
+            self._underline_word_at(pt)
+        else:
+            self._clear_link_affordance()
+
+    def _clear_link_affordance(self):
+        self.code_viewer.viewport().setCursor(Qt.CursorShape.IBeamCursor)
+        self.code_viewer.setExtraSelections([])
+
+    def _underline_word_at(self, pt):
+        cursor = self.code_viewer.cursorForPosition(pt)
+        cursor.select(QTextCursor.SelectionType.WordUnderCursor)
+        sel = QtWidgets.QTextEdit.ExtraSelection()
+        fmt = QTextCharFormat()
+        fmt.setFontUnderline(True)
+        fmt.setForeground(QColor("#60A5FA"))
+        sel.format = fmt
+        sel.cursor = cursor
+        self.code_viewer.setExtraSelections([sel])
 
     def update_globals(self, fName):
         self.globals_list.clear()
@@ -403,43 +624,58 @@ class AICodeMapController(QtCore.QObject):
         if self._cm_worker is not None and self._cm_worker.isRunning():
             return
 
-        # Persist the source location + mark indexing in-progress BEFORE the heavy
-        # work starts. If the app crashes mid-index, load_data() finds the folder
-        # already linked and warns that a rebuild is needed — no redo from scratch.
+        parser = arch.parser
+        elf_hash = getattr(parser, "_active_elf_hash", None) or getattr(parser, "md5_hash", None)
+        elf_path = str(getattr(parser, "elf_path", "") or "")
+
+        # Persist the source location + mark indexing in-progress BEFORE the worker
+        # starts (still single-threaded here, so this main-connection write is safe).
+        # If the app crashes mid-index, load_data() finds the folder linked and warns.
         if self.linked_source_dir:
             db.set_meta("code_map_source_dir", self.linked_source_dir)
         db.set_meta("code_map_index_state", "in_progress")
+        db.set_activity("codemap", "in_progress")
         db.commit()
+
+        # Light gate: pause auto-save so the main connection stays quiet during the
+        # build (reduces lock contention). Crash-safety itself comes from the worker
+        # using its OWN connection, so we don't need to freeze the whole UI.
+        self.main_window._codemap_building = True
 
         self._cm_active_model_id = active_model_id
         self.btn_rebuild_map.setEnabled(False)
         self._show_graph_overlay("Generating Code Map…")
-        db.set_activity("codemap", "in_progress")
 
-        self._cm_worker = _CodeMapWorker(arch.parser, self.linked_source_dir, self)
+        # #2E: pin the map to the SELECTED release (captured here on the main thread
+        # so a release switch mid-build can't mis-key the saved map). The worker
+        # reads that release's DB source on its own connection, else the linked folder.
+        release_id = self._selected_release_id()
+
+        # Hand the worker raw values (path/hash), NOT the shared parser/connection.
+        self._cm_worker = _CodeMapWorker(
+            db.db_path, elf_hash, elf_path, self.linked_source_dir, active_model_id,
+            release_id, self)
         self._cm_worker.progress.connect(self._show_graph_overlay)
         self._cm_worker.finished_ok.connect(self._on_codemap_done)
         self._cm_worker.failed.connect(self._on_codemap_failed)
         self._cm_worker.start()
 
-    def _on_codemap_done(self, code_map):
-        # DB write stays on the main thread (single-writer); then silently drop the
-        # overlay and present the freshly built map.
+    def _finish_codemap(self):
+        """Common teardown after a build finishes (success or failure)."""
+        self.main_window._codemap_building = False
         db = self._db()
-        try:
-            if db and self._cm_active_model_id is not None:
-                db.save_model_code_map(self._cm_active_model_id, json.dumps(code_map))
-                db.set_meta("code_map_index_state", "done")
-                db.commit()
-        except Exception as e:  # noqa: BLE001
-            self._hide_graph_overlay()
-            self.btn_rebuild_map.setEnabled(True)
-            QtWidgets.QMessageBox.critical(self.main_window, "Error", f"Failed to save Code Map:\n{e}")
-            return
         if db:
-            db.set_activity("", "idle")
+            try:
+                db.set_activity("", "idle")
+            except Exception:
+                pass
         self._hide_graph_overlay()
         self.btn_rebuild_map.setEnabled(True)
+
+    def _on_codemap_done(self, code_map):
+        # The worker already saved + committed the map on its own connection
+        # (durable already). Just present it — load_data() reads it back.
+        self._finish_codemap()
         self.load_data()   # silently present the map
 
     def _on_codemap_failed(self, msg):
@@ -447,28 +683,48 @@ class AICodeMapController(QtCore.QObject):
         if db:
             try:
                 db.set_meta("code_map_index_state", "failed")
-                db.set_activity("", "idle")
                 db.commit()
             except Exception:
                 pass
-        self._hide_graph_overlay()
-        self.btn_rebuild_map.setEnabled(True)
+        self._finish_codemap()
         QtWidgets.QMessageBox.critical(self.main_window, "Error", f"Failed to rebuild Code Map:\n{msg}")
 
     def load_source_code(self, fName):
-        if not self.linked_source_dir:
-            self.code_viewer.setPlainText(
-                f"// Source code of '{fName}' not found.\n"
-                f"// Click 'Link Local Source Folder' to point to your C files."
-            )
-            return
-            
-        fData = self.dataset["functions"].get(fName)
+        fData = self.dataset["functions"].get(fName) if self.dataset else None
         if not fData or not fData.get("file"):
             self.code_viewer.setPlainText(f"// No source file metadata available for {fName}.")
             return
-            
+
         rel_path = fData["file"]
+        line_start = fData.get("line_start", 1)
+
+        # #2E: prefer source stored in the DB for the active release (lazy single-file
+        # read) — no filesystem dependency. Fall back to a linked local folder.
+        db = self._db()
+        rid = self._selected_release_id() if db else None
+        if db and rid is not None and db.has_release_source(rid):
+            norm = rel_path.replace(os.sep, "/")
+            content = db.read_release_source_file(rid, norm)
+            if content is None:
+                base = os.path.basename(norm)
+                for f in db.list_release_source_files(rid):
+                    if os.path.basename(f["rel_path"]) == base:
+                        content = db.read_release_source_file(rid, f["rel_path"])
+                        break
+            if content is not None:
+                code_block = self.extract_function_block_by_line(content, line_start)
+                header = f"// File: {os.path.basename(rel_path)} | Line: {line_start}\n\n"
+                self.code_viewer.setPlainText(header + code_block)
+                return
+
+        if not self.linked_source_dir:
+            self.code_viewer.setPlainText(
+                f"// Source code of '{fName}' not found.\n"
+                f"// Import source for this release (Release Selection → Map / Import "
+                f"Source Code) or link a local source folder."
+            )
+            return
+
         full_path = os.path.join(self.linked_source_dir, rel_path)
         if not os.path.exists(full_path):
             base_name = os.path.basename(rel_path)

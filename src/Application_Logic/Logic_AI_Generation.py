@@ -146,16 +146,11 @@ class AIGenerationController(ProviderPanelMixin, QtCore.QObject):
 
         lay.addWidget(self._hline())
 
-        # Source
-        lay.addWidget(QtWidgets.QLabel("Source code path:"))
-        srow = QtWidgets.QHBoxLayout()
-        self.edit_source = QtWidgets.QLineEdit()
-        self.edit_source.editingFinished.connect(self._save_prefs)
-        btn_browse = QtWidgets.QPushButton("Browse…")
-        btn_browse.clicked.connect(self._browse_source)
-        srow.addWidget(self.edit_source)
-        srow.addWidget(btn_browse)
-        lay.addLayout(srow)
+        # Source — #2E: chosen by RELEASE; source is read from the DB for that release.
+        lay.addWidget(QtWidgets.QLabel("Source release:"))
+        self.cmb_source_release = QtWidgets.QComboBox()
+        self.cmb_source_release.currentIndexChanged.connect(self._on_source_release_changed)
+        lay.addWidget(self.cmb_source_release)
 
         # HLT file
         hrow = QtWidgets.QHBoxLayout()
@@ -308,6 +303,7 @@ class AIGenerationController(ProviderPanelMixin, QtCore.QObject):
             self._refresh_providers()
             self.refresh_hlt_files()
             self._load_prompt_rules()
+            self._refresh_source_releases()
 
     def apply_edit_mode(self, enabled: bool):
         """View-Only: disable generation, write-back, and prompt/rules save (they
@@ -326,14 +322,39 @@ class AIGenerationController(ProviderPanelMixin, QtCore.QObject):
     # ------------------------------------------------------------------
     # Source / HLT files
     # ------------------------------------------------------------------
-    def _browse_source(self):
-        path = QtWidgets.QFileDialog.getExistingDirectory(
-            self.main_window, "Select Source Code Folder", self.edit_source.text(),
-            options=QtWidgets.QFileDialog.Option(0)
-        )
-        if path:
-            self.edit_source.setText(path)
-            self._save_prefs()
+    def _refresh_source_releases(self):
+        """#2E: populate the source-release dropdown (shared 'current release' meta
+        with the AI Chat tab; defaults to the active/latest release)."""
+        from Application_Logic.Logic_Release_Source_Picker import populate_release_combo
+        db = self._db()
+        arch = getattr(self.main_window, "arch_controller", None)
+        rm = getattr(arch, "release_manager", None) if arch else None
+        if rm is None:
+            return
+        source_ids = db.get_release_ids_with_source() if db else set()
+        prefer = None
+        if db is not None and getattr(db, "is_open", False):
+            saved = db.get_meta(ctx.META_CURRENT_RELEASE)
+            try:
+                prefer = int(saved) if saved not in (None, "") else db.get_active_release_id()
+            except (ValueError, TypeError):
+                prefer = db.get_active_release_id()
+        populate_release_combo(self.cmb_source_release, rm,
+                               prefer_id=prefer, source_ids=source_ids)
+
+    def _on_source_release_changed(self, _idx=0):
+        db = self._db()
+        if db is None or not getattr(db, "is_open", False):
+            return
+        rid = self.cmb_source_release.currentData()
+        try:
+            db.set_meta(ctx.META_CURRENT_RELEASE, "" if rid is None else str(rid))
+        except Exception:
+            pass
+
+    def _source_provider(self):
+        from Application_Logic.Logic_Source_Store import release_source_provider
+        return release_source_provider(self._db(), self.cmb_source_release.currentData())
 
     def refresh_hlt_files(self):
         proj = self._project_path()
@@ -420,23 +441,8 @@ class AIGenerationController(ProviderPanelMixin, QtCore.QObject):
     # Preferences
     # ------------------------------------------------------------------
     def _load_prefs(self):
-        db = self._db()
-        if db is None or not getattr(db, "is_open", False):
-            return
-        src = db.get_meta(_META_SOURCE)
-        if src:
-            self.edit_source.setText(src)
-
-    def _save_prefs(self):
-        # Provider/model are persisted by the mixin (_persist_provider_model);
-        # here we only persist the source path (the canonical shared key).
-        db = self._db()
-        if db is None or not getattr(db, "is_open", False):
-            return
-        try:
-            db.set_meta(_META_SOURCE, self.edit_source.text())
-        except Exception:
-            pass
+        # #2E: the source is now a release selection — populate that dropdown.
+        self._refresh_source_releases()
 
     # ------------------------------------------------------------------
     # Generation
@@ -481,7 +487,7 @@ class AIGenerationController(ProviderPanelMixin, QtCore.QObject):
         self._worker = _GenWorker(
             pid, model,
             self.txt_rules.toPlainText(), self.txt_prompt.toPlainText(),
-            self.edit_source.text().strip(),
+            self._source_provider(),
             ctx.hlt_output_dir(self._project_path()),
             self._parsed["model_name"], self._parsed["title"], cases,
             parent=self,

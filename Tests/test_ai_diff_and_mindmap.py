@@ -49,9 +49,14 @@ def test_diff_detects_changes_and_skips_unchanged_reads(tmp_path, monkeypatch):
     (cur / "d.c").write_text("int d = 1;\n")     # added
     # c.c absent in cur -> deleted
 
+    # #2E: diff reads via the provider now — count provider reads to prove the
+    # stat-gate still skips unchanged files entirely.
+    from Application_Logic.Logic_Source_Store import FilesystemSourceProvider
     reads = []
-    real = ctx._read_text
-    monkeypatch.setattr(ctx, "_read_text", lambda p: reads.append(os.path.basename(p)) or real(p))
+    real = FilesystemSourceProvider.read_file
+    monkeypatch.setattr(
+        FilesystemSourceProvider, "read_file",
+        lambda self, rel: reads.append(os.path.basename(rel)) or real(self, rel))
 
     diffs = ctx.diff_source_folders(str(cur), str(prev))
     by = {d["file_path"]: d["status"] for d in diffs}
@@ -80,8 +85,10 @@ def test_diff_skips_oversize_without_reading(tmp_path, monkeypatch):
     prev.mkdir(); cur.mkdir()
     (prev / "big.c").write_text("x")       # 1 byte
     (cur / "big.c").write_text("yy")       # 2 bytes -> differing size detects change
+    from Application_Logic.Logic_Source_Store import FilesystemSourceProvider
     reads = []
-    monkeypatch.setattr(ctx, "_read_text", lambda p: reads.append(p) or "")
+    monkeypatch.setattr(FilesystemSourceProvider, "read_file",
+                        lambda self, rel: reads.append(rel) or "")
     diffs = ctx.diff_source_folders(str(cur), str(prev), skip_file_bytes=0)
     assert diffs[0]["status"] == "modified"
     assert "too large" in diffs[0]["unified_diff"]

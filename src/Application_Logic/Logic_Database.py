@@ -8,6 +8,7 @@ import sqlite3
 import os
 import sys
 import json
+import gzip
 import hashlib
 import hmac
 import base64
@@ -198,8 +199,10 @@ _INTEGRITY_EXCLUDED_TABLES = frozenset({
     "elf_structures",
     "elf_global_vars",
     "sqlite_sequence",   # internal AUTOINCREMENT bookkeeping
-    "ai_model_mindmaps", # derived AI cache, recomputable from source
+    "ai_model_mindmaps", # derived AI cache, recomputable from source (legacy)
+    "ai_release_maps",   # #2E: per-release derived AI cache, recomputable
     "ai_code_diffs",     # derived AI cache, recomputable from source
+    "release_source_files",  # #2E: large source blobs; never hash GBs on save/open
 })
 
 # project_meta keys excluded from the digest: the integrity value itself (would be
@@ -232,7 +235,14 @@ class ProjectDatabase:
     def is_open(self) -> bool:
         return self._conn is not None
 
-    def open(self, db_path: str):
+    def open(self, db_path: str, create_schema: bool = True, apply_journal: bool = True):
+        """Open the project DB.
+
+        `create_schema`/`apply_journal` default True for the primary connection.
+        A secondary connection to an already-open file (e.g. the Code Map worker's
+        own connection) passes both False: the journal mode is a persistent property
+        of the file and the schema already exists, so re-running them would only take
+        an unnecessary write lock and contend with the primary connection."""
         if self._conn:
             self._conn.close()
         self.db_path = db_path
@@ -241,13 +251,20 @@ class ProjectDatabase:
             os.makedirs(parent, exist_ok=True)
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        self.journal_mode = self._apply_journal_mode(db_path)
-        logger.info(f"Journal mode: {self.journal_mode}")
+        if apply_journal:
+            self.journal_mode = self._apply_journal_mode(db_path)
+            logger.info(f"Journal mode: {self.journal_mode}")
+        else:
+            try:
+                self.journal_mode = (self._conn.execute("PRAGMA journal_mode").fetchone()[0] or "").upper()
+            except Exception:
+                self.journal_mode = ""
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
-        logger.info("Creating/validating project database schema…")
-        self._create_schema()
+        if create_schema:
+            logger.info("Creating/validating project database schema…")
+            self._create_schema()
 
     def _apply_journal_mode(self, db_path: str) -> str:
         """Finding F: pick a safe SQLite journal mode for the project's location.
@@ -417,6 +434,21 @@ class ProjectDatabase:
                     PRIMARY KEY (release_id, col_name)
                 );
 
+                -- #2E: source code imported INTO the project, keyed by release.
+                -- content_gzip = gzip(utf-8 bytes); read lazily one file at a time.
+                -- Excluded from the integrity digest (large, recomputable cache).
+                CREATE TABLE IF NOT EXISTS release_source_files (
+                    release_id   INTEGER NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+                    rel_path     TEXT    NOT NULL,
+                    content_gzip BLOB    NOT NULL,
+                    size         INTEGER NOT NULL DEFAULT 0,
+                    content_hash TEXT    NOT NULL DEFAULT '',
+                    ext          TEXT,
+                    PRIMARY KEY (release_id, rel_path)
+                );
+                CREATE INDEX IF NOT EXISTS idx_release_source_files
+                    ON release_source_files(release_id);
+
                 CREATE TABLE IF NOT EXISTS elf_index (
                     elf_hash         TEXT PRIMARY KEY,
                     elf_path         TEXT NOT NULL DEFAULT '',
@@ -504,6 +536,26 @@ class ProjectDatabase:
                 );
                 CREATE INDEX IF NOT EXISTS idx_ai_code_diffs_lookup
                     ON ai_code_diffs(model_id, diff_hash);
+
+                -- #2E Phase 2: per-(model, release) mind maps + code maps so each
+                -- release keeps its own (supports intermediary releases). release_id
+                -- 0 = "no specific release" (project without releases / pre-release
+                -- initial map). Derived cache → excluded from the integrity digest.
+                -- model_id FK CASCADEs on model delete; release deletes are cleaned
+                -- explicitly in delete_release_record (release_id 0 has no FK row).
+                CREATE TABLE IF NOT EXISTS ai_release_maps (
+                    model_id        INTEGER NOT NULL
+                                        REFERENCES architecture_models(id) ON DELETE CASCADE,
+                    release_id      INTEGER NOT NULL DEFAULT 0,
+                    mindmap_json    TEXT,
+                    code_map_json   TEXT,
+                    source_hash     TEXT,
+                    diff_hash       TEXT,
+                    builder_version TEXT,
+                    char_count      INTEGER DEFAULT 0,
+                    updated_at      TEXT,
+                    PRIMARY KEY (model_id, release_id)
+                );
             """)
 
             # Add parser_backend column to elf_index if missing (Phase 13 migration)
@@ -527,6 +579,31 @@ class ProjectDatabase:
             # Add entry_hmac column to history if missing (NC-3: tamper-evidence chain)
             try:
                 self._conn.execute("ALTER TABLE history ADD COLUMN entry_hmac TEXT")
+            except sqlite3.OperationalError:
+                pass
+
+            # #2E Phase 2: migrate legacy per-model maps (ai_model_mindmaps) into the
+            # per-(model, release) table, keyed to the currently-active release (or 0
+            # when the project has no active release). Idempotent: only runs when the
+            # new table is still empty, so re-opening never double-migrates.
+            try:
+                has_new = self._conn.execute(
+                    "SELECT COUNT(*) FROM ai_release_maps").fetchone()[0]
+                old_rows = self._conn.execute(
+                    "SELECT model_id, mindmap_json, source_hash, diff_hash, "
+                    "builder_version, char_count, updated_at, code_map_json "
+                    "FROM ai_model_mindmaps").fetchall()
+                if has_new == 0 and old_rows:
+                    arow = self._conn.execute(
+                        "SELECT id FROM releases WHERE is_active=1 LIMIT 1").fetchone()
+                    active_rid = arow[0] if arow else 0
+                    for r in old_rows:
+                        self._conn.execute(
+                            "INSERT OR IGNORE INTO ai_release_maps "
+                            "(model_id, release_id, mindmap_json, code_map_json, "
+                            " source_hash, diff_hash, builder_version, char_count, updated_at) "
+                            "VALUES (?,?,?,?,?,?,?,?,?)",
+                            (r[0], active_rid, r[1], r[7], r[2], r[3], r[4], r[5], r[6]))
             except sqlite3.OperationalError:
                 pass
 
@@ -609,11 +686,21 @@ class ProjectDatabase:
     # AI Part 2 — mind map (per architecture model)
     # ------------------------------------------------------------------
 
-    def get_model_mindmap(self, model_id: int) -> Optional[dict]:
-        """Return the parsed CompactMindMap dict for a model, or None."""
+    def _resolve_release_id(self, release_id) -> int:
+        """#2E: map None → the active release id, falling back to 0 ('no specific
+        release') for projects without an active release. Explicit ids pass through
+        so background workers can pin a stable release."""
+        if release_id is not None:
+            return release_id
+        rid = self.get_active_release_id()
+        return rid if rid is not None else 0
+
+    def get_model_mindmap(self, model_id: int, release_id=None) -> Optional[dict]:
+        """Return the parsed CompactMindMap dict for a model+release, or None."""
+        rid = self._resolve_release_id(release_id)
         cur = self._conn.execute(
-            "SELECT mindmap_json FROM ai_model_mindmaps WHERE model_id=?", (model_id,)
-        )
+            "SELECT mindmap_json FROM ai_release_maps WHERE model_id=? AND release_id=?",
+            (model_id, rid))
         row = cur.fetchone()
         if not row or not row[0]:
             return None
@@ -622,13 +709,23 @@ class ProjectDatabase:
         except (ValueError, TypeError):
             return None
 
-    def get_model_mindmap_meta(self, model_id: int) -> Optional[dict]:
+    def get_model_ids_with_mindmap(self, release_id=None) -> set:
+        """model_ids that have a non-empty mind map for the given (or active)
+        release — a cheap existence check for the indexed ✓/○ markers."""
+        rid = self._resolve_release_id(release_id)
+        cur = self._conn.execute(
+            "SELECT model_id FROM ai_release_maps "
+            "WHERE release_id=? AND mindmap_json IS NOT NULL AND mindmap_json != ''",
+            (rid,))
+        return {r[0] for r in cur.fetchall()}
+
+    def get_model_mindmap_meta(self, model_id: int, release_id=None) -> Optional[dict]:
         """Return provenance (source_hash/diff_hash/builder_version/char_count/
         updated_at) WITHOUT loading the large mindmap_json blob, or None."""
+        rid = self._resolve_release_id(release_id)
         cur = self._conn.execute(
             "SELECT source_hash, diff_hash, builder_version, char_count, updated_at "
-            "FROM ai_model_mindmaps WHERE model_id=?", (model_id,)
-        )
+            "FROM ai_release_maps WHERE model_id=? AND release_id=?", (model_id, rid))
         row = cur.fetchone()
         if not row:
             return None
@@ -640,22 +737,31 @@ class ProjectDatabase:
     def save_model_mindmap(self, model_id: int, mindmap_json: str,
                            source_hash: str = "", diff_hash: str = "",
                            builder_version: str = "", char_count: int = 0,
-                           updated_at: str = "", code_map_json: Optional[str] = None) -> None:
-        """Insert or replace the mind map row for a model."""
+                           updated_at: str = "", code_map_json: Optional[str] = None,
+                           release_id=None) -> None:
+        """Insert or replace the mind map row for a model+release. Preserves any
+        existing code_map_json when the caller doesn't supply one (and vice-versa)."""
+        rid = self._resolve_release_id(release_id)
         with self._conn:
+            existing = self._conn.execute(
+                "SELECT code_map_json FROM ai_release_maps "
+                "WHERE model_id=? AND release_id=?", (model_id, rid)).fetchone()
+            cm = code_map_json if code_map_json is not None else (
+                existing[0] if existing else None)
             self._conn.execute(
-                "INSERT OR REPLACE INTO ai_model_mindmaps "
-                "(model_id, mindmap_json, source_hash, diff_hash, builder_version, "
-                " char_count, updated_at, code_map_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (model_id, mindmap_json, source_hash, diff_hash, builder_version,
-                 int(char_count or 0), updated_at, code_map_json),
-            )
+                "INSERT OR REPLACE INTO ai_release_maps "
+                "(model_id, release_id, mindmap_json, source_hash, diff_hash, "
+                " builder_version, char_count, updated_at, code_map_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (model_id, rid, mindmap_json, source_hash, diff_hash, builder_version,
+                 int(char_count or 0), updated_at, cm))
 
-    def get_model_code_map(self, model_id: int) -> Optional[dict]:
-        """Return the parsed CodeMap dict for a model, or None."""
+    def get_model_code_map(self, model_id: int, release_id=None) -> Optional[dict]:
+        """Return the parsed CodeMap dict for a model+release, or None."""
+        rid = self._resolve_release_id(release_id)
         cur = self._conn.execute(
-            "SELECT code_map_json FROM ai_model_mindmaps WHERE model_id=?", (model_id,)
-        )
+            "SELECT code_map_json FROM ai_release_maps WHERE model_id=? AND release_id=?",
+            (model_id, rid))
         row = cur.fetchone()
         if not row or not row[0]:
             return None
@@ -664,35 +770,65 @@ class ProjectDatabase:
         except (ValueError, TypeError):
             return None
 
-    def save_model_code_map(self, model_id: int, code_map_json: str) -> None:
-        """Save or update the CodeMap JSON for a model."""
+    def save_model_code_map(self, model_id: int, code_map_json: str,
+                            release_id=None) -> None:
+        """Save or update the CodeMap JSON for a model+release (keeps any mind map)."""
+        rid = self._resolve_release_id(release_id)
         with self._conn:
-            cur = self._conn.execute("SELECT 1 FROM ai_model_mindmaps WHERE model_id=?", (model_id,))
+            cur = self._conn.execute(
+                "SELECT 1 FROM ai_release_maps WHERE model_id=? AND release_id=?",
+                (model_id, rid))
             if cur.fetchone():
                 self._conn.execute(
-                    "UPDATE ai_model_mindmaps SET code_map_json=? WHERE model_id=?",
-                    (code_map_json, model_id)
-                )
+                    "UPDATE ai_release_maps SET code_map_json=? "
+                    "WHERE model_id=? AND release_id=?", (code_map_json, model_id, rid))
             else:
                 ts = datetime.datetime.now().isoformat()
                 self._conn.execute(
-                    "INSERT INTO ai_model_mindmaps (model_id, mindmap_json, updated_at, code_map_json) VALUES (?, ?, ?, ?)",
-                    (model_id, "", ts, code_map_json)
-                )
+                    "INSERT INTO ai_release_maps "
+                    "(model_id, release_id, mindmap_json, updated_at, code_map_json) "
+                    "VALUES (?, ?, ?, ?, ?)", (model_id, rid, "", ts, code_map_json))
 
-    def delete_model_mindmap(self, model_id: int) -> None:
-        """Remove a model's mind map AND its associated code-diff rows (the diff
-        table is not an FK, so its cascade is handled explicitly here)."""
+    def delete_model_mindmap(self, model_id: int, release_id=None) -> None:
+        """Remove a model's map row(s) AND its code-diff rows (the diff table is not
+        an FK, so its cascade is explicit). With release_id=None this clears ALL
+        releases for the model (used on regenerate/model reset); pass a release_id to
+        drop just that release's map."""
         with self._conn:
-            self._conn.execute(
-                "DELETE FROM ai_model_mindmaps WHERE model_id=?", (model_id,))
+            if release_id is None:
+                self._conn.execute(
+                    "DELETE FROM ai_release_maps WHERE model_id=?", (model_id,))
+            else:
+                self._conn.execute(
+                    "DELETE FROM ai_release_maps WHERE model_id=? AND release_id=?",
+                    (model_id, release_id))
             self._conn.execute(
                 "DELETE FROM ai_code_diffs WHERE model_id=?", (model_id,))
 
-    def has_model_mindmap(self, model_id: int) -> bool:
+    def has_model_mindmap(self, model_id: int, release_id=None) -> bool:
+        rid = self._resolve_release_id(release_id)
         cur = self._conn.execute(
-            "SELECT 1 FROM ai_model_mindmaps WHERE model_id=? LIMIT 1", (model_id,))
+            "SELECT 1 FROM ai_release_maps WHERE model_id=? AND release_id=? LIMIT 1",
+            (model_id, rid))
         return cur.fetchone() is not None
+
+    def set_model_diff_hash(self, model_id: int, diff_hash: str, release_id=None) -> None:
+        """Record the latest computed diff hash for a model+release (used by the
+        Change Log to find its diff rows) without disturbing the mind/code map."""
+        rid = self._resolve_release_id(release_id)
+        with self._conn:
+            cur = self._conn.execute(
+                "SELECT 1 FROM ai_release_maps WHERE model_id=? AND release_id=?",
+                (model_id, rid))
+            if cur.fetchone():
+                self._conn.execute(
+                    "UPDATE ai_release_maps SET diff_hash=? WHERE model_id=? AND release_id=?",
+                    (diff_hash, model_id, rid))
+            else:
+                ts = datetime.datetime.now().isoformat()
+                self._conn.execute(
+                    "INSERT INTO ai_release_maps (model_id, release_id, diff_hash, updated_at) "
+                    "VALUES (?, ?, ?, ?)", (model_id, rid, diff_hash, ts))
 
     # ------------------------------------------------------------------
     # AI Part 2 — per-file code diffs (current vs previous source)
@@ -1021,7 +1157,99 @@ class ProjectDatabase:
 
     def delete_release_record(self, release_id: int):
         with self._conn:
+            # #2E: ai_release_maps has no FK on release_id (the 0 sentinel has no
+            # matching row), so clean its per-release maps explicitly. Source blobs
+            # and release_rows cascade via their FKs.
+            self._conn.execute(
+                "DELETE FROM ai_release_maps WHERE release_id=?", (release_id,))
             self._conn.execute("DELETE FROM releases WHERE id=?", (release_id,))
+
+    # ------------------------------------------------------------------
+    # #2E — release-keyed source code store (gzip blobs, lazy reads)
+    # ------------------------------------------------------------------
+
+    def save_release_source_files(self, release_id: int, files, progress=None,
+                                  batch: int = 200) -> int:
+        """Replace the stored source for a release with ``files``.
+
+        ``files`` is an iterable of ``(rel_path, text)`` pairs. Each file is
+        gzip-compressed and inserted in batches so peak RAM stays at ~one batch.
+        ``progress(rel_path, idx, total_or_None)`` is called per file for the
+        loading window's per-file log. Returns the number of files stored.
+        """
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM release_source_files WHERE release_id=?", (release_id,))
+            rows = []
+            count = 0
+            for rel_path, text in files:
+                data = (text or "").encode("utf-8", errors="replace")
+                blob = gzip.compress(data)
+                content_hash = hashlib.sha256(data).hexdigest()
+                ext = os.path.splitext(rel_path)[1].lower()
+                rows.append((release_id, rel_path, blob, len(data), content_hash, ext))
+                count += 1
+                if progress is not None:
+                    progress(rel_path, count, None)
+                if len(rows) >= batch:
+                    self._conn.executemany(
+                        "INSERT OR REPLACE INTO release_source_files "
+                        "(release_id, rel_path, content_gzip, size, content_hash, ext) "
+                        "VALUES (?,?,?,?,?,?)", rows)
+                    rows = []
+            if rows:
+                self._conn.executemany(
+                    "INSERT OR REPLACE INTO release_source_files "
+                    "(release_id, rel_path, content_gzip, size, content_hash, ext) "
+                    "VALUES (?,?,?,?,?,?)", rows)
+        return count
+
+    def list_release_source_files(self, release_id: int) -> list:
+        """Return [{rel_path, size, content_hash, ext}] WITHOUT decompressing —
+        a cheap listing for build_index / diff stat-gating."""
+        cur = self._conn.execute(
+            "SELECT rel_path, size, content_hash, ext FROM release_source_files "
+            "WHERE release_id=? ORDER BY rel_path", (release_id,))
+        return [{"rel_path": r[0], "size": r[1], "content_hash": r[2], "ext": r[3]}
+                for r in cur.fetchall()]
+
+    def read_release_source_file(self, release_id: int, rel_path: str) -> Optional[str]:
+        """Decompress and return a SINGLE stored file's text, or None if absent."""
+        cur = self._conn.execute(
+            "SELECT content_gzip FROM release_source_files "
+            "WHERE release_id=? AND rel_path=?", (release_id, rel_path))
+        row = cur.fetchone()
+        if not row or row[0] is None:
+            return None
+        try:
+            return gzip.decompress(row[0]).decode("utf-8", errors="replace")
+        except (OSError, EOFError):
+            return None
+
+    def has_release_source(self, release_id: int) -> bool:
+        cur = self._conn.execute(
+            "SELECT 1 FROM release_source_files WHERE release_id=? LIMIT 1", (release_id,))
+        return cur.fetchone() is not None
+
+    def get_release_source_total_size(self, release_id: int) -> int:
+        """Sum of uncompressed sizes (for the UI's stored-size display)."""
+        cur = self._conn.execute(
+            "SELECT COALESCE(SUM(size), 0), COUNT(*) FROM release_source_files "
+            "WHERE release_id=?", (release_id,))
+        row = cur.fetchone()
+        return int(row[0] or 0)
+
+    def get_release_ids_with_source(self) -> set:
+        """release_ids that have at least one stored source file (for ✓/○ markers)."""
+        cur = self._conn.execute(
+            "SELECT DISTINCT release_id FROM release_source_files")
+        return {r[0] for r in cur.fetchall()}
+
+    def delete_release_source(self, release_id: int) -> None:
+        """#2E Unload: drop ONLY the source blobs for a release; mind/code maps stay."""
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM release_source_files WHERE release_id=?", (release_id,))
 
     def is_release_frozen(self, release_id: int) -> bool:
         """True if the release exists and is a frozen baseline (is_baseline=1)."""

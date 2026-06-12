@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Architecture Validator Pro — UI Design Survey</title>
+<style>
+  :root { --text:#172b4d; --muted:#5d6b82; --border:#dfe3ea; --accent:#0c66e4; }
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family:'Inter','Segoe UI',system-ui,sans-serif; background:#f2f4f8; color:var(--text); padding:40px 24px 80px; }
+  .wrap { max-width: 1060px; margin: 0 auto; }
+  h1 { font-size: 26px; }
+  .sub { color: var(--muted); margin: 8px 0 28px; font-size: 14px; line-height: 1.55; max-width: 760px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(320px,1fr)); gap: 18px; }
+  a.card { display:block; background:#fff; border:1px solid var(--border); border-radius:12px; overflow:hidden; text-decoration:none; color:inherit; transition:box-shadow .15s, transform .15s; }
+  a.card:hover { box-shadow:0 8px 24px rgba(9,30,66,.14); transform:translateY(-2px); }
+  .thumb { height: 170px; border-bottom: 1px solid var(--border); }
+  .t1 { background: linear-gradient(160deg,#1d1d20 60%,#303034); }
+  .t2 { background: linear-gradient(135deg,#b8c6db,#d6c8d8 60%,#c9d8cf); }
+  .t3 { background: linear-gradient(160deg,#eaf1f8,#f2eef5 50%,#edf3ef); }
+  .t4 { background: linear-gradient(160deg,#101113 60%,#1b1d21); }
+  .t5 { background: linear-gradient(160deg,#141517 50%,#1e1f22); }
+  .t6 { background: linear-gradient(160deg,#f7f8fa 60%,#e9f2ff); }
+  .thumb { display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:600; }
+  .t1,.t4,.t5 { color:#cfd3da; } .t2,.t3,.t6 { color:#4d5b72; }
+  .card-body { padding: 14px 16px 16px; }
+  .card-body h3 { font-size: 15px; display:flex; align-items:center; gap:8px; }
+  .tag { font-size:10.5px; font-weight:700; padding:2px 8px; border-radius:999px; background:#e9f2ff; color:var(--accent); text-transform:uppercase; letter-spacing:.04em; }
+  .tag.dark { background:#21242b; color:#aeb6c4; }
+  .card-body p { color:var(--muted); font-size:12.5px; line-height:1.55; margin-top:7px; }
+  .questions { margin-top: 40px; background:#fff; border:1px solid var(--border); border-radius:12px; padding:22px 26px; }
+  .questions h2 { font-size: 17px; margin-bottom: 12px; }
+  .questions ol { padding-left: 20px; color:var(--muted); font-size:13.5px; line-height:1.9; }
+  .questions b { color: var(--text); }
+  .note { margin-top:18px; font-size:12.5px; color:var(--muted); border-left:3px solid var(--accent); padding-left:12px; line-height:1.6; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Architecture Validator Pro — UI Design Survey</h1>
+  <p class="sub">
+    Six candidate designs for the new web-based UI. Every mockup is <b>fully interactive with the same data and all six
+    tabs</b>, so you're comparing <i>look, layout, and workflow</i> — not features. All designs follow one shared rule:
+    <b>nothing hides behind right-click</b>. Row actions live in a visible ⋯ menu (or an always-visible details panel),
+    table actions live in a toolbar, and right-click will only ever be a shortcut.
+  </p>
+  <p class="sub" style="margin-top:-16px">
+    <b>Things to try in any design:</b> switch tabs · click a Review/Port State pill to change it · open a row's ⋯ menu
+    (try "Retire port…") · type in the search box to filter · press <b>Add Port</b> / <b>Re-match</b> / <b>Save</b> ·
+    edit the template in <b>Test Design</b> and watch the live preview (Previous/Next cycles ports) · press Generate in
+    <b>AI Generation</b> to see SSE-style streaming · ask something in <b>AI Chat</b> · click nodes in the
+    <b>Code Map</b> graph · click files in <b>Change Log</b> and run the AI summary.
+  </p>
+
+  <div class="grid">
+    <a class="card" href="01_adwaita_dark.html">
+      <div class="thumb t1">GNOME headerbar · dark · rounded cards</div>
+      <div class="card-body">
+        <h3>1 · Adwaita Dark <span class="tag dark">dark</span></h3>
+        <p>GNOME Libadwaita: centered view switcher in the header bar, boxed list sidebar on the right (closest to the current app's layout), pill status dropdowns, open ⋯ menu shown on the selected row.</p>
+      </div>
+    </a>
+    <a class="card" href="02_macos_classic.html">
+      <div class="thumb t2">Translucent sidebar · unified toolbar · light</div>
+      <div class="card-body">
+        <h3>2 · macOS Classic <span class="tag">light</span></h3>
+        <p>Big Sur/Monterey feel: source-list sidebar on the LEFT, segmented control for tabs, zebra-striped table, and a persistent action strip under the table showing the selected row's actions at all times.</p>
+      </div>
+    </a>
+    <a class="card" href="03_fluent_windows.html">
+      <div class="thumb t3">Mica background · NavigationView · light</div>
+      <div class="card-body">
+        <h3>3 · Windows 11 Fluent <span class="tag">light</span></h3>
+        <p>Feels native on the corporate Windows laptops most of the team uses: left navigation rail with models embedded, a command bar attached to the table, page title with description.</p>
+      </div>
+    </a>
+    <a class="card" href="04_linear_dark.html">
+      <div class="thumb t4">Dense · keyboard-first · ⌘K command palette</div>
+      <div class="card-body">
+        <h3>4 · Linear Dense Dark <span class="tag dark">dark</span></h3>
+        <p>Engineering-tool aesthetic: compact rows, dot status indicators, filter chips, number-key tab switching, command palette, and a live activity feed in the right rail for collaboration visibility.</p>
+      </div>
+    </a>
+    <a class="card" href="05_ide_workbench.html">
+      <div class="thumb t5">Activity bar · bottom details panel · status bar</div>
+      <div class="card-body">
+        <h3>5 · IDE Workbench <span class="tag dark">dark</span></h3>
+        <p>VS Code-style: icon activity bar, project explorer tree, editor tabs, and a bottom panel (Port Details / Match Candidates / History / Jobs) that makes the selected port's data and actions permanently visible.</p>
+      </div>
+    </a>
+    <a class="card" href="06_enterprise_light.html">
+      <div class="thumb t6">White cards · breadcrumbs · review progress</div>
+      <div class="card-body">
+        <h3>6 · Clean Enterprise Light <span class="tag">light</span></h3>
+        <p>Atlassian-style light theme for audit-friendly readability: breadcrumbs, prominent page actions, filter chips, and a review-progress card — the most "management demo" friendly of the six.</p>
+      </div>
+    </a>
+  </div>
+
+  <div class="questions">
+    <h2>Questions for the team</h2>
+    <ol>
+      <li><b>Navigation:</b> tabs along the top (1, 2, 6) or a navigation rail on the left (3, 4, 5)?</li>
+      <li><b>Models list:</b> own sidebar on the right (1, 6), merged into the left nav (3, 4), or a tree explorer (5)?</li>
+      <li><b>Theme:</b> dark (1, 4, 5), light (3, 6), or follow the OS with both?</li>
+      <li><b>Row actions:</b> ⋯ menu per row (1, 3, 4, 6), persistent action strip under the table (2), or a bottom details panel (5)?</li>
+      <li><b>Density:</b> comfortable rows (2, 3, 6) or compact engineering density (4, 5)?</li>
+      <li><b>Status style:</b> colored pills (1, 2, 3, 5, 6) or dot + text (4)?</li>
+      <li>Which design would you trust in a <b>customer/audit demo</b>, and which would you prefer for <b>8 hours of daily work</b>? (They may differ!)</li>
+    </ol>
+    <div class="note">
+      Mix-and-match is expected — e.g. "Fluent layout with Adwaita's pills and the IDE's bottom panel" is a perfectly
+      good answer. The winning combination becomes the CSS theme tokens for Phase 2 of
+      <code>pywebview_react_migration_plan.md</code>.
+    </div>
+  </div>
+</div>
+</body>
+</html>

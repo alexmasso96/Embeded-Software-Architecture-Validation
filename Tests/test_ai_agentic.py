@@ -260,7 +260,7 @@ def test_get_mind_map_and_requirements_with_db(sandbox):
         is_open = True
         def __init__(self):
             self._m = {ctx.META_REQUIREMENTS: json.dumps([{"id": "R1", "text": "lock"}])}
-        def get_model_mindmap(self, mid):
+        def get_model_mindmap(self, mid, release_id=None):
             return {"builder_version": ctx.MINDMAP_BUILDER_VERSION, "model_name": "M",
                     "files": {}, "ports": {}, "requirements": {},
                     "functions": {"f": {"file": "x.c", "signature": "void f(void)",

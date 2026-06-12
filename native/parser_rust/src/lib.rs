@@ -235,17 +235,27 @@ fn resolve_type_name_recursive(
 }
 
 #[pyfunction]
-fn compute_md5(elf_path: &str) -> PyResult<String> {
-    let file = File::open(elf_path)
-        .map_err(|e| pyo3::exceptions::PyFileNotFoundError::new_err(format!("Failed to open ELF file: {}", e)))?;
-    let mmap = unsafe { Mmap::map(&file) }
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to memory map ELF file: {}", e)))?;
-    let digest = md5::compute(&mmap);
-    Ok(format!("{:x}", digest))
+fn compute_md5(py: Python<'_>, elf_path: &str) -> PyResult<String> {
+    // Release the GIL while hashing so the caller's other Python threads
+    // (e.g. the Qt event loop) keep running during large-file I/O.
+    py.allow_threads(|| {
+        let file = File::open(elf_path)
+            .map_err(|e| pyo3::exceptions::PyFileNotFoundError::new_err(format!("Failed to open ELF file: {}", e)))?;
+        let mmap = unsafe { Mmap::map(&file) }
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to memory map ELF file: {}", e)))?;
+        let digest = md5::compute(&mmap);
+        Ok(format!("{:x}", digest))
+    })
 }
 
 #[pyfunction]
-fn parse_elf(elf_path: &str) -> PyResult<String> {
+fn parse_elf(py: Python<'_>, elf_path: &str) -> PyResult<String> {
+    // Release the GIL for the whole parse: no Python objects are touched
+    // until the JSON string result crosses back over the boundary.
+    py.allow_threads(|| parse_elf_impl(elf_path))
+}
+
+fn parse_elf_impl(elf_path: &str) -> PyResult<String> {
     let file = File::open(elf_path)
         .map_err(|e| pyo3::exceptions::PyFileNotFoundError::new_err(format!("Failed to open ELF file: {}", e)))?;
     let mmap = unsafe { Mmap::map(&file) }

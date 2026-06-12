@@ -88,11 +88,13 @@ class AIChangeLogWorker(QtCore.QThread):
     def run(self):
         try:
             from Application_Logic import Logic_AI_Providers as providers
-            from Application_Logic.Logic_AI_Providers import Message
-            
+
+            # NB: providers' `Message` is a type alias (Dict[str, str]), NOT a class —
+            # calling Message(...) raised "Type Dict cannot be instantiated". Messages
+            # are plain dicts.
             messages = [
-                Message(role="system", content="You are a senior software engineer and ASPICE auditor."),
-                Message(role="user", content=self.prompt)
+                {"role": "system", "content": "You are a senior software engineer and ASPICE auditor."},
+                {"role": "user", "content": self.prompt},
             ]
             response = providers.generate(self.provider_id, self.model, messages)
             self.finished_ok.emit(response)
@@ -165,10 +167,12 @@ class AIChangeLogController(QtCore.QObject):
         self.compare_releases = []
         
         active_rel = arch.release_manager.get_active_release()
-        for r in arch.release_manager.releases:
+        source_ids = db.get_release_ids_with_source()
+        for r in arch.release_manager.selectable_releases():   # #2E: real releases only
             if active_rel and r.id == active_rel.id:
                 continue
-            self.tab_widget.cmb_compare_release.addItem(r.name)
+            mark = " 📄" if r.id in source_ids else ""
+            self.tab_widget.cmb_compare_release.addItem(f"{r.name}{mark}", r.id)
             self.compare_releases.append(r)
         self.tab_widget.cmb_compare_release.blockSignals(False)
 
@@ -181,10 +185,9 @@ class AIChangeLogController(QtCore.QObject):
             self.tab_widget.lbl_diff_info.setText("Select an active architecture model.")
             return
 
-        # Fetch active diff hash from mindmap
-        cur = db._conn.execute("SELECT diff_hash FROM ai_model_mindmaps WHERE model_id=?", (active_model_id,))
-        row = cur.fetchone()
-        diff_hash = row[0] if row else None
+        # #2E: fetch the active diff hash from the per-release map (active release).
+        meta = db.get_model_mindmap_meta(active_model_id)
+        diff_hash = meta.get("diff_hash") if meta else None
 
         if not diff_hash:
             self.tab_widget.file_list.clear()
@@ -247,68 +250,64 @@ class AIChangeLogController(QtCore.QObject):
             QtWidgets.QMessageBox.warning(self.main_window, "Compute Diffs", "No active architecture model selected.")
             return
 
-        # Load last used folders from project meta
-        last_prev = db.get_meta("last_diff_previous_folder", "")
-        last_curr = db.get_meta("last_diff_current_folder", "")
-        if not last_curr and hasattr(arch, 'linked_source_dir'):
-            last_curr = arch.linked_source_dir
-
-        prev_dir = QtWidgets.QFileDialog.getExistingDirectory(
-            self.main_window, "Select PREVIOUS Source Folder", last_prev,
-            options=QtWidgets.QFileDialog.Option(0)
-        )
-        if not prev_dir:
+        # #2E: diff the CURRENT (active) release against the SELECTED comparison
+        # release — both read from the DB source store. No folder pickers.
+        current_rid = db.get_active_release_id()
+        idx = self.tab_widget.cmb_compare_release.currentIndex()
+        previous_rid = self.tab_widget.cmb_compare_release.itemData(idx) if idx >= 0 else None
+        if current_rid is None or previous_rid is None:
+            QtWidgets.QMessageBox.warning(
+                self.main_window, "Compute Diffs",
+                "Select a comparison release. The active release is compared against it.")
+            return
+        if not db.has_release_source(current_rid) or not db.has_release_source(previous_rid):
+            QtWidgets.QMessageBox.warning(
+                self.main_window, "Compute Diffs",
+                "Both the active release and the selected comparison release must have "
+                "source imported (Release Selection → Map / Import Source Code).")
             return
 
-        curr_dir = QtWidgets.QFileDialog.getExistingDirectory(
-            self.main_window, "Select CURRENT Source Folder", last_curr,
-            options=QtWidgets.QFileDialog.Option(0)
-        )
-        if not curr_dir:
-            return
-
-        # Save chosen directories
-        db.set_meta("last_diff_previous_folder", prev_dir)
-        db.set_meta("last_diff_current_folder", curr_dir)
-
-        # Run diff calculation on a background thread using LoadingDialog
         from Application_Logic.Logic_Loading_Window import LoadingDialog
         loader = LoadingDialog(self.main_window)
-        loader.ui.lbl_loading_text.setText("Computing offline file-by-file differences...")
-        
-        def run_diff_task(current_path, previous_path):
-            from Application_Logic.Logic_AI_Context import diff_source_folders, compute_diff_hash
-            diff_hash = compute_diff_hash(current_path, previous_path)
-            diffs = diff_source_folders(current_path, previous_path)
-            return diff_hash, diffs
+        loader.ui.lbl_loading_text.setText("Computing file-by-file differences from the database...")
 
-        import os as _os
-        db.set_activity("diff", "in_progress",
-                        f"{_os.path.basename(prev_dir)} → {_os.path.basename(curr_dir)}")
-        ran = loader.run_task(run_diff_task, curr_dir, prev_dir)
+        def run_diff_task(db_path, cur_rid, prev_rid):
+            # Worker-owned connection (WAL-independent) + DB release providers.
+            from Application_Logic.Logic_Database import ProjectDatabase
+            from Application_Logic.Logic_Source_Store import DbReleaseSourceProvider
+            from Application_Logic.Logic_AI_Context import diff_source_folders, compute_diff_hash
+            wdb = ProjectDatabase()
+            try:
+                wdb.open(db_path, create_schema=False, apply_journal=False)
+                cur_p = DbReleaseSourceProvider(wdb, cur_rid)
+                prev_p = DbReleaseSourceProvider(wdb, prev_rid)
+                diff_hash = compute_diff_hash(cur_p, prev_p)
+                diffs = diff_source_folders(cur_p, prev_p)
+                return diff_hash, diffs
+            finally:
+                try:
+                    wdb.close()
+                except Exception:
+                    pass
+
+        # Pause auto-save so the main connection stays idle during the worker build.
+        if self.main_window is not None:
+            self.main_window._codemap_building = True
+        db.set_activity("diff", "in_progress", "release comparison")
+        db.commit()
+        ran = loader.run_task(run_diff_task, db.db_path, current_rid, previous_rid)
+        if self.main_window is not None:
+            self.main_window._codemap_building = False
         db.set_activity("", "idle")
+        db.commit()
         if ran:
             diff_hash, diffs = loader.result
-
-            # Save diffs to database
             db.save_code_diffs(active_model_id, diff_hash, diffs)
-            
-            # Link diff hash to model
-            cur = db._conn.execute("SELECT 1 FROM ai_model_mindmaps WHERE model_id=?", (active_model_id,))
-            if cur.fetchone():
-                db._conn.execute(
-                    "UPDATE ai_model_mindmaps SET diff_hash=? WHERE model_id=?",
-                    (diff_hash, active_model_id)
-                )
-            else:
-                ts = datetime.datetime.now().isoformat()
-                db._conn.execute(
-                    "INSERT INTO ai_model_mindmaps (model_id, mindmap_json, updated_at, diff_hash) VALUES (?, ?, ?, ?)",
-                    (active_model_id, "", ts, diff_hash)
-                )
+            # Record the diff hash on the per-release map + the shared "last diff"
+            # meta so the AI Chat marker and chat get_diff see it.
+            db.set_model_diff_hash(active_model_id, diff_hash, release_id=current_rid)
+            db.set_meta("ai_last_diff_hash", diff_hash)
             db.commit()
-            
-            # Reload views
             self.load_data()
             QtWidgets.QMessageBox.information(self.main_window, "Success", "Release differences computed successfully!")
         else:
@@ -330,7 +329,9 @@ class AIChangeLogController(QtCore.QObject):
             return
 
         pid = chat_ctrl.cmb_provider.currentData()
-        model = chat_ctrl.cmb_model.currentText().strip()
+        # currentData() is the model id the providers expect; currentText() is the
+        # human display name and produced "unknown model" failures.
+        model = chat_ctrl.cmb_model.currentData()
         from Application_Logic import Logic_AI_Providers as providers
         if not pid or not model or not providers.get_provider(pid).is_configured():
             QtWidgets.QMessageBox.warning(

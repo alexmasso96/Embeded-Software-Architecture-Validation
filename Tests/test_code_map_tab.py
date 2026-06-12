@@ -300,14 +300,17 @@ def test_code_map_tab_folder_linking():
         with open(main_c_path, "w") as f:
             f.write("\n\nvoid main() {\n    return;\n}\n")
             
+        # #2E: no DB-stored source for this release → exercise the local-folder fallback.
+        mock_db.has_release_source.return_value = False
+
         with patch.object(controller, "_db", return_value=mock_db), \
              patch.object(controller, "_arch", return_value=mock_arch):
-            
+
             # Load data
             controller.load_data()
-            
-            # Check with no folder linked
-            assert "Click 'Link Local Source Folder'" in controller.code_viewer.toPlainText()
+
+            # Check with no folder linked (new #2E message points at both options)
+            assert "link a local source folder" in controller.code_viewer.toPlainText()
             
             # Set folder programmatically
             controller.linked_source_dir = tmp_dir

@@ -19,6 +19,7 @@ from Tests.test_helpers import make_project_db
 from UI.Dialog_Architecture_Manager import ArchitectureManagerDialog
 from UI.Dialog_Architecture_Edit import ArchitectureEditDialog
 from UI.Dialog_Restore_Model import RestoreModelDialog
+from UI.StyledMessageBox import StyledMessageBox
 
 MOD = "UI.Dialog_Architecture_Manager"
 
@@ -65,7 +66,7 @@ def test_restore_dialog_selection():
 def test_restore_dialog_no_selection_warns():
     m1 = MagicMock(); m1.name = "Del1"; m1.status = "In Work"
     dlg = RestoreModelDialog([m1])
-    with patch("PyQt6.QtWidgets.QMessageBox.warning") as mock_warn:
+    with patch("UI.Dialog_Restore_Model.QMessageBox.warning") as mock_warn:
         dlg.on_restore()
     mock_warn.assert_called_once()
     assert dlg.get_selected_index() == -1
@@ -160,7 +161,7 @@ def test_on_delete_soft_deletes_with_confirmation():
         mgr, db = _manager(tmp)
         dlg = ArchitectureManagerDialog(mgr)
         _select_row(dlg, 0)
-        with patch.object(QMessageBox, "exec",
+        with patch.object(StyledMessageBox, "warning",
                           return_value=QMessageBox.StandardButton.Yes):
             dlg.on_delete()
         assert mgr.models[0].is_deleted is True

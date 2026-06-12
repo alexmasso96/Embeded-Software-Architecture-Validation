@@ -26,18 +26,79 @@ logger = logging.getLogger(__name__)
 
 _META_LAST_DIFF = "ai_last_diff_hash"
 
+import re as _re
+import html as _html
+
+
+def _md_inline(s: str) -> str:
+    """Inline markdown → HTML: `code`, **bold**, *italic*. HTML-escaped first."""
+    codes = []
+    s = _re.sub(r"`([^`]+)`", lambda m: codes.append(m.group(1)) or f"\x01{len(codes)-1}\x01", s)
+    s = _html.escape(s)
+    s = _re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s)
+    s = _re.sub(r"__(.+?)__", r"<b>\1</b>", s)
+    s = _re.sub(r"(?<![\*\w])\*([^*]+?)\*(?![\*\w])", r"<i>\1</i>", s)
+    for i, c in enumerate(codes):
+        s = s.replace(f"\x01{i}\x01",
+                      f"<code style='background-color:#1b1b1b;'>{_html.escape(c)}</code>")
+    return s
+
+
+def md_to_html(md: str) -> str:
+    """Minimal, dependency-free markdown → Qt-rich-text HTML for AI chat bubbles.
+    Handles fenced code blocks, headings, bold/italic, inline code, and bullet/
+    numbered lists. Output inherits the bubble's (light) text colour."""
+    md = md or ""
+    code_blocks = []
+    md = _re.sub(r"```[^\n]*\n?(.*?)```",
+                 lambda m: code_blocks.append(m.group(1).rstrip("\n")) or f"\x00C{len(code_blocks)-1}\x00",
+                 md, flags=_re.S)
+    out, list_mode = [], None
+    for raw in md.split("\n"):
+        ul = _re.match(r"^\s*[-*+]\s+(.*)$", raw)
+        ol = _re.match(r"^\s*\d+\.\s+(.*)$", raw)
+        if ul or ol:
+            kind = "ul" if ul else "ol"
+            if list_mode != kind:
+                if list_mode:
+                    out.append(f"</{list_mode}>")
+                out.append(f"<{kind}>")
+                list_mode = kind
+            out.append(f"<li>{_md_inline((ul or ol).group(1))}</li>")
+            continue
+        if list_mode:
+            out.append(f"</{list_mode}>")
+            list_mode = None
+        h = _re.match(r"^\s*#{1,6}\s+(.*)$", raw)
+        if h:
+            out.append(f"<b>{_md_inline(h.group(1))}</b><br>")
+        elif raw.strip() == "":
+            out.append("<br>")
+        else:
+            out.append(_md_inline(raw) + "<br>")
+    if list_mode:
+        out.append(f"</{list_mode}>")
+    res = "".join(out)
+    for i, b in enumerate(code_blocks):
+        res = res.replace(
+            f"\x00C{i}\x00",
+            f"<pre style='background-color:#1b1b1b; padding:6px;'>{_html.escape(b)}</pre>")
+    return res
+
 
 class _MindMapWorker(QtCore.QThread):
     progress = QtCore.pyqtSignal(str)
     finished_ok = QtCore.pyqtSignal(int)     # number of maps built
     failed = QtCore.pyqtSignal(str)
 
-    def __init__(self, jobs, current_source, previous_source, db, parent=None):
+    def __init__(self, jobs, current_source, previous_source, db,
+                 release_id=None, parent=None):
         super().__init__(parent)
         self.jobs = jobs        # [(model_id, model_name, ports, requirements)]
         self.current_source = current_source
         self.previous_source = previous_source
         self.db = db
+        self.release_id = release_id   # #2E: pin maps to this release
 
     def run(self):
         try:
@@ -48,12 +109,18 @@ class _MindMapWorker(QtCore.QThread):
                 self.db.set_meta(_META_LAST_DIFF, diff_hash)
             now = datetime.datetime.now().isoformat(timespec="seconds")
             
-            # Find if there is an active release with an ELF file
+            # #2E: use the ELF of the SELECTED current release (self.release_id) so
+            # the code map matches the source being indexed; fall back to the active
+            # release when no specific release was pinned.
             active_elf_hash = None
             active_elf_path = None
             releases = self.db.get_all_releases()
             for r in releases:
-                if r.get("is_active", 0) == 1 and not r.get("is_deleted", 0) and r.get("elf_hash"):
+                if r.get("is_deleted", 0) or not r.get("elf_hash"):
+                    continue
+                match = (r.get("id") == self.release_id if self.release_id is not None
+                         else r.get("is_active", 0) == 1)
+                if match:
                     active_elf_hash = r["elf_hash"]
                     active_elf_path = r["elf_path"]
                     break
@@ -66,7 +133,7 @@ class _MindMapWorker(QtCore.QThread):
                 code_map_json = None
                 if active_elf_hash:
                     # Check if CodeMap is already pregenerated in the DB
-                    pregenerated_code_map = self.db.get_model_code_map(mid)
+                    pregenerated_code_map = self.db.get_model_code_map(mid, release_id=self.release_id)
                     if pregenerated_code_map:
                         self.progress.emit("Using pregenerated CodeMap call-graph from database …")
                         code_map = pregenerated_code_map
@@ -120,7 +187,7 @@ class _MindMapWorker(QtCore.QThread):
                     mid, json.dumps(mm), source_hash=mm.get("source_hash", ""),
                     diff_hash=diff_hash, builder_version=mm.get("builder_version", ""),
                     char_count=ctx.mind_map_char_count(mm), updated_at=now,
-                    code_map_json=code_map_json)
+                    code_map_json=code_map_json, release_id=self.release_id)
                 if diff_hash and model_diffs:
                     self.db.save_code_diffs(mid, diff_hash, model_diffs)
             self.db.commit()
@@ -222,22 +289,20 @@ class AIChatController(ProviderPanelMixin, QtCore.QObject):
         lay.setContentsMargins(0, 0, 8, 0)
         lay.setSpacing(8)
 
-        # Source group
-        sgrp = QtWidgets.QGroupBox("Source")
+        # Source group — #2E: source is chosen by RELEASE (no folder pickers). The
+        # dropdowns list real releases; source is read from the DB for that release.
+        sgrp = QtWidgets.QGroupBox("Source (by release)")
         sl = QtWidgets.QFormLayout(sgrp)
-        self.edit_current_source = QtWidgets.QLineEdit()
-        self.edit_current_source.editingFinished.connect(self._on_current_source_committed)
-        cbtn = QtWidgets.QPushButton("Browse…")
-        cbtn.clicked.connect(lambda: self._browse(self.edit_current_source, ctx.META_SOURCE))
-        crow = QtWidgets.QHBoxLayout(); crow.addWidget(self.edit_current_source, 1); crow.addWidget(cbtn)
-        sl.addRow("Current:", self._wrap(crow))
-        self.edit_prev_source = QtWidgets.QLineEdit()
-        self.edit_prev_source.editingFinished.connect(
-            lambda: self._set_meta(ctx.META_PREVIOUS_SOURCE, self.edit_prev_source.text()))
-        pbtn = QtWidgets.QPushButton("Browse…")
-        pbtn.clicked.connect(lambda: self._browse(self.edit_prev_source, ctx.META_PREVIOUS_SOURCE))
-        prow = QtWidgets.QHBoxLayout(); prow.addWidget(self.edit_prev_source, 1); prow.addWidget(pbtn)
-        sl.addRow("Previous:", self._wrap(prow))
+        self.cmb_current_release = QtWidgets.QComboBox()
+        self.cmb_current_release.currentIndexChanged.connect(self._on_current_release_changed)
+        sl.addRow("Current:", self.cmb_current_release)
+        self.cmb_prev_release = QtWidgets.QComboBox()
+        self.cmb_prev_release.currentIndexChanged.connect(self._on_prev_release_changed)
+        sl.addRow("Previous:", self.cmb_prev_release)
+        self.lbl_release_hint = QtWidgets.QLabel("")
+        self.lbl_release_hint.setStyleSheet("font-size: 11px; color: #9CA3AF;")
+        self.lbl_release_hint.setWordWrap(True)
+        sl.addRow("", self.lbl_release_hint)
         lay.addWidget(sgrp)
 
         # Requirements
@@ -328,14 +393,83 @@ class AIChatController(ProviderPanelMixin, QtCore.QObject):
     def on_tab_changed(self, index):
         if self.ui.tabWidget.widget(index) is not self.tab_widget:
             return
-        # Sync the (single, shared) source key from whatever Tab 3 last wrote.
-        self._set_source_silently(self.edit_current_source, self._meta(ctx.META_SOURCE) or "")
-        self._set_source_silently(self.edit_prev_source, self._meta(ctx.META_PREVIOUS_SOURCE) or "")
+        self._refresh_release_combos()
         self._refresh_providers()
         self._refresh_models_dropdown()
         self._load_prompt_rules()
         self._refresh_reqs_status()
         self._refresh_mindmap_buttons()
+
+    # ------------------------------------------------------------------
+    # #2E — release-based source selection
+    # ------------------------------------------------------------------
+    def _refresh_release_combos(self):
+        """Repopulate the current/previous release dropdowns from selectable
+        releases, restoring the saved selection (or the active/latest release for
+        'current'). 📄 marks releases that have source imported."""
+        from Application_Logic.Logic_Release_Source_Picker import populate_release_combo
+        db = self._db()
+        arch = self._arch()
+        rm = getattr(arch, "release_manager", None) if arch else None
+        if rm is None:
+            return
+        source_ids = db.get_release_ids_with_source() if db else set()
+
+        def _saved(key):
+            v = self._meta(key)
+            try:
+                return int(v) if v not in (None, "") else None
+            except (ValueError, TypeError):
+                return None
+
+        prefer_cur = _saved(ctx.META_CURRENT_RELEASE)
+        if prefer_cur is None and db is not None:
+            prefer_cur = db.get_active_release_id()   # default current = active/latest
+        populate_release_combo(self.cmb_current_release, rm,
+                               prefer_id=prefer_cur, source_ids=source_ids)
+        populate_release_combo(self.cmb_prev_release, rm, include_none=True,
+                               prefer_id=_saved(ctx.META_PREVIOUS_RELEASE),
+                               source_ids=source_ids)
+        self._update_release_hint()
+
+    def _update_release_hint(self):
+        db = self._db()
+        rid = self.cmb_current_release.currentData()
+        if rid is None:
+            self.lbl_release_hint.setText(
+                "No software release selected — add one and import its source "
+                "(Release Selection → Map / Import Source Code).")
+        elif db is not None and not db.has_release_source(rid):
+            self.lbl_release_hint.setText(
+                "⚠ The selected release has no source imported — generation will be "
+                "limited. Import it from Release Selection.")
+        else:
+            self.lbl_release_hint.setText("")
+
+    def _on_current_release_changed(self, _idx=0):
+        if self._syncing:
+            return
+        rid = self.cmb_current_release.currentData()
+        self._set_meta(ctx.META_CURRENT_RELEASE, "" if rid is None else str(rid))
+        self._update_release_hint()
+        self._refresh_mindmap_buttons()
+
+    def _on_prev_release_changed(self, _idx=0):
+        if self._syncing:
+            return
+        rid = self.cmb_prev_release.currentData()
+        self._set_meta(ctx.META_PREVIOUS_RELEASE, "" if rid is None else str(rid))
+
+    def _current_release_id(self):
+        return self.cmb_current_release.currentData()
+
+    def _current_source_provider(self):
+        from Application_Logic.Logic_Source_Store import release_source_provider
+        return release_source_provider(self._db(), self.cmb_current_release.currentData())
+
+    def _previous_source_provider(self):
+        from Application_Logic.Logic_Source_Store import release_source_provider
+        return release_source_provider(self._db(), self.cmb_prev_release.currentData())
 
     def apply_edit_mode(self, enabled: bool):
         """View-Only sessions can't write to the shared DB: disable the mind-map /
@@ -348,34 +482,6 @@ class AIChatController(ProviderPanelMixin, QtCore.QObject):
             if btn is not None:
                 btn.setEnabled(enabled)
                 btn.setToolTip(tip)
-
-    # ------------------------------------------------------------------
-    # Source sync (anti-loop)
-    # ------------------------------------------------------------------
-    def _set_source_silently(self, line_edit, value):
-        if line_edit.text() == value:
-            return
-        self._syncing = True
-        line_edit.blockSignals(True)
-        try:
-            line_edit.setText(value)
-        finally:
-            line_edit.blockSignals(False)
-            self._syncing = False
-
-    def _on_current_source_committed(self):
-        if self._syncing:
-            return
-        self._set_meta(ctx.META_SOURCE, self.edit_current_source.text())
-
-    def _browse(self, line_edit, meta_key):
-        path = QtWidgets.QFileDialog.getExistingDirectory(
-            self.main_window, "Select Source Folder", line_edit.text(),
-            options=QtWidgets.QFileDialog.Option(0)
-        )
-        if path:
-            line_edit.setText(path)
-            self._set_meta(meta_key, path)
 
     def _set_meta(self, key, value):
         db = self._db()
@@ -436,13 +542,22 @@ class AIChatController(ProviderPanelMixin, QtCore.QObject):
     # ------------------------------------------------------------------
     def _refresh_models_dropdown(self):
         arch = self._arch()
+        db = self._db()
+        # Mark which models already have a mind map: "✓ Name" vs "○ Name".
+        indexed = set()
+        if db is not None and getattr(db, "is_open", False):
+            try:
+                indexed = db.get_model_ids_with_mindmap()
+            except Exception:
+                indexed = set()
         cur = self.cmb_mindmap_model.currentData()
         self.cmb_mindmap_model.blockSignals(True)
         self.cmb_mindmap_model.clear()
         if arch is not None:
             for m in arch.model_manager.models:
                 if not getattr(m, "is_deleted", False):
-                    self.cmb_mindmap_model.addItem(m.name, m.id)
+                    mark = "✓" if m.id in indexed else "○"
+                    self.cmb_mindmap_model.addItem(f"{mark}  {m.name}", m.id)
         if cur is not None:
             i = self.cmb_mindmap_model.findData(cur)
             if i >= 0:
@@ -482,10 +597,13 @@ class AIChatController(ProviderPanelMixin, QtCore.QObject):
         if arch is None or db is None or not getattr(db, "is_open", False):
             QtWidgets.QMessageBox.warning(self.main_window, "Mind Map", "Open a project first.")
             return
-        current = self.edit_current_source.text().strip()
-        if not current:
-            QtWidgets.QMessageBox.warning(self.main_window, "Mind Map",
-                                          "Set the Current source path first.")
+        current_rid = self._current_release_id()
+        current = self._current_source_provider()
+        if current_rid is None or current is None:
+            QtWidgets.QMessageBox.warning(
+                self.main_window, "Mind Map",
+                "Select a Current release that has source imported "
+                "(Release Selection → Map / Import Source Code).")
             return
         if all_models:
             models = [m for m in arch.model_manager.models if not getattr(m, "is_deleted", False)]
@@ -497,14 +615,16 @@ class AIChatController(ProviderPanelMixin, QtCore.QObject):
             return
         reqs = self._requirements()
         jobs = [(m.id, m.name, self._extract_ports(m), reqs) for m in models]
-        self._run_mm_worker(jobs, current, self.edit_prev_source.text().strip())
+        self._run_mm_worker(jobs, current, self._previous_source_provider(), current_rid)
 
     def _generate_diffs(self):
-        current = self.edit_current_source.text().strip()
-        previous = self.edit_prev_source.text().strip()
-        if not current or not previous:
+        current_rid = self._current_release_id()
+        current = self._current_source_provider()
+        previous = self._previous_source_provider()
+        if current is None or previous is None:
             QtWidgets.QMessageBox.warning(
-                self.main_window, "Diffs", "Set BOTH Current and Previous source paths.")
+                self.main_window, "Diffs",
+                "Select BOTH a Current and a Previous release that have source imported.")
             return
         # Diffs alone: re-run mind maps would be heavier; here we only compute diffs
         # for the selected model so get_diff works in chat. (Regenerate updates maps.)
@@ -518,9 +638,9 @@ class AIChatController(ProviderPanelMixin, QtCore.QObject):
         # A diff-only run: skip rebuilding the map by passing the existing model but
         # the worker always (re)builds — acceptable and keeps one code path.
         self._run_mm_worker([(model.id, model.name, self._extract_ports(model), reqs)],
-                            current, previous, diff_only_label=True)
+                            current, previous, current_rid, diff_only_label=True)
 
-    def _run_mm_worker(self, jobs, current, previous, diff_only_label=False):
+    def _run_mm_worker(self, jobs, current, previous, release_id, diff_only_label=False):
         if self._mm_worker is not None and self._mm_worker.isRunning():
             return
         self._busy(True)
@@ -533,7 +653,8 @@ class AIChatController(ProviderPanelMixin, QtCore.QObject):
         self._mm_loading = LoadingDialog(self.main_window)
         self._mm_loading.ui.lbl_loading_text.setText("Building mind map…")
         self._mm_loading.show()
-        self._mm_worker = _MindMapWorker(jobs, current, previous, self._db(), self)
+        # #2E: maps are pinned to the selected current release (passed in).
+        self._mm_worker = _MindMapWorker(jobs, current, previous, self._db(), release_id, self)
         self._mm_worker.progress.connect(
             lambda m: self._mm_loading.append_log(m) if self._mm_loading else None)
         self._mm_worker.finished_ok.connect(self._on_mm_done)
@@ -545,7 +666,8 @@ class AIChatController(ProviderPanelMixin, QtCore.QObject):
             self._mm_loading.close(); self._mm_loading.deleteLater(); self._mm_loading = None
         self._busy(False)
         self._clear_activity()
-        self.lbl_mm_status.setText(f"Built {n} mind map(s).")
+        # Refresh the ✓/○ markers + per-model status now that maps were built.
+        self._refresh_models_dropdown()
         self._refresh_mindmap_buttons()
 
     def _on_mm_failed(self, msg):
@@ -565,17 +687,31 @@ class AIChatController(ProviderPanelMixin, QtCore.QObject):
             b.setEnabled(not busy)
 
     def _refresh_mindmap_buttons(self):
-        """DB-driven Generate→Regenerate flip (locked decision #6 — no fs scan)."""
+        """Generate↔Regenerate flip driven by whether the selected model already has
+        a mind map, plus a persistent status line so the user can tell at a glance
+        whether the current model is indexed and up to date."""
         db = self._db()
         mid = self.cmb_mindmap_model.currentData()
-        has_diff = False
+        rid = self._current_release_id()   # #2E: status reflects the selected release
+        has_mm = has_diff = False
         if db is not None and getattr(db, "is_open", False) and mid is not None:
+            has_mm = db.get_model_mindmap(mid, release_id=rid) is not None
             last = db.get_meta(_META_LAST_DIFF)
             if last:
                 has_diff = db.has_code_diff(mid, last)
-        label = ctx.mindmap_button_label(has_diff)
-        self.btn_gen_mm.setText(label)
-        self.btn_gen_mm_all.setText(label.replace("Mind Map", "All"))
+
+        self.btn_gen_mm.setText("Regenerate Mind Map" if has_mm else "Generate Mind Map")
+        self.btn_gen_mm_all.setText("Regenerate All" if has_mm else "Generate All")
+
+        if mid is None:
+            self.lbl_mm_status.setText("")
+        elif not has_mm:
+            self.lbl_mm_status.setText("○ No mind map for this model yet — click Generate Mind Map.")
+        elif has_diff:
+            self.lbl_mm_status.setText("✓ Mind map present — source changed since it was built; "
+                                       "Regenerate recommended.")
+        else:
+            self.lbl_mm_status.setText("✓ Mind map ready for this model.")
 
     # ------------------------------------------------------------------
     # Prompt / rules
@@ -613,10 +749,34 @@ class AIChatController(ProviderPanelMixin, QtCore.QObject):
             self._chat_worker.stop()
         self.btn_stop.setEnabled(False)
 
+    # Per-role bubble styling: label colour, bubble background, and whether the body
+    # is rendered as markdown. Table-based because Qt rich text reliably supports
+    # <td bgcolor> (it does NOT support CSS border-radius).
+    _BUBBLE_STYLES = {
+        "You":    ("You",       "#8ab4f8", "#1f2a3a"),
+        "AI":     ("AI",        "#74b6a8", "#232b29"),
+        "→ tool": ("→ tool",    "#9aa0a6", "#2a2a2a"),
+        "System": ("System",    "#cba968", "#2e2a20"),
+        "Error":  ("Error",     "#f28b82", "#3a2526"),
+    }
+
     def _append(self, who, text):
-        safe = (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        safe = safe.replace("\n", "<br>")
-        self.chat_view.append(f"<b>{who}:</b> {safe}<br>")
+        label, label_color, bg = self._BUBBLE_STYLES.get(
+            who, (who, "#cccccc", "#2a2a2a"))
+        text = text or ""
+        if who == "AI":
+            body = md_to_html(text)
+        elif who == "→ tool":
+            body = f"<code>{_html.escape(text)}</code>"
+        else:
+            body = _html.escape(text).replace("\n", "<br>")
+        html = (
+            "<table cellspacing='0' cellpadding='8' width='100%' style='margin-top:6px;'>"
+            f"<tr><td bgcolor='{bg}' style='color:#ececec;'>"
+            f"<b style='color:{label_color};'>{label}</b><br>{body}"
+            "</td></tr></table>"
+        )
+        self.chat_view.append(html)
 
     def _on_send(self):
         text = self.chat_input.toPlainText().strip()
@@ -632,8 +792,9 @@ class AIChatController(ProviderPanelMixin, QtCore.QObject):
 
         db = self._db()
         mid = self.cmb_mindmap_model.currentData()
+        rid = self._current_release_id()   # #2E: chat is scoped to the current release
         # Phase 12: inject the compact mind map (NOT raw C) as the standing context.
-        mm = db.get_model_mindmap(mid) if (db and mid is not None) else None
+        mm = db.get_model_mindmap(mid, release_id=rid) if (db and mid is not None) else None
         mm_text = ctx.mind_map_to_text(mm)
         system = ctx.get_chat_rules(db) + "\n\n# CODE MIND MAP\n" + mm_text
         if not mm:
@@ -641,9 +802,11 @@ class AIChatController(ProviderPanelMixin, QtCore.QObject):
                                    "file reads. Generate a mind map for grounding.")
 
         diff_hash = db.get_meta(_META_LAST_DIFF) if db else ""
+        # #2E: live file reads come from the current release's DB source provider.
         executor = aitools.ToolExecutor(
-            self.edit_current_source.text().strip() or None, db=db,
-            model_id=mid if mid is not None else -1, diff_hash=diff_hash or "")
+            None, db=db, model_id=mid if mid is not None else -1,
+            diff_hash=diff_hash or "", provider=self._current_source_provider(),
+            release_id=rid)
 
         self._append("You", text)
         self.chat_input.clear()

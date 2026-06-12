@@ -2,6 +2,26 @@ from PyQt6 import QtWidgets, QtCore, QtGui
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QMessageBox
 from PyQt6.QtCore import Qt
 
+# Shared dark dialog styling so the hand-built dialogs (Architecture Manager, Edit,
+# Restore, …) match the rest of the app instead of looking like default windows.
+DIALOG_STYLESHEET = """
+    QDialog { background-color: #242424; color: #ffffff; }
+    QLabel { color: #ffffff; font-size: 13px; }
+    QListView, QLineEdit, QComboBox {
+        background-color: #2e2e2e; color: #ffffff;
+        border: 1px solid #444444; border-radius: 4px; padding: 4px;
+    }
+    QListView::item:selected { background-color: #2a82da; color: #ffffff; }
+    QPushButton {
+        background-color: #353535; color: #ffffff;
+        border: 1px solid #444444; border-radius: 6px;
+        font-size: 13px; padding: 6px 16px; min-width: 80px;
+    }
+    QPushButton:hover { background-color: #444444; }
+    QPushButton:pressed { background-color: #222222; }
+    QPushButton:default { background-color: #2a82da; border: 1px solid #2a82da; font-weight: bold; }
+"""
+
 class StyledMessageBox(QDialog):
     # Expose the same enums for compatibility
     Icon = QMessageBox.Icon

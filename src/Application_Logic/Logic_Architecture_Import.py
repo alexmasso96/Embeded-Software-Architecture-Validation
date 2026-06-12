@@ -139,6 +139,84 @@ class ArchitectureImportMixin:
                 cell["widget_style"] = (
                     f"background-color: {_match_style(best_score)}; color: white;")
 
+    # ------------------------------------------------------------------
+    # #8 — Rhapsody import architecture cleanup
+    # ------------------------------------------------------------------
+
+    def _drop_unmapped_rhapsody_columns(self, mapped_targets):
+        """Drop the redundant 'Mapped Func' / 'Mapped Parameter' column families
+        after a Rhapsody import.
+
+        Operations are mapped onto the Input Port, so these families carry no
+        imported data and only clutter the table. Each family is dropped *unless*
+        the import actually mapped a source column onto one of its columns.
+        Idempotent: a family that's already absent (or was remapped) is skipped,
+        so re-running an import never errors.
+        """
+        families = (
+            ("Mapped Func", "Mapped Func (Match)",
+             "Mapped Func (Init)", "Mapped Func (Cyclic)"),
+            ("Mapped Parameter", "Mapped Parameter (Match)"),
+        )
+        drop_names = set()
+        for family in families:
+            if any(name in mapped_targets for name in family):
+                continue   # the import mapped data into this family — keep it
+            drop_names.update(family)
+
+        new_config = [c for c in self.active_config if c[0] not in drop_names]
+        if len(new_config) == len(self.active_config):
+            return   # nothing to drop (already cleaned, or every family remapped)
+
+        self.active_config = new_config
+        self._rebuild_column_objects()
+        self._setup_table_style()
+
+        # Purge the orphaned cells from every model so saved rows stay clean
+        # (rows were built with the full schema before the columns were dropped).
+        for m in self.model_manager.models:
+            cache = getattr(m, "data_cache", None)
+            if cache and cache.get("rows"):
+                for row in cache["rows"]:
+                    for name in drop_names:
+                        row.pop(name, None)
+
+    def _delete_default_model_if_untouched(self, touched_models):
+        """Soft-delete the empty default 'Architecture_1' placeholder once a
+        Rhapsody import has produced real models, so the user isn't left with a
+        stray empty model.
+
+        Strictly scoped and idempotent: acts only when the import actually added
+        models, and only on the untouched default (exact name, not already
+        deleted, no rows, and not itself an import target). An edited, renamed, or
+        already-deleted Architecture_1 is left alone.
+        """
+        if not touched_models:
+            return
+        mm = self.model_manager
+        db = getattr(self, '_db', None) or getattr(self.main_window, 'project_db', None)
+        touched_ids = {id(m) for m in touched_models}
+        for idx, m in enumerate(mm.models):
+            if m.name != "Architecture_1" or m.is_deleted:
+                continue
+            if id(m) in touched_ids:
+                return   # it received imported rows — keep it
+            rows = (m.data_cache or {}).get("rows") if m.data_cache else None
+            if rows is None and db and getattr(db, "is_open", False) and m.id is not None:
+                rows = db.get_model_rows(m.id)
+            if rows:
+                return   # has data — not the untouched placeholder
+            was_active = (idx == mm.active_model_index)
+            mm.soft_delete_model(idx)
+            if was_active:
+                # Re-point the active model at a surviving model so the table
+                # doesn't render the deleted placeholder.
+                survivor = next((i for i, mdl in enumerate(mm.models)
+                                 if not mdl.is_deleted), None)
+                if survivor is not None:
+                    mm.set_active_model(survivor)
+            return
+
     def calculate_word_similarity(self, name1: str, name2: str) -> float:
         """
         Word-based similarity: splits camelCase/underscores/dashes and matches
@@ -604,6 +682,14 @@ class ArchitectureImportMixin:
             total_imported += new_count
             if new_count > 0:
                 touched_models.append(model)
+
+        # #8: Rhapsody-import architecture cleanup. Operations are mapped onto the
+        # Input Port, so the Mapped Func / Mapped Parameter column families are
+        # redundant — drop the ones the import didn't map onto. Then remove the
+        # empty default Architecture_1 placeholder now that real models exist.
+        mapped_targets = set(col_mapping.values()) | set(new_columns)
+        self._drop_unmapped_rhapsody_columns(mapped_targets)
+        self._delete_default_model_if_untouched(touched_models)
 
         self.list_model.refresh()
 

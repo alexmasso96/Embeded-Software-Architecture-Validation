@@ -69,10 +69,10 @@ def test_mindmap_roundtrip_and_replace(db):
     assert meta["char_count"] == 123
     assert db.has_model_mindmap(mid) is True
 
-    # INSERT OR REPLACE overwrites, never duplicates.
+    # INSERT OR REPLACE overwrites, never duplicates (#2E: per-(model, release) map).
     db.save_model_mindmap(mid, json.dumps({"v": 2}), source_hash="h2")
     assert db.get_model_mindmap(mid) == {"v": 2}
-    cur = db._conn.execute("SELECT COUNT(*) FROM ai_model_mindmaps WHERE model_id=?", (mid,))
+    cur = db._conn.execute("SELECT COUNT(*) FROM ai_release_maps WHERE model_id=?", (mid,))
     assert cur.fetchone()[0] == 1
 
 

@@ -67,12 +67,22 @@ class ReleaseSelectionDialog(QDialog):
         # New Feature: Add Release (Import)
         self.btn_add_release = QPushButton("Add New Release")
         self.btn_add_release.clicked.connect(self.on_add_release)
-        
+
+        # #2E: the ONE real source-folder picker — imports source INTO the DB,
+        # keyed by the selected release. Unload drops the blobs (keeps maps).
+        self.btn_import_source = QPushButton("Map / Import Source Code")
+        self.btn_import_source.clicked.connect(self.on_import_source)
+        self.btn_unload_source = QPushButton("Unload Source")
+        self.btn_unload_source.clicked.connect(self.on_unload_source)
+
         right_layout.addWidget(self.btn_select)
         right_layout.addSpacing(20)
         right_layout.addWidget(self.btn_add_release) # Added here
         right_layout.addWidget(self.btn_rename)
         right_layout.addWidget(self.btn_delete)
+        right_layout.addSpacing(20)
+        right_layout.addWidget(self.btn_import_source)
+        right_layout.addWidget(self.btn_unload_source)
         right_layout.addSpacing(20)
         right_layout.addWidget(self.btn_create_result)
         right_layout.addWidget(self.btn_link_result)
@@ -96,15 +106,20 @@ class ReleaseSelectionDialog(QDialog):
 
         self.list_widget.clear()
         self.active_releases = [r for r in self.manager.releases if not (r.is_baseline and r.is_deleted)]
-        
+
+        # #2E: which releases have source imported (cheap one-shot query → ✓/○).
+        db = self._db()
+        source_ids = db.get_release_ids_with_source() if db else set()
+
         # Manager list order is the order we display
         select_row = -1
         for i, release in enumerate(self.active_releases):
             add_text = ""
             if release.is_baseline:
                 add_text = " [BASELINE]"
-            
-            item = QListWidgetItem(f"{release.name}{add_text}")
+
+            src_mark = " 📄" if release.id in source_ids else ""
+            item = QListWidgetItem(f"{release.name}{add_text}{src_mark}")
             
             # Highlight Active
             if self.manager.active_release_index != -1:
@@ -127,13 +142,17 @@ class ReleaseSelectionDialog(QDialog):
         else:
             self.update_buttons()
 
+    def _db(self):
+        return (getattr(self.controller, '_db', None)
+                or getattr(getattr(self.controller, 'main_window', None), 'project_db', None))
+
     def on_selection_changed(self):
         self.update_buttons()
 
     def update_buttons(self):
         rows = self.list_widget.selectedIndexes()
         has_sel = len(rows) > 0
-        
+
         self.btn_select.setEnabled(has_sel)
         self.btn_rename.setEnabled(has_sel)
         self.btn_delete.setEnabled(has_sel)
@@ -141,11 +160,21 @@ class ReleaseSelectionDialog(QDialog):
         self.btn_link_result.setEnabled(has_sel)
         self.btn_baseline.setEnabled(has_sel)
         self.btn_toggle_lock.setEnabled(has_sel)
-        
+        self.btn_import_source.setEnabled(has_sel)
+        self.btn_unload_source.setEnabled(has_sel)
+
         if has_sel:
             index = rows[0].row()
             release = self.active_releases[index]
-            
+
+            # #2E: source import/unload — baselines are frozen snapshots, never
+            # re-sourced; unload only matters when source is actually stored.
+            db = self._db()
+            has_source = bool(db and release.id is not None
+                              and db.has_release_source(release.id))
+            self.btn_import_source.setEnabled(not release.is_baseline)
+            self.btn_unload_source.setEnabled(has_source and not release.is_baseline)
+
             if release.is_baseline:
                 self.btn_toggle_lock.setText("🔓 Unfreeze Baseline")
                 self.btn_rename.setEnabled(False) # 14. User should not be able to modify baseline
@@ -166,6 +195,135 @@ class ReleaseSelectionDialog(QDialog):
                     self.btn_rename.setToolTip("Cannot rename release that has baselines")                                 # Assuming inhibit renaming too.
                 self.btn_rename.setToolTip("Cannot rename release that has baselines")
             
+    # ------------------------------------------------------------------
+    # #2E — import / unload source code (keyed by release)
+    # ------------------------------------------------------------------
+
+    def _selected_release(self):
+        rows = self.list_widget.selectedIndexes()
+        if not rows:
+            return None
+        return self.active_releases[rows[0].row()]
+
+    def on_import_source(self):
+        release = self._selected_release()
+        if release is None or release.is_baseline or release.id is None:
+            return
+        db = self._db()
+        if not (db and db.is_open):
+            QMessageBox.warning(self, "Import Source", "No open project database.")
+            return
+
+        folder = QFileDialog.getExistingDirectory(
+            self, f"Select Source Folder for Release '{release.name}'", "",
+            QFileDialog.Option(0))
+        if not folder:
+            return
+
+        if db.has_release_source(release.id):
+            box = QMessageBox(self)
+            box.setWindowTitle("Replace Source")
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setText(f"Release '{release.name}' already has source stored.\n"
+                        f"Replace it with the contents of:\n{folder}?")
+            box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            box.exec()
+            if box.result_button != QMessageBox.StandardButton.Yes:
+                return
+
+        # Gate the main thread the same way the Code Map build does: pause auto-save
+        # so the main connection stays idle while the worker writes on its OWN
+        # connection (WAL-independent — safe even in DELETE journal mode).
+        main_window = getattr(self.controller, 'main_window', None)
+        if main_window is not None:
+            main_window._codemap_building = True
+        try:
+            db.set_activity("sourceimport", "in_progress", release.name)
+            db.commit()
+        except Exception:
+            pass
+
+        from Application_Logic.Logic_Loading_Window import LoadingDialog
+        loader = LoadingDialog(self)
+        loader.ui.lbl_loading_text.setText(f"Importing source for {release.name}…")
+        ok = loader.run_task(self._import_source_task, db.db_path, release.id, folder)
+
+        if main_window is not None:
+            main_window._codemap_building = False
+        try:
+            db.set_activity("", "idle")
+            db.commit()
+        except Exception:
+            pass
+
+        if ok:
+            self.refresh_list()
+            QMessageBox.information(
+                self, "Import Source",
+                f"Imported {loader.result} source files into release '{release.name}'.")
+        else:
+            QMessageBox.critical(self, "Import Source",
+                                 f"Failed to import source: {loader.error_msg}")
+
+    def _import_source_task(self, db_path, release_id, folder):
+        """Worker thread: walk the folder and store each file (gzip) on the worker's
+        OWN DB connection, logging per file so the loading window stays responsive."""
+        import logging
+        from Application_Logic.Logic_Database import ProjectDatabase
+        from Application_Logic.Logic_Source_Store import FilesystemSourceProvider
+        log = logging.getLogger("Source Import")
+        wdb = ProjectDatabase()
+        try:
+            wdb.open(db_path, create_schema=False, apply_journal=False)
+            prov = FilesystemSourceProvider(folder)
+            files = prov.list_files()
+            total = len(files)
+            if total == 0:
+                log.info("No C/C++ source files found in the selected folder.")
+                return 0
+            log.info(f"Found {total} source files — importing…")
+
+            def gen():
+                for sf in files:
+                    text = prov.read_file(sf.rel_path)
+                    if text is not None:
+                        yield sf.rel_path, text
+
+            def progress(rel, idx, _t):
+                log.info(f"Indexing {idx}/{total}: {rel}")
+
+            n = wdb.save_release_source_files(release_id, gen(), progress=progress)
+            log.info(f"Stored {n} source files in the project database.")
+            return n
+        finally:
+            try:
+                wdb.close()
+            except Exception:
+                pass
+
+    def on_unload_source(self):
+        release = self._selected_release()
+        if release is None or release.id is None:
+            return
+        db = self._db()
+        if not (db and db.is_open) or not db.has_release_source(release.id):
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Unload Source")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(f"Remove the stored source code for release '{release.name}'?\n\n"
+                    f"Mind maps and code maps for this release are kept — only the raw "
+                    f"source files are dropped.")
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.exec()
+        if box.result_button != QMessageBox.StandardButton.Yes:
+            return
+        db.delete_release_source(release.id)
+        db.commit()
+        self.refresh_list()
+        QMessageBox.information(self, "Unload Source",
+                               f"Source code unloaded for release '{release.name}'.")
+
     def on_rename(self):
         rows = self.list_widget.selectedIndexes()
         if not rows:
@@ -346,8 +504,11 @@ class ReleaseSelectionDialog(QDialog):
                     )
                     msg_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
                     msg_box.setDefaultButton(QMessageBox.StandardButton.Yes)
-                    reply = msg_box.exec()
-                    
+                    # StyledMessageBox.exec() returns Accepted/Rejected, not the button
+                    # enum — read the clicked button from result_button instead.
+                    msg_box.exec()
+                    reply = msg_box.result_button
+
                     if reply == QMessageBox.StandardButton.Yes:
                         file_path, _ = QFileDialog.getOpenFileName(
                             self, f"Open ELF/JSON File for Release {release.name}", "",
@@ -659,7 +820,11 @@ class ReleaseSelectionDialog(QDialog):
                     msg_box.setText(msg)
                     msg_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
                     msg_box.setDefaultButton(QMessageBox.StandardButton.Yes)
-                    reply = msg_box.exec()
+                    # StyledMessageBox.exec() returns Accepted/Rejected, not the button
+                    # enum. Without this the "No" branch never matched, so a new
+                    # release was created even when the user declined.
+                    msg_box.exec()
+                    reply = msg_box.result_button
                     if reply == QMessageBox.StandardButton.No:
                         return
                     baseline_previous = True

@@ -1,4 +1,5 @@
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QListWidget, QPushButton, QLabel, QHBoxLayout, QMessageBox
+from .StyledMessageBox import DIALOG_STYLESHEET
 
 class RestoreModelDialog(QDialog):
     def __init__(self, deleted_models, parent=None):
@@ -9,6 +10,7 @@ class RestoreModelDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Restore Deleted Models")
         self.resize(400, 300)
+        self.setStyleSheet(DIALOG_STYLESHEET)
         self.deleted_models = deleted_models
         self.selected_index = -1
         

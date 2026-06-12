@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Design 6 — Clean Enterprise Light</title>
+<style>
+  :root {
+    --bg: #f7f8fa; --card: #ffffff; --header: #ffffff;
+    --border: #dfe1e6; --sep: #ebecf0;
+    --accent: #0c66e4; --accent-soft: #e9f2ff;
+    --green-bg: #dcfff1; --green-fg: #216e4e;
+    --yellow-bg: #fff7d6; --yellow-fg: #7f5f01;
+    --red-bg: #ffeceb; --red-fg: #ae2e24;
+    --grey-bg: #f1f2f4; --grey-fg: #626f86;
+    --text: #172b4d; --muted: #626f86;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: #dde2ea; color: var(--text);
+    font-family: 'Inter','Segoe UI',system-ui,-apple-system,sans-serif;
+    display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px;
+  }
+  .window {
+    width: 1280px; height: 800px; background: var(--bg); border-radius: 10px; overflow: hidden;
+    box-shadow: 0 16px 48px rgba(9,30,66,.28), 0 0 0 1px rgba(9,30,66,.1);
+    display: flex; flex-direction: column;
+  }
+  /* App header */
+  .appbar {
+    height: 52px; background: var(--header); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 18px; padding: 0 18px; flex: none;
+  }
+  .logo { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 13.5px; }
+  .logo .mark { width: 26px; height: 26px; border-radius: 7px; background: linear-gradient(135deg,#0c66e4,#37b4c3); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; }
+  .apptabs { display: flex; gap: 4px; height: 100%; }
+  .apptab { display: flex; align-items: center; padding: 0 14px; font-size: 13px; color: var(--muted); cursor: pointer; border-bottom: 2.5px solid transparent; margin-bottom: -1px; }
+  .apptab:hover { color: var(--text); }
+  .apptab.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  .appbar .right { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+  .editpill { font-size: 11.5px; font-weight: 600; color: var(--green-fg); background: var(--green-bg); border-radius: 4px; padding: 4px 10px; }
+  .save { border: 0; background: var(--accent); color: #fff; font: inherit; font-size: 12.5px; font-weight: 600; padding: 7px 16px; border-radius: 6px; cursor: pointer; }
+  .avatar { width: 28px; height: 28px; border-radius: 50%; background: #fb9700; color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+
+  .body { flex: 1; display: flex; min-height: 0; }
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 18px 20px; gap: 14px; }
+
+  .pagehead { display: flex; align-items: flex-end; gap: 14px; }
+  .pagehead h1 { font-size: 19px; font-weight: 700; }
+  .crumb { font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+  .crumb a { color: var(--accent); text-decoration: none; }
+  .pagehead .right { margin-left: auto; display: flex; gap: 8px; }
+  .btn { border: 1px solid var(--border); background: var(--card); color: var(--text); font: inherit; font-size: 12.5px; font-weight: 500; padding: 7px 13px; border-radius: 6px; cursor: pointer; }
+  .btn:hover { background: #f1f2f4; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+
+  .toolrow { display: flex; gap: 8px; align-items: center; }
+  .search { flex: 0 0 280px; background: var(--card); border: 1.5px solid var(--border); border-radius: 6px; padding: 7px 12px; font-size: 12.5px; color: var(--muted); display: flex; gap: 8px; }
+  .filterchip { font-size: 12px; border: 1px solid var(--border); background: var(--card); border-radius: 999px; padding: 5px 12px; color: var(--muted); cursor: pointer; }
+  .filterchip.set { background: var(--accent-soft); border-color: #b3d1ff; color: var(--accent); font-weight: 600; }
+
+  .tablecard { flex: 1; background: var(--card); border: 1px solid var(--border); border-radius: 10px; overflow: auto; min-height: 0; box-shadow: 0 1px 2px rgba(9,30,66,.06); }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  thead th {
+    text-align: left; font-weight: 600; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em;
+    padding: 10px 16px; border-bottom: 2px solid var(--sep); background: #fafbfc; position: sticky; top: 0;
+  }
+  tbody td { padding: 10px 16px; border-bottom: 1px solid var(--sep); }
+  tbody tr:hover { background: #f7f9fc; }
+  tbody tr.selected { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+  .mono { font-family: ui-monospace,'SF Mono',Consolas,monospace; font-size: 11.5px; }
+  .dim td { color: #97a0af; }
+  .port { font-weight: 600; }
+  .conf { font-size: 10.5px; font-weight: 700; padding: 2px 7px; border-radius: 999px; margin-left: 8px; }
+  .c-hi { background: var(--green-bg); color: var(--green-fg); }
+  .c-mid { background: var(--yellow-bg); color: var(--yellow-fg); }
+  .c-low { background: var(--red-bg); color: var(--red-fg); }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3.5px 11px; border-radius: 4px; font-size: 11.5px; font-weight: 700; cursor: pointer; }
+  .pill::after { content:"⌄"; font-size: 10px; opacity: .65; }
+  .p-green { background: var(--green-bg); color: var(--green-fg); }
+  .p-yellow { background: var(--yellow-bg); color: var(--yellow-fg); }
+  .p-red { background: var(--red-bg); color: var(--red-fg); }
+  .p-grey { background: var(--grey-bg); color: var(--grey-fg); }
+  .kebab { border: 0; background: transparent; color: var(--muted); font-size: 15px; cursor: pointer; border-radius: 5px; padding: 2px 8px; }
+  .kebab:hover { background: var(--grey-bg); }
+
+  /* Right rail */
+  .rail { width: 264px; flex: none; border-left: 1px solid var(--border); background: var(--card); padding: 18px 16px; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
+  .rail h4 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); display: flex; justify-content: space-between; align-items: center; }
+  .rail h4 button { border: 0; background: var(--grey-bg); border-radius: 5px; width: 20px; height: 20px; cursor: pointer; color: var(--muted); }
+  .modelcard { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .modelrow { padding: 10px 13px; font-size: 12.5px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--sep); cursor: pointer; }
+  .modelrow:last-child { border: 0; }
+  .modelrow.active { background: var(--accent-soft); font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
+  .modelrow small { color: var(--muted); font-weight: 400; }
+  .kv { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); padding: 6px 2px; }
+  .kv b { color: var(--green-fg); font-weight: 600; }
+  .kv select { font: inherit; font-size: 12px; border: 1px solid var(--border); border-radius: 5px; padding: 3px 7px; background: #fff; color: var(--text); }
+  .railstack { display: flex; flex-direction: column; gap: 8px; }
+  .railstack button { border: 1px solid var(--border); background: #fff; font: inherit; font-size: 12.5px; font-weight: 500; padding: 9px; border-radius: 6px; cursor: pointer; color: var(--text); }
+  .railstack .primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .progress { background: #fafbfc; border: 1px solid var(--border); border-radius: 8px; padding: 11px 13px; font-size: 12px; }
+  .progress .bar { height: 6px; border-radius: 999px; background: var(--sep); margin-top: 8px; overflow: hidden; }
+  .progress .fill { width: 71%; height: 100%; background: linear-gradient(90deg,#36b37e,#57d9a3); }
+  .progress .lbl { display: flex; justify-content: space-between; color: var(--muted); margin-top: 6px; font-size: 11px; }
+
+  .statusbar { height: 30px; background: var(--header); border-top: 1px solid var(--border); display: flex; align-items: center; gap: 18px; padding: 0 18px; font-size: 11.5px; color: var(--muted); flex: none; }
+  .lock { color: var(--green-fg); font-weight: 600; }
+  .statusbar .right { margin-left: auto; display: flex; gap: 18px; }
+</style>
+<link rel="stylesheet" href="shared/views.css">
+<style>
+  .window { --v-bg:#f7f8fa; --v-panel:#ffffff; --v-raised:#fafbfc; --v-border:#dfe1e6; --v-text:#172b4d; --v-muted:#626f86; --v-accent:#0c66e4; --v-ok:#216e4e; --v-warn:#7f5f01; --v-err:#ae2e24; --v-ok-bg:#dcfff1; --v-err-bg:#ffeceb; --v-radius:8px; --v-mono:ui-monospace,'SF Mono',Consolas,monospace; }
+</style>
+<script defer src="shared/app.js"></script>
+</head>
+<body>
+<div class="window">
+  <div class="appbar">
+    <div class="logo"><span class="mark">AV</span> Architecture Validator</div>
+    <div class="apptabs">
+      <div class="apptab on">Workspace</div>
+      <div class="apptab">Test Design</div>
+      <div class="apptab">AI Generation</div>
+      <div class="apptab">AI Chat</div>
+      <div class="apptab">Code Map</div>
+      <div class="apptab">Change Log</div>
+    </div>
+    <div class="right">
+      <span class="editpill">🔒 Exclusive Edit</span>
+      <button class="save">Save</button>
+      <div class="avatar">AM</div>
+    </div>
+  </div>
+
+  <div class="body">
+   <section class="view active" data-view="workspace">
+    <div class="main">
+      <div class="pagehead">
+        <div>
+          <div class="crumb"><a href="#">Demo_Project</a> / <a href="#">DoorControl_ECU</a> / Validation</div>
+          <h1>Validation Workspace</h1>
+        </div>
+        <div class="right">
+          <button class="btn">⇪ Import ▾</button>
+          <button class="btn">▦ Columns</button>
+          <button class="btn">⇄ Re-match Symbols</button>
+          <button class="btn primary">＋ Add Port</button>
+        </div>
+      </div>
+
+      <div class="toolrow">
+        <div class="search">🔍 Search ports… <span style="opacity:.5;margin-left:auto">Ctrl+F</span></div>
+        <span class="filterchip set">State: All ✕</span>
+        <span class="filterchip set">Review: Any ✕</span>
+        <span class="filterchip">＋ Add filter</span>
+      </div>
+
+      <div class="tablecard">
+        <table>
+          <thead><tr><th>TC. ID</th><th>Input Port</th><th>Mapped Symbol</th><th>Init</th><th>Cyclic</th><th>Review</th><th>Port State</th><th></th></tr></thead>
+          <tbody>
+            <tr><td class="mono">TC_001</td><td class="port">DoorLock_Cmd</td><td><span class="mono">DoorLock_Cmd</span><span class="conf c-hi">98%</span></td><td>Yes</td><td>10 ms</td><td><span class="pill p-green">Reviewed</span></td><td><span class="pill p-green">Released</span></td><td><button class="kebab">⋯</button></td></tr>
+            <tr><td class="mono">TC_002</td><td class="port">DoorUnlock_Cmd</td><td><span class="mono">DoorUnlock_Cmd</span><span class="conf c-hi">97%</span></td><td>Yes</td><td>10 ms</td><td><span class="pill p-green">Reviewed</span></td><td><span class="pill p-green">Released</span></td><td><button class="kebab">⋯</button></td></tr>
+            <tr class="selected"><td class="mono">TC_003</td><td class="port">WindowPos_Req</td><td><span class="mono">WindowPos_Req</span><span class="conf c-mid">91%</span></td><td>No</td><td>5 ms</td><td><span class="pill p-yellow">In Review</span></td><td><span class="pill p-green">Released</span></td><td><button class="kebab">⋯</button></td></tr>
+            <tr><td class="mono">TC_004</td><td class="port">MirrorFold_Cmd</td><td><span class="mono">MirrorFold_Cmd</span><span class="conf c-hi">95%</span></td><td>No</td><td>20 ms</td><td><span class="pill p-green">Reviewed</span></td><td><span class="pill p-green">Released</span></td><td><button class="kebab">⋯</button></td></tr>
+            <tr class="dim"><td class="mono">TC_005</td><td class="port">ChildLock_State</td><td><span class="mono">Lock_State</span><span class="conf c-low">62%</span></td><td>Yes</td><td>50 ms</td><td><span class="pill p-red">Not Reviewed</span></td><td><span class="pill p-grey">Retired</span></td><td><button class="kebab">⋯</button></td></tr>
+            <tr><td class="mono">TC_006</td><td class="port">DoorAjar_Status</td><td><span class="mono">DoorAjar_Status</span><span class="conf c-hi">99%</span></td><td>No</td><td>5 ms</td><td><span class="pill p-green">Reviewed</span></td><td><span class="pill p-green">Released</span></td><td><button class="kebab">⋯</button></td></tr>
+            <tr><td class="mono">TC_007</td><td class="port">CentralLock_Sync</td><td><span class="mono">CentralLock_Sync</span><span class="conf c-mid">88%</span></td><td>No</td><td>10 ms</td><td><span class="pill p-red">Not Reviewed</span></td><td><span class="pill p-yellow">In Work</span></td><td><button class="kebab">⋯</button></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="rail">
+      <div>
+        <h4>Architecture Models <button>＋</button></h4>
+        <div class="modelcard" style="margin-top:8px">
+          <div class="modelrow active">DoorControl_ECU <small>7 ports</small></div>
+          <div class="modelrow">BatteryMgmt_ECU <small>12 ports</small></div>
+        </div>
+      </div>
+      <div>
+        <h4>Software Release</h4>
+        <div class="kv"><span>Active release</span><select><option>R1.2</option><option>R1.1</option></select></div>
+        <div class="kv"><span>ELF binary</span><b>✓ parsed</b></div>
+        <div class="kv"><span>Source index</span><b>✓ 41 files</b></div>
+      </div>
+      <div class="progress">
+        <strong style="font-size:12.5px">Review progress</strong>
+        <div class="bar"><div class="fill"></div></div>
+        <div class="lbl"><span>5 of 7 reviewed</span><span>71%</span></div>
+      </div>
+      <div class="railstack">
+        <button class="primary">✦ Generate Test Cases</button>
+        <button>Create Baseline…</button>
+        <button>Load Baseline…</button>
+      </div>
+    </div>
+   </section>
+   <section class="view" data-view="testdesign"></section>
+   <section class="view" data-view="aigen"></section>
+   <section class="view" data-view="aichat"></section>
+   <section class="view" data-view="codemap"></section>
+   <section class="view" data-view="changelog"></section>
+  </div>
+
+  <div class="statusbar">
+    <span class="lock">🔒 Exclusive Edit — you hold the project lock</span>
+    <span>Auto-saved 14:32</span>
+    <span class="right"><span>R1.2 · DoorControl_ECU</span><span>7 ports · 5 reviewed</span></span>
+  </div>
+</div>
+</body>
+</html>

@@ -127,12 +127,8 @@ def test_changelog_viewer_tab_setup():
             "unified_diff": "--- main.c\n+++ main.c\n-old line\n+new line"
         }])
         
-        # Link diff hash to mindmap
-        import datetime
-        db._conn.execute(
-            "INSERT INTO ai_model_mindmaps (model_id, mindmap_json, updated_at, diff_hash) VALUES (?, ?, ?, ?)",
-            (1, "{}", datetime.datetime.now().isoformat(), "hash_diff_abc")
-        )
+        # #2E: link diff hash via the per-release map accessor (no active release → 0).
+        db.set_model_diff_hash(1, "hash_diff_abc")
         db.commit()
         
         # Initialize MainWindow & controllers

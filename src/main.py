@@ -812,6 +812,10 @@ class ApplicationWindow(QMainWindow):
             self.heartbeat_timer.start(LOCK_HEARTBEAT_INTERVAL_SECONDS * 1000)
 
     def auto_save_trigger(self):
+        # Skip while a Code Map build runs — its worker holds its own DB connection;
+        # keeping the main connection quiet avoids file-lock contention during the build.
+        if getattr(self, '_codemap_building', False):
+            return
         if self.current_project_file and getattr(self, 'edit_mode', True):
             if ProjectSaver.has_temp_changes(self.current_project_file):
                 # Inline (no modal popup on a timer). The re-entrancy guard in

@@ -36,8 +36,12 @@ META_PROMPT = "ai_prompt"
 META_MINDMAP_PROMPT = "mind_map_prompt"
 META_MINDMAP_RULES = "mind_map_rules"
 META_CHAT_RULES = "chat_rules"
-META_SOURCE = "ai_source_path"            # canonical "current source" (shared with Tab 3)
-META_PREVIOUS_SOURCE = "ai_previous_source_path"
+META_SOURCE = "ai_source_path"            # legacy filesystem path (pre-#2E)
+META_PREVIOUS_SOURCE = "ai_previous_source_path"   # legacy filesystem path (pre-#2E)
+# #2E: source is now chosen by RELEASE — these store the selected release ids
+# (as strings), shared across Tab 3 (Test Gen) and the AI Chat current/previous.
+META_CURRENT_RELEASE = "ai_current_release_id"
+META_PREVIOUS_RELEASE = "ai_previous_release_id"
 META_REQUIREMENTS = "ai_requirements_context"
 
 # ---------------------------------------------------------------------------
@@ -283,47 +287,42 @@ def extract_keywords(texts: List[str], limit: int = 40) -> List[str]:
     return seen
 
 
-def build_source_context(source_path: str, input_texts: List[str],
+def build_source_context(source, input_texts: List[str],
                          budget_chars: int = 12000) -> str:
-    """Scan a source tree (or single file), score files by keyword relevance, and
-    pack the most relevant content into a budget-limited context string.
+    """Scan a source tree, score files by keyword relevance, and pack the most
+    relevant content into a budget-limited context string.
 
-    Returns "" when there is no usable source.
+    ``source`` may be a filesystem path (str) OR a SourceProvider (#2E, e.g. a
+    release's source from the DB). Returns "" when there is no usable source.
     """
-    if not source_path:
+    if not source:
         return ""
 
-    files: List[str] = []
-    if os.path.isfile(source_path):
-        files = [source_path]
-    elif os.path.isdir(source_path):
-        for root, _dirs, names in os.walk(source_path):
-            for n in names:
-                if n.lower().endswith(_SRC_EXTS):
-                    files.append(os.path.join(root, n))
-    if not files:
+    from Application_Logic.Logic_Source_Store import as_provider
+    provider = as_provider(source)
+    listed = [sf for sf in provider.list_files()
+              if sf.rel_path.lower().endswith(_SRC_EXTS)]
+    if not listed:
         return ""
 
     keywords = extract_keywords(input_texts)
 
     scored = []
-    for fp in files:
-        try:
-            with open(fp, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
-        except OSError:
+    for sf in listed:
+        content = provider.read_file(sf.rel_path)
+        if content is None:
             continue
         lc = content.lower()
-        name_lc = os.path.basename(fp).lower()
+        name_lc = os.path.basename(sf.rel_path).lower()
         score = sum(lc.count(k) for k in keywords) + 5 * sum(k in name_lc for k in keywords)
         if score > 0:
-            scored.append((score, fp, content))
+            scored.append((score, sf.rel_path, content))
     scored.sort(key=lambda x: x[0], reverse=True)
 
     if not scored:
         return ""
 
-    parts = [f"[CODE CONTEXT — {len(files)} source files scanned, "
+    parts = [f"[CODE CONTEXT — {len(listed)} source files scanned, "
              f"keywords: {', '.join(keywords[:10])}]\n"]
     used = len(parts[0])
     for _score, fp, content in scored:
@@ -494,15 +493,22 @@ def _iter_source_files(root: str, exts=_MM_SRC_EXTS):
                 yield rel, ap, st.st_size, st.st_mtime_ns
 
 
-def hash_source_tree(root: str, exts=_MM_SRC_EXTS) -> str:
-    """Cheap staleness probe: SHA256 over sorted (relpath, size, mtime_ns).
-    Stats only — never reads file bodies (honours the EDR per-syscall I/O
-    constraint). Documented false modes (acceptable for a *manual* staleness
-    hint): a clean rebuild rewrites mtimes (false 'stale'); a size+mtime
-    preserving copy looks fresh. Regeneration is always user-initiated."""
+def hash_source_tree(source, exts=_MM_SRC_EXTS) -> str:
+    """Cheap staleness probe: SHA256 over sorted (relpath, change_key).
+
+    ``source`` may be a path or a SourceProvider (#2E). For a filesystem source the
+    change_key is (size, mtime) — stats only, never reads bodies (honours the EDR
+    per-syscall I/O constraint). For a DB release source it's the stored content
+    hash (exact). Documented false modes for the filesystem case (acceptable for a
+    *manual* staleness hint): a clean rebuild rewrites mtimes (false 'stale'); a
+    size+mtime preserving copy looks fresh. Regeneration is always user-initiated."""
+    from Application_Logic.Logic_Source_Store import as_provider
+    provider = as_provider(source)
     h = hashlib.sha256()
-    for rel, _ap, size, mtime in sorted(_iter_source_files(root, exts)):
-        h.update(f"{rel}|{size}|{mtime}\n".encode("utf-8"))
+    files = [sf for sf in provider.list_files() if sf.rel_path.lower().endswith(exts)]
+    for sf in sorted(files, key=lambda s: s.rel_path):
+        key = "|".join(str(x) for x in provider.change_key(sf))
+        h.update(f"{sf.rel_path}|{key}\n".encode("utf-8"))
     return h.hexdigest()
 
 
@@ -511,21 +517,26 @@ def _read_text(path: str) -> str:
         return f.read()
 
 
-def diff_source_folders(current_root: str, previous_root: str,
+def diff_source_folders(current, previous,
                         exts=_MM_SRC_EXTS, context_lines: int = 3,
                         per_file_cap: int = _DIFF_PER_FILE_CAP,
                         max_files: int = _DIFF_MAX_FILES,
                         skip_file_bytes: int = _DIFF_SKIP_BYTES) -> List[Dict]:
-    """File-by-file unified diff between two source folders.
+    """File-by-file unified diff between two sources (paths or SourceProviders, #2E).
 
-    Two-stage to bound reads under EDR: stat both trees first; if a file's
-    (size, mtime) is IDENTICAL in both, it is treated as unchanged and its bytes
-    are NEVER read. Only size/mtime-differing pairs (and added/deleted files) are
-    read and confirmed. Returns [{file_path, status, unified_diff}] where status
-    is 'modified' | 'added' | 'deleted'.
+    Two-stage to bound reads under EDR: list both sources first; if a file's
+    change_key is IDENTICAL in both (filesystem: size+mtime; DB: content hash), it
+    is treated as unchanged and its bytes are NEVER read. Only differing pairs (and
+    added/deleted files) are read and confirmed. Returns [{file_path, status,
+    unified_diff}] where status is 'modified' | 'added' | 'deleted'.
     """
-    cur = {rel: (ap, size, mtime) for rel, ap, size, mtime in _iter_source_files(current_root, exts)}
-    prev = {rel: (ap, size, mtime) for rel, ap, size, mtime in _iter_source_files(previous_root, exts)}
+    from Application_Logic.Logic_Source_Store import as_provider
+    cur_p = as_provider(current)
+    prev_p = as_provider(previous)
+    cur = {sf.rel_path: sf for sf in cur_p.list_files()
+           if sf.rel_path.lower().endswith(exts)}
+    prev = {sf.rel_path: sf for sf in prev_p.list_files()
+            if sf.rel_path.lower().endswith(exts)}
     results: List[Dict] = []
     all_rel = sorted(set(cur) | set(prev))
     total = len(all_rel)
@@ -542,10 +553,10 @@ def diff_source_folders(current_root: str, previous_root: str,
             break
         in_cur, in_prev = rel in cur, rel in prev
 
-        # Stat-gate: identical size+mtime in both trees -> unchanged, skip the READ.
+        # Stat-gate: identical change_key in both -> unchanged, skip the READ.
         if in_cur and in_prev:
-            (_ap_c, sc, mc), (_ap_p, sp, mp) = cur[rel], prev[rel]
-            if sc == sp and mc == mp:
+            sc, sp = cur[rel].size, prev[rel].size
+            if cur_p.change_key(cur[rel]) == prev_p.change_key(prev[rel]):
                 continue
             if sc > skip_file_bytes or sp > skip_file_bytes:
                 # Confirm by size only; avoid reading huge files.
@@ -553,23 +564,24 @@ def diff_source_folders(current_root: str, previous_root: str,
                     results.append({"file_path": rel, "status": "modified",
                                     "unified_diff": "(diff omitted: file too large)"})
                 continue
-            old, new = _read_text(prev[rel][0]), _read_text(cur[rel][0])
+            old = prev_p.read_file(rel) or ""
+            new = cur_p.read_file(rel) or ""
             if old == new:
-                continue   # same bytes despite differing mtime
+                continue   # same bytes despite differing change_key
             status = "modified"
         elif in_cur:
-            if cur[rel][1] > skip_file_bytes:
+            if cur[rel].size > skip_file_bytes:
                 results.append({"file_path": rel, "status": "added",
                                 "unified_diff": "(diff omitted: file too large)"})
                 continue
-            old, new = "", _read_text(cur[rel][0])
+            old, new = "", cur_p.read_file(rel) or ""
             status = "added"
         else:
-            if prev[rel][1] > skip_file_bytes:
+            if prev[rel].size > skip_file_bytes:
                 results.append({"file_path": rel, "status": "deleted",
                                 "unified_diff": "(diff omitted: file too large)"})
                 continue
-            old, new = _read_text(prev[rel][0]), ""
+            old, new = prev_p.read_file(rel) or "", ""
             status = "deleted"
 
         ud = "".join(difflib.unified_diff(
@@ -580,7 +592,7 @@ def diff_source_folders(current_root: str, previous_root: str,
     return results
 
 
-def compute_diff_hash(current_root: str, previous_root: str) -> str:
+def compute_diff_hash(current_root, previous_root) -> str:
     """Stable, order-independent id for a (current, previous) source pair."""
     h = hashlib.sha256()
     h.update(hash_source_tree(current_root).encode())

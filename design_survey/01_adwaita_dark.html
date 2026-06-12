@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Design 1 — GNOME Adwaita Dark</title>
+<style>
+  :root {
+    --bg: #1d1d20; --card: #2a2a2e; --header: #303034; --popover: #38383c;
+    --border: #151517; --sep: rgba(255,255,255,.08);
+    --accent: #3584e4; --green: #26a269; --yellow: #cd9309; --red: #c01c28; --grey: #77767b;
+    --text: #f0f0f2; --muted: #9a99a0;
+    font-size: 14px;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: #161618; color: var(--text);
+    font-family: 'Cantarell','Inter',system-ui,-apple-system,sans-serif;
+    display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px;
+  }
+  .window {
+    width: 1280px; height: 800px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+    box-shadow: 0 14px 44px rgba(0,0,0,.55); display: flex; flex-direction: column;
+  }
+  /* Header bar */
+  .headerbar {
+    height: 47px; background: var(--header); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 10px; gap: 10px; flex: none;
+  }
+  .hb-left, .hb-right { display: flex; align-items: center; gap: 8px; flex: 1; }
+  .hb-right { justify-content: flex-end; }
+  .app-title { font-weight: 700; font-size: 13px; }
+  .app-sub { color: var(--muted); font-size: 12px; }
+  .viewswitcher { display: flex; background: rgba(255,255,255,.06); border-radius: 8px; padding: 3px; gap: 2px; }
+  .viewswitcher button {
+    border: 0; background: transparent; color: var(--muted); padding: 5px 14px;
+    border-radius: 6px; font: inherit; font-size: 12.5px; cursor: pointer;
+  }
+  .viewswitcher button.active { background: rgba(255,255,255,.12); color: var(--text); font-weight: 600; }
+  .pill-btn {
+    border: 0; border-radius: 999px; padding: 6px 14px; font: inherit; font-size: 12.5px;
+    background: rgba(255,255,255,.08); color: var(--text); cursor: pointer;
+  }
+  .pill-btn.suggested { background: var(--accent); font-weight: 600; }
+  .editmode { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
+  .switch { width: 40px; height: 22px; border-radius: 999px; background: var(--accent); position: relative; }
+  .switch::after { content:""; position: absolute; right: 3px; top: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; }
+  .winbtn { width: 22px; height: 22px; border-radius: 50%; background: rgba(255,255,255,.1); border: 0; color: var(--text); font-size: 11px; cursor: pointer; }
+
+  .body { flex: 1; display: flex; min-height: 0; }
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; padding: 14px; gap: 12px; }
+
+  /* Toolbar */
+  .toolbar { display: flex; gap: 8px; align-items: center; }
+  .search {
+    flex: 0 0 260px; background: var(--card); border: 1px solid var(--sep); border-radius: 8px;
+    padding: 7px 12px; color: var(--muted); font-size: 12.5px; display: flex; gap: 8px; align-items: center;
+  }
+  .tb-btn {
+    background: var(--card); border: 1px solid var(--sep); color: var(--text); border-radius: 8px;
+    padding: 7px 13px; font: inherit; font-size: 12.5px; cursor: pointer; display: flex; gap: 6px; align-items: center;
+  }
+  .tb-btn:hover { background: var(--popover); }
+  .spacer { flex: 1; }
+
+  /* Table card */
+  .tablecard { flex: 1; background: var(--card); border: 1px solid var(--sep); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  thead th {
+    text-align: left; font-weight: 600; color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em;
+    padding: 10px 14px; border-bottom: 1px solid var(--border); background: rgba(0,0,0,.18); position: sticky; top: 0;
+  }
+  tbody td { padding: 9px 14px; border-bottom: 1px solid var(--sep); }
+  tbody tr:hover { background: rgba(255,255,255,.03); }
+  tbody tr.selected { background: rgba(53,132,228,.12); box-shadow: inset 3px 0 0 var(--accent); }
+  .mono { font-family: ui-monospace,'SF Mono',Menlo,monospace; font-size: 12px; }
+  .dim td { color: var(--muted); }
+  .match { display: inline-flex; align-items: center; gap: 8px; }
+  .conf { font-size: 10.5px; padding: 2px 7px; border-radius: 999px; background: rgba(38,162,105,.18); color: #57e389; }
+  .conf.mid { background: rgba(205,147,9,.18); color: #f8e45c; }
+  .conf.low { background: rgba(192,28,40,.2); color: #ff7b63; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 11px; border-radius: 999px; font-size: 11.5px; font-weight: 600; cursor: pointer; }
+  .pill::after { content:"▾"; font-size: 9px; opacity: .7; }
+  .p-green { background: rgba(38,162,105,.22); color: #57e389; }
+  .p-yellow { background: rgba(205,147,9,.22); color: #f8e45c; }
+  .p-red { background: rgba(192,28,40,.25); color: #ff7b63; }
+  .p-grey { background: rgba(255,255,255,.1); color: var(--muted); }
+  .kebab { border: 0; background: transparent; color: var(--muted); font-size: 15px; cursor: pointer; border-radius: 6px; padding: 2px 8px; }
+  .kebab:hover { background: rgba(255,255,255,.08); color: var(--text); }
+
+  /* Row action popover (shown open on selected row for the mockup) */
+  .popover {
+    position: absolute; right: 240px; margin-top: 4px; background: var(--popover); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.5); padding: 6px; width: 200px; z-index: 5; font-size: 12.5px;
+  }
+  .popover div { padding: 7px 10px; border-radius: 6px; cursor: pointer; display: flex; justify-content: space-between; color: var(--text); }
+  .popover div:hover { background: rgba(255,255,255,.08); }
+  .popover .danger { color: #ff7b63; }
+  .popover hr { border: 0; border-top: 1px solid var(--sep); margin: 5px 4px; }
+  .kbd { color: var(--muted); font-size: 11px; }
+
+  /* Sidebar */
+  .sidebar { width: 252px; flex: none; border-left: 1px solid var(--border); background: #212124; padding: 14px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
+  .side-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); display: flex; justify-content: space-between; align-items: center; }
+  .side-title button { border: 0; background: rgba(255,255,255,.08); color: var(--text); border-radius: 6px; width: 20px; height: 20px; cursor: pointer; }
+  .listbox { background: var(--card); border: 1px solid var(--sep); border-radius: 10px; overflow: hidden; }
+  .listrow { padding: 10px 12px; border-bottom: 1px solid var(--sep); font-size: 12.5px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
+  .listrow:last-child { border-bottom: 0; }
+  .listrow.active { background: rgba(53,132,228,.14); box-shadow: inset 3px 0 0 var(--accent); font-weight: 600; }
+  .listrow .meta { color: var(--muted); font-size: 11px; font-weight: 400; }
+  .release-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; }
+  .release-row select { background: var(--popover); color: var(--text); border: 1px solid var(--sep); border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 12px; }
+  .action-stack { display: flex; flex-direction: column; gap: 8px; margin-top: auto; }
+  .action-stack button { border: 0; border-radius: 8px; padding: 9px; font: inherit; font-size: 12.5px; cursor: pointer; background: rgba(255,255,255,.08); color: var(--text); }
+  .action-stack .suggested { background: var(--accent); font-weight: 600; }
+
+  /* Status bar */
+  .statusbar {
+    height: 30px; background: var(--header); border-top: 1px solid var(--border); flex: none;
+    display: flex; align-items: center; gap: 18px; padding: 0 14px; font-size: 11.5px; color: var(--muted);
+  }
+  .lock { color: #57e389; display: flex; gap: 6px; align-items: center; }
+  .statusbar .right { margin-left: auto; display: flex; gap: 18px; }
+</style>
+<link rel="stylesheet" href="shared/views.css">
+<style>
+  .window { --v-bg:#1d1d20; --v-panel:#2a2a2e; --v-raised:#38383c; --v-border:rgba(255,255,255,.1); --v-text:#f0f0f2; --v-muted:#9a99a0; --v-accent:#3584e4; --v-ok:#57e389; --v-warn:#f8e45c; --v-err:#ff7b63; --v-ok-bg:rgba(38,162,105,.16); --v-err-bg:rgba(192,28,40,.18); --v-radius:10px; --v-mono:ui-monospace,'SF Mono',Menlo,monospace; }
+</style>
+<script defer src="shared/app.js"></script>
+</head>
+<body>
+<div class="window">
+  <div class="headerbar">
+    <div class="hb-left">
+      <span class="app-title">Architecture Validator&nbsp;Pro</span>
+      <span class="app-sub">Demo_Project.arch</span>
+    </div>
+    <div class="viewswitcher">
+      <button class="active">Workspace</button>
+      <button>Test Design</button>
+      <button>AI Generation</button>
+      <button>AI Chat</button>
+      <button>Code Map</button>
+      <button>Change Log</button>
+    </div>
+    <div class="hb-right">
+      <span class="editmode">Edit Mode <span class="switch"></span></span>
+      <button class="pill-btn suggested">Save</button>
+      <button class="winbtn">─</button><button class="winbtn">✕</button>
+    </div>
+  </div>
+
+  <div class="body">
+   <section class="view active" data-view="workspace">
+    <div class="main">
+      <div class="toolbar">
+        <div class="search">⌕ <span>Search ports… <span style="opacity:.55">(Ctrl+F)</span></span></div>
+        <button class="tb-btn">⚲ Filter ▾</button>
+        <button class="tb-btn">⇄ Re-match Symbols</button>
+        <div class="spacer"></div>
+        <button class="tb-btn">⇪ Import ▾</button>
+        <button class="tb-btn">▦ Columns…</button>
+        <button class="tb-btn" style="background:rgba(53,132,228,.2);border-color:rgba(53,132,228,.4)">＋ Add Port</button>
+      </div>
+
+      <div class="tablecard">
+        <table>
+          <thead>
+            <tr><th>TC. ID</th><th>Input Port</th><th>Mapped Symbol</th><th>Init</th><th>Cyclic</th><th>Review</th><th>Port State</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="mono">TC_001</td><td>DoorLock_Cmd</td><td><span class="match"><span class="mono">DoorLock_Cmd</span><span class="conf">98%</span></span></td><td>Yes</td><td>10 ms</td><td><span class="pill p-green">Reviewed</span></td><td><span class="pill p-green">Released</span></td><td><button class="kebab">⋯</button></td></tr>
+            <tr><td class="mono">TC_002</td><td>DoorUnlock_Cmd</td><td><span class="match"><span class="mono">DoorUnlock_Cmd</span><span class="conf">97%</span></span></td><td>Yes</td><td>10 ms</td><td><span class="pill p-green">Reviewed</span></td><td><span class="pill p-green">Released</span></td><td><button class="kebab">⋯</button></td></tr>
+            <tr class="selected"><td class="mono">TC_003</td><td>WindowPos_Req</td><td><span class="match"><span class="mono">WindowPos_Req</span><span class="conf mid">91%</span></span></td><td>No</td><td>5 ms</td><td><span class="pill p-yellow">In Review</span></td><td><span class="pill p-green">Released</span></td><td><button class="kebab">⋯</button></td></tr>
+            <tr><td class="mono">TC_004</td><td>MirrorFold_Cmd</td><td><span class="match"><span class="mono">MirrorFold_Cmd</span><span class="conf">95%</span></span></td><td>No</td><td>20 ms</td><td><span class="pill p-green">Reviewed</span></td><td><span class="pill p-green">Released</span></td><td><button class="kebab">⋯</button></td></tr>
+            <tr class="dim"><td class="mono">TC_005</td><td>ChildLock_State</td><td><span class="match"><span class="mono">Lock_State</span><span class="conf low">62%</span></span></td><td>Yes</td><td>50 ms</td><td><span class="pill p-red">Not Reviewed</span></td><td><span class="pill p-grey">Retired</span></td><td><button class="kebab">⋯</button></td></tr>
+            <tr><td class="mono">TC_006</td><td>DoorAjar_Status</td><td><span class="match"><span class="mono">DoorAjar_Status</span><span class="conf">99%</span></span></td><td>No</td><td>5 ms</td><td><span class="pill p-green">Reviewed</span></td><td><span class="pill p-green">Released</span></td><td><button class="kebab">⋯</button></td></tr>
+            <tr><td class="mono">TC_007</td><td>CentralLock_Sync</td><td><span class="match"><span class="mono">CentralLock_Sync</span><span class="conf mid">88%</span></span></td><td>No</td><td>10 ms</td><td><span class="pill p-red">Not Reviewed</span></td><td><span class="pill p-yellow">In Work</span></td><td><button class="kebab">⋯</button></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="sidebar">
+      <div>
+        <div class="side-title">Architecture Models <button title="Manage models">＋</button></div>
+        <div class="listbox" style="margin-top:8px">
+          <div class="listrow active">DoorControl_ECU <span class="meta">7 ports</span></div>
+          <div class="listrow">BatteryMgmt_ECU <span class="meta">12 ports</span></div>
+        </div>
+      </div>
+      <div>
+        <div class="side-title">Software Release</div>
+        <div class="listbox" style="margin-top:8px">
+          <div class="release-row"><span style="font-size:12.5px">Active</span><select><option>R1.2</option><option>R1.1</option></select></div>
+          <div class="listrow"><span>ELF parsed</span><span class="meta" style="color:#57e389">✓ ready</span></div>
+          <div class="listrow"><span>Source indexed</span><span class="meta" style="color:#57e389">✓ 41 files</span></div>
+        </div>
+      </div>
+      <div class="action-stack">
+        <button class="suggested">⚙ Generate Test Cases</button>
+        <button>Create Baseline…</button>
+        <button>Load Baseline…</button>
+      </div>
+    </div>
+   </section>
+   <section class="view" data-view="testdesign"></section>
+   <section class="view" data-view="aigen"></section>
+   <section class="view" data-view="aichat"></section>
+   <section class="view" data-view="codemap"></section>
+   <section class="view" data-view="changelog"></section>
+  </div>
+
+  <div class="statusbar">
+    <span class="lock">🔒 Exclusive Edit</span>
+    <span>Auto-saved 14:32</span>
+    <span class="right"><span>R1.2 · DoorControl_ECU</span><span>7 ports · 5 reviewed</span></span>
+  </div>
+</div>
+</body>
+</html>

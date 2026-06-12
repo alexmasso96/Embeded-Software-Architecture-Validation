@@ -830,19 +830,30 @@ class ELFParser:
 
         if RUST_PARSER_AVAILABLE and self.parser_backend == "rust_elf_parser":
             try:
+                # Phase logging: the native path does its heavy work inside one
+                # parse_elf() call + a big json.loads(), which used to leave the
+                # loading window silent (and json.loads briefly holds the GIL).
+                # These lines tell the user the app is working through each phase.
+                logger.info("Parsing ELF with the native Rust parser…")
                 json_str = rust_elf_parser.parse_elf(str(self.elf_path))
+                logger.info("Decoding parsed ELF data…")
                 data = json.loads(json_str)
-                
+
+                n_sym = len(data.get("symbols", []))
+                n_fn = len(data.get("functions", []))
+                logger.info(f"Writing {n_sym} symbols and {n_fn} functions to the database…")
                 db.bulk_insert_symbols(self.md5_hash, data.get("symbols", []))
                 db.bulk_insert_functions(self.md5_hash, data.get("functions", []))
+                logger.info("Writing structures and global variables…")
                 db.bulk_insert_structures(self.md5_hash, data.get("structures", {}))
                 db.bulk_insert_global_vars(self.md5_hash, data.get("global_vars", {}))
-                
+
                 db.register_elf(self.md5_hash, str(self.elf_path) if self.elf_path else "", "rust_elf_parser")
-                
+
                 self._db = db
                 self._active_elf_hash = self.md5_hash
                 db.commit()
+                logger.info("ELF extraction complete (native Rust parser).")
                 self.close()
                 return
             except Exception as e:
@@ -885,6 +896,8 @@ class ELFParser:
         # global vars are flushed to DB after each CU so only one CU's worth
         # of data is held in Python at a time.  Typedef DIEs are replaced with
         # plain scalar dicts (Fix B) to break the DIE→CU→buffer reference chain.
+        logger.info(f"Found {len(functions)} functions; extracting DWARF debug info "
+                    "(parameters, structures, globals)…")
         self.functions = functions
         self._extract_dwarf_single_pass(db)
         self.functions = []
