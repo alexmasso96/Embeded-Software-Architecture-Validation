@@ -2,8 +2,9 @@ name: Tests
 
 on:
   push:
-    branches: [ main ]
   pull_request:
+  schedule:
+    - cron: '0 19 * * *'
   workflow_dispatch:
 
 permissions:

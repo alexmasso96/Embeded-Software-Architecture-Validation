@@ -1,0 +1,113 @@
+stages:
+  - test
+  - coverage
+  - release
+
+variables:
+  # PyQt6 headlessly in GitLab
+  QT_QPA_PLATFORM: offscreen
+
+# Default docker image to run the jobs
+image: python:3.14
+
+test_build:
+  stage: test
+  before_script:
+    - apt-get update -qy
+    - apt-get install -y -qq libegl1 libgl1 libxkbcommon0 libdbus-1-3
+    - python -m pip install --upgrade pip
+    - pip install -r requirements.txt pytest
+  script:
+    - pytest Tests/ -q
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+
+test_coverage:
+  stage: coverage
+  before_script:
+    - apt-get update -qy
+    - apt-get install -y -qq libegl1 libgl1 libxkbcommon0 libdbus-1-3
+    - python -m pip install --upgrade pip
+    - pip install -r requirements.txt pytest coverage
+  script:
+    - coverage run -m pytest Tests/
+    - coverage report
+  coverage: '/TOTAL.*\s+(\d+)\%/'
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+
+make_release:
+  stage: release
+  before_script:
+    # Install Rust for building the native ELF parser extension
+    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    - source "$HOME/.cargo/env"
+    # Install packaging and development tools
+    - apt-get update -qy
+    - apt-get install -y -qq alien rpm build-essential flatpak flatpak-builder libegl1 libgl1 libxkbcommon0 libdbus-1-3
+    - python -m pip install --upgrade pip
+    - pip install -r requirements.txt maturin
+    # Build and install the Rust ELF parser PyO3 wheel locally on the runner
+    - maturin build --release --manifest-path native/parser_rust/Cargo.toml --out target/wheels --compatibility linux
+    - pip install --no-index --find-links target/wheels rust_elf_parser
+  script:
+    # Build the application using PyInstaller
+    - pyinstaller ArchitectureValidatorPro.spec
+    # Package DEB and RPM
+    - mkdir -p debian-pkg/DEBIAN
+    - mkdir -p debian-pkg/usr/bin
+    - mkdir -p debian-pkg/usr/share/architecture-validator-pro
+    - mkdir -p debian-pkg/usr/share/applications
+    - cp -r dist/ArchitectureValidatorPro/* debian-pkg/usr/share/architecture-validator-pro/
+    - |
+      cat << 'EOF' > debian-pkg/usr/bin/architecture-validator-pro
+      #!/bin/sh
+      exec /usr/share/architecture-validator-pro/ArchitectureValidatorPro "$@"
+      EOF
+    - chmod +x debian-pkg/usr/bin/architecture-validator-pro
+    - |
+      cat << 'EOF' > debian-pkg/usr/share/applications/architecture-validator-pro.desktop
+      [Desktop Entry]
+      Type=Application
+      Name=Architecture Validator Pro
+      Comment=Automates the testing and verification of software architecture
+      Exec=architecture-validator-pro
+      Icon=architecture-validator-pro
+      Terminal=false
+      Categories=Development;Utility;
+      EOF
+    - VERSION="${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}"
+    - VERSION="${VERSION#v}"
+    - |
+      cat << EOF > debian-pkg/DEBIAN/control
+      Package: architecture-validator-pro
+      Version: ${VERSION}
+      Section: utils
+      Priority: optional
+      Architecture: amd64
+      Maintainer: Alex Masso <alexmasso96@github.com>
+      Description: Architecture Validator Pro desktop application.
+      Depends: libc6, libgl1
+      EOF
+    - dpkg-deb --build debian-pkg architecture-validator-pro-linux.deb
+    - alien --to-rpm --scripts architecture-validator-pro-linux.deb
+    - mv architecture-validator-pro-*.rpm architecture-validator-pro-linux.rpm
+    # Build Flatpak
+    - flatpak --user remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+    - flatpak-builder --user --install-deps-from=flathub --repo=flatpak-repo --force-clean builddir-flatpak flatpak-manifest.yml
+    - flatpak build-bundle flatpak-repo architecture-validator-pro-linux.flatpak com.architecturevalidator.ArchitectureValidatorPro --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
+  artifacts:
+    name: "linux-release-artifacts"
+    paths:
+      - architecture-validator-pro-linux.deb
+      - architecture-validator-pro-linux.rpm
+      - architecture-validator-pro-linux.flatpak
+    expire_in: 1 week
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
