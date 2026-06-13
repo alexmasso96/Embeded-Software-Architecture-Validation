@@ -9,3 +9,9 @@ bcrypt>=4.0.0
 requests>=2.31.0
 cryptography>=42.0.0
 cpp_demangle>=0.1.0
+# Phase 1 (pywebview migration) — FastAPI worker process. PyQt6 above is dropped
+# at Phase 4 cutover; these become the lasting runtime deps for the new app.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+sse-starlette>=2.0
+httpx>=0.27
