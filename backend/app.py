@@ -28,6 +28,7 @@ from .routers import architecture as architecture_router
 from .routers import baselines as baselines_router
 from .routers import changelog as changelog_router
 from .routers import codemap as codemap_router
+from .routers import fs as fs_router
 from .routers import imports as imports_router
 from .routers import jobs as jobs_router
 from .routers import project as project_router
@@ -69,6 +70,7 @@ def create_app(token: str | None = None, heartbeat_interval: float | None = None
     app.include_router(changelog_router.router)
     app.include_router(ai_router.router)
     app.include_router(imports_router.router)
+    app.include_router(fs_router.router)
 
     @app.get("/api/health")
     def health() -> dict:
