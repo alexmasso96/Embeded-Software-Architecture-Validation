@@ -55,8 +55,8 @@ backend/
 | `GET /api/codemap`, `/codemap/graph`, `/codemap/function/{name}`, `GET /api/source/function/{name}` | ✅ | reuses `compute_graph_levels`/`describe_symbol`/`extract_function_block_by_line`; build is the `build_code_map` job |
 | `GET /api/changelog`, `GET /api/changelog/diff?file=` | ✅ | reads diffs persisted by the `release_diff` job (now saves on its own connection + sets model diff hash); aligns via `parse_and_align_diff` |
 | `GET /api/ai/providers`, `PUT/DELETE /api/ai/providers/{id}`, `POST /api/ai/chat` (SSE tokens) | ✅ | creds machine-global (ARCHVALIDATOR_CONFIG_DIR); chat streams tokens via thread→loop bridge; mind-map grounding optional |
-| `POST /api/baselines` (create_baseline) | ❌ TODO | needs layout + active-model snapshot assembly (mirror `handle_create_baseline` headlessly) |
-| Port-state propagation (`POST /api/ports/{id}/state?dry_run=`) | ❌ TODO | two-step #8.2 flow (logic exists: `ArchitectureManager.propagate_status_to_ports`) |
+| `GET/POST /api/baselines`, `GET /api/baselines/{id}` | ✅ | create = assemble layout+active-model snapshot → `create_baseline` (frozen writes); GET reads snapshot rows + layout ("load") |
+| Port-state propagation `POST /api/models/{id}/state/preview` + `POST /api/models/{id}/state` | ✅ | two-step #8.2: preview lists eligible In-Work ports; commit sets status + `propagate_status_to_ports` (all or `selected_ports`) |
 
 ## Job kinds — status
 
@@ -79,6 +79,8 @@ or careful main-thread handoff before wiring as a job (it currently writes via t
 - `Tests/test_backend_codemap.py` (9) — function list, depth-limited graph (fwd/back), function details, source extraction (brace-matched), no-source / no-map paths.
 - `Tests/test_backend_changelog.py` (5) — seeded-diff read endpoints + aligned per-file diff, AI summary, **end-to-end release_diff job → changelog**.
 - `Tests/test_backend_ai.py` (7) — provider list/set/clear (creds redirected to temp dir), chat guards (404/409), **real-server SSE chat token stream with a faked provider**.
+- `Tests/test_backend_baselines.py` (6) — create/list, snapshot read, **frozen-after-edit invariant**, duplicate-name 409, view-only guard.
+- `Tests/test_backend_propagation.py` (6) — preview lists In-Work ports, no-op when staying In Work, commit propagates all / only selected, view-only blocks commit (preview allowed).
 
 **Known minor robustness gap:** opening a *model-less* project in view-only mode 500s — `ArchitectureManager.load_registry()` tries to persist a default model against the read-only DB. Real projects always have ≥1 model (new_project creates the schema + default while writable), so this only bites hand-built fixtures. Fix later: skip the default-model write when the DB is read_only.
 
@@ -91,19 +93,20 @@ or careful main-thread handoff before wiring as a job (it currently writes via t
 
 ## Next steps (suggested order)
 
-1. ~~architecture router~~ ✅ · ~~releases router~~ ✅ · ~~symbols~~ ✅ · ~~codemap+source~~ ✅ · ~~changelog~~ ✅ · ~~ai (providers+chat SSE)~~ ✅
-2. **baselines** — `POST /api/baselines` assembling layout (`load_column_layout` + meta +
-   `get_test_case_design`) + active-model snapshot, mirroring `handle_create_baseline` headlessly; load/exit too.
-3. **port-state propagation** (#8.2) two-step: `POST /api/ports/{id}/state?dry_run=1` → affected list, then commit.
-   Logic already in `ArchitectureManager.propagate_status_to_ports`.
-4. **More job kinds** — `build_mind_map` (needs own-connection wrapper for `run_mindmap_job`),
-   `generate_tests` (`run_generation_job`; network + writes a file), `import_architecture`, `fuzzy_rematch`, `parse_elf`/`index_source`.
-   These complete the "every feature reachable through the API" exit criterion.
-5. Lock heartbeat timer inside the worker (plan §3.3) + parent-PID watch (with Phase 3 desktop shell).
-6. Minor: skip default-model write on read-only open (see robustness gap above).
+1. ~~architecture~~ ✅ · ~~releases~~ ✅ · ~~symbols~~ ✅ · ~~codemap+source~~ ✅ · ~~changelog~~ ✅ · ~~ai (providers+chat SSE)~~ ✅ · ~~baselines~~ ✅ · ~~port-state propagation #8.2~~ ✅
+2. **More job kinds** to finish exit-criterion #1 ("every feature reachable"):
+   `build_mind_map` (needs own-connection wrapper for `run_mindmap_job`, which currently takes a live `db`),
+   `generate_tests` (`run_generation_job`; network + writes a file), `import_architecture` / `fuzzy_rematch`
+   (Excel/Rhapsody import + re-match — the import mixins live in `Logic_Architecture_Import`, currently
+   coupled to the Qt controller's `notify/ask/busy`; need headless callbacks), `parse_elf`/`index_source`.
+3. Lock heartbeat timer inside the worker (plan §3.3) + parent-PID watch (with Phase 3 desktop shell).
+4. Minor: skip default-model write on read-only open (see robustness gap above).
 
-Once §2–4 land, Phase 1's exit criterion #1 ("every feature reachable through the API") is met and
-**Phase 2 (React frontend)** can start against this API — develop in a plain browser with `uvicorn` + `vite dev`.
+All seven §3.2 feature routers + baselines + propagation are in — the **Workspace, Releases, Code Map,
+Change Log, Test-design-adjacent, and AI surfaces are reachable over HTTP**. The remaining job kinds are
+the long-running operations; the read/edit API the React UI needs day-to-day is complete. **Phase 2 (React
+frontend) can start now** against this API (develop in a browser with `uvicorn` + `vite dev`); the
+outstanding job kinds can land in parallel as their views are built.
 
 ## Session log
 
@@ -117,6 +120,11 @@ Once §2–4 land, Phase 1's exit criterion #1 ("every feature reachable through
 - **2026-06-13 (c)** — Added the **codemap+source**, **changelog**, and **ai** routers. Made the
   `release_diff` job persist diffs + model diff hash on its own connection (so the changelog reads them).
   37 API routes total. 21 new tests (codemap 9, changelog 5, ai 7), incl. end-to-end release_diff→changelog
-  and a real-server SSE chat token stream (faked provider). Full suite **548 passed**. All seven feature
-  routers from plan §3.2 are now in. **Next: baselines, port-state propagation (#8.2), and more job kinds**
-  (build_mind_map / generate_tests) to finish the "every feature reachable" exit criterion — then Phase 2 (React).
+  and a real-server SSE chat token stream (faked provider). Full suite **548 passed**.
+- **2026-06-13 (d)** — Added the **baselines** router (create = headless layout+active-model snapshot
+  assembly → `create_baseline`; GET reads snapshot) and **port-state propagation #8.2** (two-step
+  preview/commit on the architecture router; finds Port-State / Port-Search columns by logic_key from the
+  schema; reuses `propagate_status_to_ports`). 41 API routes total. 12 new tests (baselines 6, propagation 6),
+  incl. the frozen-after-edit baseline invariant and selective propagation. Full suite **560 passed**.
+  **All §3.2 routers + baselines + #8.2 done — the day-to-day read/edit API is complete; Phase 2 (React) can
+  start.** Remaining: long-running job kinds (build_mind_map / generate_tests / import) + lock heartbeat.

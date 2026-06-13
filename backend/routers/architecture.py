@@ -255,3 +255,106 @@ def delete_port(model_id: int, row_index: int,
         bus.publish("db-changed", {"reason": "port-deleted", "model_id": model_id})
         return {"model_id": model_id, "total": len(rows)}
     return _guard(go)
+
+
+# ---------------------------------------------------------------------------
+# Port-state propagation (#8.2) — two-step: preview, then commit.
+#
+# When a model leaves "In Work" (→ Released/Retired), its still-"In Work" ports
+# may follow. The cascade is NOT silent: the UI previews the affected ports and
+# the user confirms/selects which ones follow. Logic lives in
+# ArchitectureManager.propagate_status_to_ports.
+# ---------------------------------------------------------------------------
+class StateChangeBody(BaseModel):
+    new_status: str
+    selected_ports: Optional[list[str]] = None   # None = all eligible ports follow
+
+
+def _port_columns(db) -> tuple[list[str], Optional[str]]:
+    """(port_state_column_names, port_name_column) derived from the column schema.
+
+    Port-state cols carry logic_key 'PortStateColumn'; the port-name col is the
+    first 'Port Search'. Falls back to the conventional 'Port State' name.
+    """
+    layout = db.load_column_layout()
+    state_cols = [n for (n, t, _v, _w) in layout if t == "PortStateColumn"] or ["Port State"]
+    name_col = next((n for (n, t, _v, _w) in layout if t == "Port Search"), None)
+    return state_cols, name_col
+
+
+def _eligible_ports(db, model_id: int, state_cols: list[str], name_col: Optional[str]) -> list[dict]:
+    from Application_Logic.Logic_Architecture_Models import _cell_text
+    rows = db.get_model_rows(model_id)
+    out = []
+    for i, row in enumerate(rows):
+        for col in state_cols:
+            cell = row.get(col)
+            if isinstance(cell, dict):
+                cur = (cell.get("widget_text") or cell.get("text") or "").strip()
+                if cur == "In Work":
+                    out.append({
+                        "row_index": i,
+                        "port_name": _cell_text(row.get(name_col)) if name_col else "",
+                        "column": col,
+                    })
+                    break
+    return out
+
+
+@router.post("/models/{model_id}/state/preview")
+def preview_state_change(model_id: int, body: StateChangeBody,
+                         state: AppState = Depends(get_state)) -> dict:
+    def go():
+        db = state.require_open()
+        idx = state.model_index_by_id(model_id)
+        old_status = state.require_arch().models[idx].status
+        # Propagation only applies leaving "In Work" for a different status.
+        eligible = old_status == "In Work" and body.new_status != "In Work"
+        state_cols, name_col = _port_columns(db)
+        affected = _eligible_ports(db, model_id, state_cols, name_col) if eligible else []
+        return {
+            "model_id": model_id,
+            "old_status": old_status,
+            "new_status": body.new_status,
+            "propagates": eligible,
+            "port_state_columns": state_cols,
+            "port_name_column": name_col,
+            "affected_ports": affected,
+        }
+    return _guard(go)
+
+
+@router.post("/models/{model_id}/state")
+def commit_state_change(model_id: int, body: StateChangeBody,
+                        state: AppState = Depends(get_state),
+                        bus: EventBus = Depends(get_bus)) -> dict:
+    def go():
+        db = state.require_edit()
+        mgr = state.require_arch()
+        idx = state.model_index_by_id(model_id)
+        model = mgr.models[idx]
+        old_status = model.status
+
+        model.status = body.new_status
+        mgr.save_registry()   # persist the status change
+
+        state_cols, name_col = _port_columns(db)
+        # Force a fresh load so propagation works off the DB's current rows
+        # (the API edits rows directly, bypassing the in-memory data_cache).
+        model.data_cache = None
+        changed = mgr.propagate_status_to_ports(
+            model, old_status, body.new_status,
+            port_state_columns=tuple(state_cols),
+            selected_ports=body.selected_ports,
+            port_name_column=name_col,
+        )
+        bus.publish("db-changed",
+                    {"reason": "model-state-changed", "model_id": model_id,
+                     "new_status": body.new_status, "ports_changed": changed})
+        return {
+            "model_id": model_id,
+            "old_status": old_status,
+            "new_status": body.new_status,
+            "ports_changed": changed,
+        }
+    return _guard(go)
