@@ -22,7 +22,9 @@ from Application_Logic.Logic_Database import ProjectDatabase
 from Application_Logic.Logic_Architecture_Models import ArchitectureManager
 from Application_Logic.Logic_Release_Manager import ReleaseManager
 from Application_Logic.Logic_Project_Saving import ProjectSaver
-from Application_Logic.Logic_File_Locking import FileLockManager
+from Application_Logic.Logic_File_Locking import (
+    FileLockManager, LOCK_HEARTBEAT_INTERVAL_SECONDS,
+)
 
 from .events import EventBus
 
@@ -37,9 +39,11 @@ class ProjectError(RuntimeError):
 
 
 class AppState:
-    def __init__(self, bus: EventBus) -> None:
+    def __init__(self, bus: EventBus,
+                 heartbeat_interval: float = LOCK_HEARTBEAT_INTERVAL_SECONDS) -> None:
         self.bus = bus
         self._lock = threading.RLock()
+        self._heartbeat_interval = heartbeat_interval
 
         self.db: Optional[ProjectDatabase] = None
         self.project_path: Optional[str] = None
@@ -49,7 +53,10 @@ class AppState:
         self.master_password_hash: Optional[str] = None
         self.integrity_mismatch: bool = False
         self.lock_info: dict = {}
+        self.lock_lost: bool = False
         self._matchers: dict = {}   # elf_hash -> SymbolMatcher (name-list cache)
+        self._hb_thread: Optional[threading.Thread] = None
+        self._hb_stop: Optional[threading.Event] = None
 
     # ------------------------------------------------------------------
     @property
@@ -67,6 +74,9 @@ class AppState:
 
     def require_edit(self) -> ProjectDatabase:
         db = self.require_open()
+        if self.lock_lost:
+            raise ProjectError("Edit lock was lost (taken over by another session). "
+                               "Reopen the project to regain exclusive edit.")
         if not self.can_edit:
             raise ProjectError("Project is open in view-only mode.")
         return db
@@ -221,6 +231,7 @@ class AppState:
                 "model_count": model_count,
                 "release_count": release_count,
                 "lock_info": self.lock_info,
+                "lock_lost": self.lock_lost,
             }
 
     # ------------------------------------------------------------------
@@ -237,8 +248,10 @@ class AppState:
         self.release_manager.set_db(db)
         self.release_manager.load_registry()
         self.master_password_hash = db.get_meta("master_password_hash")
+        self.lock_lost = False
         if mode == MODE_EXCLUSIVE:
             self.lock_info = {"held": True, "by": FileLockManager.get_username()}
+            self._start_heartbeat(path)
         else:
             self.lock_info = FileLockManager.check_lock(path)
 
@@ -255,7 +268,54 @@ class AppState:
         except Exception:  # noqa: BLE001 — legacy/partial projects open silently
             self.integrity_mismatch = False
 
+    # ------------------------------------------------------------------
+    # Lock heartbeat (plan §3.3)
+    # ------------------------------------------------------------------
+    def _start_heartbeat(self, path: str) -> None:
+        self._stop_heartbeat()
+        stop = threading.Event()
+        self._hb_stop = stop
+        self._hb_thread = threading.Thread(
+            target=self._heartbeat_loop, args=(path, stop),
+            name="lock-heartbeat", daemon=True)
+        self._hb_thread.start()
+
+    def _stop_heartbeat(self) -> None:
+        if self._hb_stop is not None:
+            self._hb_stop.set()
+        thread = self._hb_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2)
+        self._hb_thread = None
+        self._hb_stop = None
+
+    def _heartbeat_loop(self, path: str, stop: threading.Event) -> None:
+        """Refresh the lock's last_seen on a timer; if we no longer own it, flag
+        the session lock-lost and emit a `lock` SSE event so the UI drops to
+        view-only. Runs on its own thread and never touches the DB connection
+        (sqlite connections are thread-affine) — it only reads/writes the lock file.
+        """
+        while not stop.wait(self._heartbeat_interval):
+            try:
+                status = FileLockManager.check_lock(path)
+            except Exception:  # noqa: BLE001 — lock file race; try again next tick
+                continue
+            if status.get("status") != "locked_by_me":
+                self._on_lock_lost(status)
+                return
+            FileLockManager.write_heartbeat(path)
+
+    def _on_lock_lost(self, info: dict) -> None:
+        # Minimal, thread-safe: flip a flag + publish. require_edit() then refuses
+        # writes (409) and status() reports lock_lost; we do NOT mutate the DB
+        # connection or managers from this thread.
+        self.lock_lost = True
+        self.lock_info = info
+        self.bus.publish("lock", {"lost": True, "info": info})
+
     def _close_locked(self) -> None:
+        self._stop_heartbeat()
+        self.lock_lost = False
         if self.db is not None and self.db.is_open:
             try:
                 self.db.close()

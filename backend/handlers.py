@@ -10,8 +10,10 @@ run_release_diff). Handlers therefore stay thin.
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
+from contextlib import contextmanager
 from typing import Callable
 
 from Application_Logic.Logic_Change_Log_Tab import run_release_diff
@@ -25,6 +27,58 @@ def register_handlers(jobs: JobManager, state: AppState) -> None:
     jobs.register("_demo", _demo_handler)
     jobs.register("release_diff", _make_release_diff(state))
     jobs.register("build_code_map", _make_build_code_map(state))
+    jobs.register("fuzzy_rematch", _make_fuzzy_rematch(state))
+    jobs.register("build_mind_map", _make_build_mind_map(state))
+    jobs.register("generate_tests", _make_generate_tests(state))
+    jobs.register("parse_elf", _make_parse_elf(state))
+
+
+# ----------------------------------------------------------------------
+# Shared: a worker-thread-owned DB connection to the open project (the
+# crash-safe pattern — never write the main connection from a job thread).
+# ----------------------------------------------------------------------
+@contextmanager
+def _worker_db(state: AppState):
+    from Application_Logic.Logic_Database import ProjectDatabase
+    main = state.require_open()
+    wdb = ProjectDatabase()
+    wdb.open(main.db_path, create_schema=False, apply_journal=False)
+    try:
+        yield wdb
+    finally:
+        try:
+            wdb.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _resolve_model_ids(state: AppState, params: dict, wdb) -> list[int]:
+    ids = params.get("model_ids")
+    if ids:
+        return list(ids)
+    mid = state.require_arch().active_model_id
+    if mid is None:
+        raise ProjectError("No active model and no model_ids given.")
+    return [mid]
+
+
+def _extract_ports(wdb, layout, model_id: int) -> list[dict]:
+    """[{name, operation}] from a model's rows, deduped — headless port pull
+    (the Qt _extract_ports). Port col = first 'Port Search'; ops col from meta."""
+    port_col = next((c[0] for c in layout if c[1] == "Port Search"), None)
+    ops_col = wdb.get_meta("operations_column_name")
+    ports, seen = [], set()
+    for r in wdb.get_model_rows(model_id):
+        name = (r.get(port_col, {}) or {}).get("text", "").strip() if port_col else ""
+        op = (r.get(ops_col, {}) or {}).get("text", "").strip() if ops_col else ""
+        if not name:
+            continue
+        key = (name, op)
+        if key in seen:
+            continue
+        seen.add(key)
+        ports.append({"name": name, "operation": op})
+    return ports
 
 
 # ----------------------------------------------------------------------
@@ -98,4 +152,160 @@ def _make_build_code_map(state: AppState):
             progress_cb=lambda msg: progress(msg),
         )
         return {"functions": len(code_map.get("functions", {}))}
+    return handler
+
+
+# ----------------------------------------------------------------------
+# fuzzy_rematch — re-run symbol matching for a model's rows against the
+# active release's ELF, writing "Name (NN%)" into each (Match) cell.
+# ----------------------------------------------------------------------
+def _make_fuzzy_rematch(state: AppState):
+    def handler(params: dict, progress: Callable[..., None], cancel: threading.Event):
+        from Application_Logic.Logic_Symbol_Matcher import (
+            SymbolMatcher, search_specs_from_layout, rematch_rows,
+        )
+        state.require_edit()
+        elf_hash = params.get("elf_hash") or state.active_elf_hash()
+        if not elf_hash:
+            raise ProjectError("No ELF imported for the active release.")
+        with _worker_db(state) as wdb:
+            if not wdb.has_elf(elf_hash):
+                raise ProjectError(f"No ELF in project for hash {elf_hash}.")
+            matcher = SymbolMatcher(None, db=wdb, elf_hash=elf_hash)
+            specs = search_specs_from_layout(wdb.load_column_layout())
+            model_ids = _resolve_model_ids(state, params, wdb)
+            total = 0
+            for i, mid in enumerate(model_ids, 1):
+                if cancel.is_set():
+                    break
+                progress(f"Re-matching model {i}/{len(model_ids)}…")
+                rows = wdb.get_model_rows(mid)
+                changed = rematch_rows(rows, specs, matcher)
+                if changed:
+                    wdb.save_model_rows(mid, rows)
+                total += changed
+            wdb.commit()
+        return {"cells_changed": total, "models": len(model_ids)}
+    return handler
+
+
+# ----------------------------------------------------------------------
+# build_mind_map — own-connection wrapper around run_mindmap_job (which takes
+# a live db and writes through it).
+# ----------------------------------------------------------------------
+def _make_build_mind_map(state: AppState):
+    def handler(params: dict, progress: Callable[..., None], cancel: threading.Event):
+        from Application_Logic.Logic_AI_Chat import run_mindmap_job
+        from Application_Logic.Logic_AI_Context import META_REQUIREMENTS
+        from Application_Logic.Logic_Source_Store import release_source_provider
+        state.require_edit()
+        with _worker_db(state) as wdb:
+            current_rid = params.get("current_release_id")
+            if current_rid is None:
+                current_rid = wdb.get_active_release_id()
+            if current_rid is None:
+                raise ProjectError("No current release for the mind map.")
+            previous_rid = params.get("previous_release_id")
+
+            current_source = release_source_provider(wdb, current_rid)
+            if current_source is None:
+                raise ProjectError("The current release has no source imported.")
+            previous_source = (release_source_provider(wdb, previous_rid)
+                               if previous_rid is not None else None)
+
+            raw_reqs = wdb.get_meta(META_REQUIREMENTS)
+            try:
+                reqs = json.loads(raw_reqs) if raw_reqs else []
+            except (ValueError, TypeError):
+                reqs = []
+
+            layout = wdb.load_column_layout()
+            names = {m["id"]: m["name"] for m in wdb.get_all_models()}
+            model_ids = _resolve_model_ids(state, params, wdb)
+            mm_jobs = [(mid, names.get(mid, str(mid)), _extract_ports(wdb, layout, mid), reqs)
+                       for mid in model_ids]
+
+            built = run_mindmap_job(mm_jobs, current_source, previous_source, wdb,
+                                    release_id=current_rid, progress_cb=progress)
+        return {"maps_built": built, "models": len(model_ids)}
+    return handler
+
+
+# ----------------------------------------------------------------------
+# generate_tests — AI low-level test generation from an HLT design file.
+# Network + writes <Model>_LowLevel.md.
+# ----------------------------------------------------------------------
+def _make_generate_tests(state: AppState):
+    def handler(params: dict, progress: Callable[..., None], cancel: threading.Event):
+        from Application_Logic import Logic_AI_Context as ctx
+        from Application_Logic.Logic_AI_Generation import run_generation_job
+        from Application_Logic.Logic_Source_Store import release_source_provider
+        state.require_open()
+        project_path = state.project_path
+        provider_id = params.get("provider_id")
+        model = params.get("model")
+        hlt_path = params.get("hlt_path")
+        if not (provider_id and model and hlt_path):
+            raise ProjectError("provider_id, model, and hlt_path are required.")
+
+        parsed = ctx.parse_hlt_file(hlt_path)
+        cases = parsed["test_cases"]
+        wanted = params.get("test_case_ids")
+        if wanted is not None:
+            wanted = set(wanted)
+            cases = [c for c in cases if c["id"] in wanted]
+        if not cases:
+            raise ProjectError("No test cases selected.")
+
+        with _worker_db(state) as wdb:
+            rules = ctx.get_rules(wdb)
+            prompt = ctx.get_prompt(wdb)
+            rid = params.get("current_release_id")
+            if rid is None:
+                rid = wdb.get_active_release_id()
+            source = release_source_provider(wdb, rid) if rid is not None else None
+            output_dir = ctx.hlt_output_dir(project_path)
+            path = run_generation_job(
+                provider_id, model, rules, prompt, source, output_dir,
+                parsed["model_name"], parsed["title"], cases,
+                progress_cb=progress,
+                case_done_cb=lambda tc_id, _t: progress(f"Generated {tc_id}"),
+                stop_check=cancel.is_set,
+            )
+        return {"output_path": path, "cases": len(cases)}
+    return handler
+
+
+# ----------------------------------------------------------------------
+# parse_elf — import an ELF into a release: parse + stream symbols to the DB,
+# then key the release to the new ELF hash.
+# ----------------------------------------------------------------------
+def _make_parse_elf(state: AppState):
+    def handler(params: dict, progress: Callable[..., None], cancel: threading.Event):
+        from Application_Logic.Logic_New_Project import ElfImportTask
+        state.require_edit()
+        file_path = params.get("file_path")
+        release_id = params.get("release_id")
+        if not file_path or release_id is None:
+            raise ProjectError("file_path and release_id are required.")
+
+        with _worker_db(state) as wdb:
+            progress("Parsing ELF…")
+            task = ElfImportTask(project_db=wdb, db_path=None)
+            parser = task.import_elf(file_path)
+            elf_hash = getattr(parser, "md5_hash", None) or getattr(parser, "_active_elf_hash", None)
+            wdb.update_release(release_id, elf_path=file_path, elf_hash=elf_hash)
+            wdb.commit()
+            fn_count = len(wdb.get_function_names(elf_hash)) if elf_hash else 0
+
+        # Reflect the new ELF on the in-memory release so the symbols endpoint's
+        # active_elf_hash() sees it without a reopen (a plain attribute set).
+        if state.release_manager is not None:
+            for r in state.release_manager.releases:
+                if r.id == release_id:
+                    r.elf_path = file_path
+                    r.elf_hash = elf_hash
+                    break
+        state._matchers.pop(elf_hash, None)
+        return {"elf_hash": elf_hash, "functions": fn_count, "release_id": release_id}
     return handler

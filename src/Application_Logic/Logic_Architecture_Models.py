@@ -63,7 +63,13 @@ class ArchitectureManager:
             return
         rows = self._db.get_all_models()
         if not rows:
-            # Empty DB — create a default model
+            # Empty DB — create a default model. A read-only session (view-only
+            # open) cannot write, so keep the placeholder in memory only
+            # (id=None) instead of crashing on the blocked INSERT.
+            if getattr(self._db, "read_only", False):
+                self.models = [ArchitectureModel("Architecture_1", id=None, status="In Work")]
+                self.active_model_index = 0
+                return
             mid = self._db.create_model("Architecture_1", "In Work", 0)
             self._db.commit()
             self.models = [ArchitectureModel("Architecture_1", id=mid, status="In Work")]

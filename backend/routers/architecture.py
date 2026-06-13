@@ -239,6 +239,33 @@ def add_port(model_id: int, body: Optional[CellUpdate] = None,
     return _guard(go)
 
 
+class BulkAddBody(BaseModel):
+    # Each row is {col_name: scalar-or-cell}; scalars become {"text": value}.
+    rows: list[dict[str, Any]]
+
+
+@router.post("/models/{model_id}/ports/bulk")
+def add_ports_bulk(model_id: int, body: BulkAddBody,
+                   state: AppState = Depends(get_state),
+                   bus: EventBus = Depends(get_bus)) -> dict:
+    """Append many rows at once — the efficient import primitive. A Phase-2
+    import wizard composes this with /api/jobs/fuzzy_rematch."""
+    def go():
+        db = state.require_edit()
+        state.model_index_by_id(model_id)
+        rows = db.get_model_rows(model_id)
+        first = len(rows)
+        for incoming in body.rows:
+            rows.append(_apply_updates({}, incoming))
+        db.save_model_rows(model_id, rows)
+        db.commit()
+        bus.publish("db-changed",
+                    {"reason": "ports-imported", "model_id": model_id, "added": len(body.rows)})
+        return {"model_id": model_id, "added": len(body.rows),
+                "first_row_index": first, "total": len(rows)}
+    return _guard(go)
+
+
 @router.delete("/models/{model_id}/ports/{row_index}")
 def delete_port(model_id: int, row_index: int,
                 state: AppState = Depends(get_state),

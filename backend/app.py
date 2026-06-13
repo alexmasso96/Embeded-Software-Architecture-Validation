@@ -28,6 +28,7 @@ from .routers import architecture as architecture_router
 from .routers import baselines as baselines_router
 from .routers import changelog as changelog_router
 from .routers import codemap as codemap_router
+from .routers import imports as imports_router
 from .routers import jobs as jobs_router
 from .routers import project as project_router
 from .routers import releases as releases_router
@@ -36,9 +37,9 @@ from .routers import symbols as symbols_router
 logger = logging.getLogger(__name__)
 
 
-def create_app(token: str | None = None) -> FastAPI:
+def create_app(token: str | None = None, heartbeat_interval: float | None = None) -> FastAPI:
     bus = EventBus()
-    state = AppState(bus)
+    state = AppState(bus, heartbeat_interval) if heartbeat_interval is not None else AppState(bus)
     jobs = JobManager(bus)
     register_handlers(jobs, state)
 
@@ -67,6 +68,7 @@ def create_app(token: str | None = None) -> FastAPI:
     app.include_router(codemap_router.router)
     app.include_router(changelog_router.router)
     app.include_router(ai_router.router)
+    app.include_router(imports_router.router)
 
     @app.get("/api/health")
     def health() -> dict:

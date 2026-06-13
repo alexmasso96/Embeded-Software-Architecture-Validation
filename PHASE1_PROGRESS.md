@@ -1,4 +1,4 @@
-# Phase 1 Progress — FastAPI Worker Process
+# Phase 1 Progress — FastAPI Worker Process — ✅ COMPLETE (2026-06-13)
 
 Tracking document for Phase 1 of [pywebview_react_migration_plan.md](pywebview_react_migration_plan.md) (§3).
 Phase 0 is complete (see [PHASE0_PROGRESS.md](PHASE0_PROGRESS.md)); the logic layer is Qt-free.
@@ -6,9 +6,14 @@ Phase 0 is complete (see [PHASE0_PROGRESS.md](PHASE0_PROGRESS.md)); the logic la
 **Goal:** expose the de-Qt'd logic as a local HTTP API with SSE progress, runnable standalone
 (`uvicorn backend.app:app`) and testable with httpx/TestClient. No Qt imports anywhere under `backend/`.
 
+> **Phase 1 is DONE.** 44 API routes across 9 routers; all plan-§3 exit criteria met (below).
+> Suite **579 passed**; `grep -rn "from PyQt6\|import PyQt6" backend/` → empty.
+> The only deferred items belong to **Phase 3** (parent-PID watch, freeze_probe harness) — see §Deferred.
+> **Phase 2 (React frontend) can begin.**
+
 **Test command:** `/Users/alex/Git_Projects/Embeded-Software-Architecture-Validation/.venv/bin/python -m pytest Tests/ -q`
 (uses the v1 venv — now with fastapi/uvicorn/httpx/sse-starlette installed; added to `requirements.txt`).
-**Suite:** 496 passed (479 Phase-0 + 17 new backend tests).
+**Suite:** 579 passed (479 Phase-0 + 100 backend tests).
 
 ## Architecture (built)
 
@@ -18,13 +23,23 @@ backend/
 ├── state.py          # AppState — headless project lifecycle (replaces the Qt main_window god-object)
 ├── jobs.py           # JobManager — ThreadPoolExecutor, Job registry, cancel events, SSE emit
 ├── events.py         # EventBus — thread-safe SSE fan-out (call_soon_threadsafe)
-├── handlers.py       # job handlers: _demo, release_diff, build_code_map
+├── handlers.py       # job handlers (+ _worker_db own-conn helper): _demo, release_diff, build_code_map,
+│                     #   fuzzy_rematch, build_mind_map, generate_tests, parse_elf
 ├── security.py       # per-session bearer token (Authorization: Bearer, or ?token= for EventSource)
 ├── deps.py           # FastAPI deps pulling singletons off app.state
 └── routers/
-    ├── project.py    # new / open / save / close / status
-    └── jobs.py       # POST /jobs/{kind}, GET /jobs/{id}, POST /jobs/{id}/cancel, GET /jobs, GET /events (SSE)
+    ├── project.py      # new / open / save / close / status
+    ├── jobs.py         # POST /jobs/{kind}, GET /jobs/{id}, POST /jobs/{id}/cancel, GET /jobs, GET /events (SSE)
+    ├── architecture.py # models, paged ports, single-cell PATCH, bulk append, columns, port-state propagation (#8.2)
+    ├── releases.py     # list / create / activate / rename / delete
+    ├── baselines.py    # create (headless snapshot) / list / read
+    ├── symbols.py      # fuzzy match-picker candidates
+    ├── codemap.py      # function list / graph / function details / source extraction
+    ├── changelog.py    # diff file list + aligned per-file diff
+    ├── ai.py           # providers GET/PUT/DELETE + POST /ai/chat (SSE tokens)
+    └── imports.py      # POST /import/analyze (Excel sheets / Rhapsody detection)
 ```
+AppState also runs a **lock-heartbeat thread** (refresh lock; on takeover → `lock_lost` + `lock` SSE event).
 
 **Key design decisions**
 - **AppState replaces `main_window`.** It owns the open `ProjectDatabase` + the Qt-free
@@ -57,16 +72,19 @@ backend/
 | `GET /api/ai/providers`, `PUT/DELETE /api/ai/providers/{id}`, `POST /api/ai/chat` (SSE tokens) | ✅ | creds machine-global (ARCHVALIDATOR_CONFIG_DIR); chat streams tokens via thread→loop bridge; mind-map grounding optional |
 | `GET/POST /api/baselines`, `GET /api/baselines/{id}` | ✅ | create = assemble layout+active-model snapshot → `create_baseline` (frozen writes); GET reads snapshot rows + layout ("load") |
 | Port-state propagation `POST /api/models/{id}/state/preview` + `POST /api/models/{id}/state` | ✅ | two-step #8.2: preview lists eligible In-Work ports; commit sets status + `propagate_status_to_ports` (all or `selected_ports`) |
+| `POST /api/models/{id}/ports/bulk` | ✅ | efficient bulk row append — the import primitive |
+| `POST /api/import/analyze` | ✅ | stateless file inspection (Excel sheets / Rhapsody detection + model preview); import wizard composes this + bulk + fuzzy_rematch |
 
 ## Job kinds — status
 
-Registered: `_demo` (test-only), `release_diff` (now persists diffs + model diff hash on its OWN
-connection — the crash-safe pattern), `build_code_map`.
-TODO (wire as routers land): `parse_elf`, `index_source`, `import_architecture`, `fuzzy_rematch`,
-`create_baseline`, `generate_tests`, `build_mind_map`.
-Note: `run_mindmap_job` takes a live `db` object (not a path) — needs an own-connection wrapper
-or careful main-thread handoff before wiring as a job (it currently writes via the shared connection).
-`generate_tests` (`run_generation_job`) is provider/network-bound and writes a file — wire with care.
+Registered (all ✅): `_demo` (test-only liveness), `release_diff` (persists diffs + model diff hash on its
+OWN connection), `build_code_map`, `fuzzy_rematch` (re-match rows vs active ELF — `rematch_rows` +
+`search_specs_from_layout` added to Logic_Symbol_Matcher), `build_mind_map` (own-connection wrapper around
+`run_mindmap_job` + headless port extraction), `generate_tests` (`run_generation_job`; provider call faked in
+tests), `parse_elf` (wraps `ElfImportTask`; keys the release to the new ELF hash, updates the in-memory
+release + clears the matcher cache).
+Shared `_worker_db(state)` context manager = the own-connection pattern, used by every job that writes.
+`import_architecture` is intentionally NOT one job — see §Import design.
 
 ## Tests
 
@@ -81,15 +99,37 @@ or careful main-thread handoff before wiring as a job (it currently writes via t
 - `Tests/test_backend_ai.py` (7) — provider list/set/clear (creds redirected to temp dir), chat guards (404/409), **real-server SSE chat token stream with a faked provider**.
 - `Tests/test_backend_baselines.py` (6) — create/list, snapshot read, **frozen-after-edit invariant**, duplicate-name 409, view-only guard.
 - `Tests/test_backend_propagation.py` (6) — preview lists In-Work ports, no-op when staying In Work, commit propagates all / only selected, view-only blocks commit (preview allowed).
+- `Tests/test_backend_locking.py` (4) — exclusive open holds + releases the lock, foreign-lock refusal, **heartbeat detects takeover → lock_lost + writes 409**, model-less view-only open no longer 500s.
+- `Tests/test_backend_jobs.py` (9) — fuzzy_rematch fills (Match) cells, build_mind_map over DB source, **parse_elf on the real `Tests/Resources/sample.elf`**, generate_tests (faked provider) writes output, failure/guard paths.
+- `Tests/test_backend_import.py` (6) — bulk row append (+ view-only guard), analyze Excel sheets / Rhapsody CSV (model preview) / plain CSV / missing-file 404.
 
-**Known minor robustness gap:** opening a *model-less* project in view-only mode 500s — `ArchitectureManager.load_registry()` tries to persist a default model against the read-only DB. Real projects always have ≥1 model (new_project creates the schema + default while writable), so this only bites hand-built fixtures. Fix later: skip the default-model write when the DB is read_only.
+## Import design (why there's no monolithic import job)
 
-## Exit criteria (plan §3.4) — progress
+The Qt Excel/Rhapsody import was one interactive method driving a sheet→model / column-mapping dialog
+state machine, and it branches on Qt column *classes* (`isinstance(col, PortStateColumn)`). Reproducing that
+as a single server-side job would either pull Qt into `backend/` or reimplement column semantics speculatively
+ahead of the UI. Instead the import is **composed from small Qt-free primitives** the Phase-2 wizard drives:
+`POST /api/import/analyze` (server-side file inspection) → map in the UI → `POST /api/models/{id}/ports/bulk`
+(insert rows) → `POST /api/jobs/fuzzy_rematch` (fill Match cells). `Logic_Rhapsody_Import` is already Qt-free,
+so `analyze` returns the Rhapsody model preview directly. No debt — the monolith is intentionally decomposed.
 
-- [ ] Every feature reachable through the API. **Foundation + project/jobs/events done; feature routers TODO.**
-- [x] No Qt imports under `backend/` (asserted by `test_backend_imports_without_pyqt6`).
-- [x] API tests cover the job manager + project open/save (httpx/TestClient). Port editing + locking tests TODO with those routers.
-- [x] Legacy PyQt app still works (untouched — it calls the logic layer directly; retires Phase 4).
+## Exit criteria (plan §3.4) — ✅ ALL MET
+
+- [x] **Every feature reachable through the API.** Workspace (models/ports/columns/bulk), releases, baselines,
+      symbols, codemap+source, changelog, AI (providers + chat SSE), port-state propagation, and the long-running
+      jobs (parse_elf, build_code_map, build_mind_map, generate_tests, fuzzy_rematch, release_diff). Import composes
+      from analyze + bulk + fuzzy_rematch.
+- [x] No Qt imports under `backend/` (asserted by `test_backend_imports_without_pyqt6`; `grep` confirms).
+- [x] API tests cover the job manager, project open/save, **port editing, and locking** (httpx/TestClient + real-server SSE).
+- [x] Legacy PyQt app still works (untouched; full suite incl. the Qt tests stays green at 579).
+
+## Deferred to Phase 3 (NOT Phase-1 debt — they need the desktop shell)
+
+- **Parent-PID watch** (plan §3.3): the worker should exit/release the lock when the parent UI process dies.
+  Belongs with `desktop/main.py`, which spawns the worker via `multiprocessing.Process` and reports the port
+  back over a Pipe — neither exists until Phase 3. The lock heartbeat (done) already handles takeover.
+- **`scripts/freeze_probe.py`** (plan §8): the < 50 ms UI-loop latency assertion under a worker job — a
+  pre-cutover validation that needs the two-process shell to mean anything.
 
 ## Next steps (suggested order)
 
@@ -126,5 +166,16 @@ outstanding job kinds can land in parallel as their views are built.
   preview/commit on the architecture router; finds Port-State / Port-Search columns by logic_key from the
   schema; reuses `propagate_status_to_ports`). 41 API routes total. 12 new tests (baselines 6, propagation 6),
   incl. the frozen-after-edit baseline invariant and selective propagation. Full suite **560 passed**.
-  **All §3.2 routers + baselines + #8.2 done — the day-to-day read/edit API is complete; Phase 2 (React) can
-  start.** Remaining: long-running job kinds (build_mind_map / generate_tests / import) + lock heartbeat.
+- **2026-06-13 (e) — PHASE 1 COMPLETE.** Closed out the backend with no debt:
+  (1) **lock heartbeat** (`AppState` thread refreshes the lock; on takeover sets `lock_lost` + emits a `lock`
+  SSE event; `require_edit` then 409s — never touches the DB connection cross-thread);
+  (2) **read-only robustness fix** in `Logic_Architecture_Models.load_registry` (model-less view-only open no
+  longer crashes — in-memory placeholder when `db.read_only`);
+  (3) **four job kinds** — `fuzzy_rematch` (+ pure `rematch_rows`/`search_specs_from_layout` in the matcher),
+  `build_mind_map` (own-conn wrapper), `generate_tests`, `parse_elf` (real-ELF tested); shared `_worker_db`
+  own-connection helper;
+  (4) **import primitives** — `POST /api/models/{id}/ports/bulk` + `POST /api/import/analyze` (the import is
+  decomposed, not monolithic — see §Import design); (5) added `db.get_row_count` (earlier).
+  44 API routes, 9 routers. 19 new tests (locking 4, jobs 9, import 6). Full suite **579 passed**, no PyQt6 in
+  backend. **All §3.4 exit criteria met.** Only Phase-3 items deferred (parent-PID watch, freeze_probe).
+  **→ Phase 2 (React frontend) is next** — develop in a browser with `uvicorn backend.app:app` + `vite dev`.

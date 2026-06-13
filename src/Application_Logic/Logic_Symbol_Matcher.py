@@ -101,3 +101,54 @@ class SymbolMatcher:
         for port in port_list:
             results[port] = self.find_best_match(port, threshold)
         return results
+
+
+# Column logic_key → matcher method. "Port Search" matches against both pools
+# (functions + variables); the typed search columns match their own pool.
+_SEARCH_KIND_BY_LOGIC = {
+    "Port Search": "any",
+    "Function Search": "function",
+    "Variable Search": "variable",
+}
+
+
+def search_specs_from_layout(layout) -> "List[Tuple[str, str, str]]":
+    """From a column layout ``[(name, logic_key, visible, width), …]`` derive the
+    ``(search_col, match_col, kind)`` specs: each search column's fuzzy result
+    lives in the immediately-following column. Mirrors the table's eager-match.
+    """
+    specs = []
+    for i, col in enumerate(layout):
+        logic_key = col[1]
+        kind = _SEARCH_KIND_BY_LOGIC.get(logic_key)
+        if kind and i + 1 < len(layout):
+            specs.append((col[0], layout[i + 1][0], kind))
+    return specs
+
+
+def rematch_rows(rows, specs, matcher, limit: int = 10) -> int:
+    """Re-run fuzzy matching for every search column in ``rows`` and write the
+    best ``"Name (NN%)"`` into the adjacent (Match) cell's ``widget_text``.
+    Pure (Qt-free); returns the number of cells updated. Mirrors the Qt
+    ``_match_model_data_inplace`` minus the widget styling.
+    """
+    changed = 0
+    for row in rows:
+        for search_col, match_col, kind in specs:
+            cell = row.get(search_col)
+            text = (cell.get("text", "") if isinstance(cell, dict) else "").strip()
+            if not text:
+                continue
+            if kind == "function":
+                matches = matcher.find_top_function_matches(text, limit=limit)
+            elif kind == "variable":
+                matches = matcher.find_top_variable_matches(text, limit=limit)
+            else:
+                matches = matcher.find_top_matches(text, limit=limit)
+            if not matches:
+                continue
+            best_name, best_score = matches[0]
+            target = row.setdefault(match_col, {"text": ""})
+            target["widget_text"] = f"{best_name} ({best_score}%)"
+            changed += 1
+    return changed
