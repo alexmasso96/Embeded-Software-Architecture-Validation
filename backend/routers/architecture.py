@@ -1,0 +1,257 @@
+"""
+Architecture / Workspace router (plan §3.2) — the must-have view's data backbone.
+
+Models (list / create / rename / status / soft-delete / restore / activate),
+the column schema, and paged port rows with single-cell edits.
+
+Data model (from Phase 0): a model's rows are ``list[dict]`` where each row is
+``{col_name: cell}`` and a cell is ``{"text": str, "widget_text"?: str,
+"widget_style"?: str, "user_changed"?: bool, "is_purple"?: bool,
+"last_func"?: str}``. The column schema is ``active_config`` =
+``[(name, logic_key, visible, width), …]``. None of the Qt column classes are
+needed here — ``logic_key`` strings carry column identity.
+"""
+from __future__ import annotations
+
+from typing import Any, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+
+from ..deps import get_bus, get_state
+from ..events import EventBus
+from ..security import require_token
+from ..state import AppState, ProjectError
+
+router = APIRouter(prefix="/api", tags=["architecture"],
+                   dependencies=[Depends(require_token)])
+
+
+def _guard(fn):
+    try:
+        return fn()
+    except ProjectError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
+class CreateModelBody(BaseModel):
+    name: str
+    status: str = "In Work"
+    copy_from_id: Optional[int] = None
+
+
+class PatchModelBody(BaseModel):
+    name: Optional[str] = None
+    status: Optional[str] = None
+    is_deleted: Optional[bool] = None
+
+
+@router.get("/models")
+def list_models(include_deleted: bool = False,
+                state: AppState = Depends(get_state)) -> dict:
+    def go():
+        mgr = state.require_arch()
+        db = state.require_open()
+        active = mgr.get_active_model()
+        active_id = active.id if active else None
+        out = []
+        for m in mgr.models:
+            if m.is_deleted and not include_deleted:
+                continue
+            out.append({
+                "id": m.id, "name": m.name, "status": m.status,
+                "is_deleted": m.is_deleted, "sort_order": m.sort_order,
+                "is_active": m.id == active_id,
+                "row_count": db.get_row_count(m.id) if m.id is not None else 0,
+            })
+        return {"models": out, "active_model_id": active_id}
+    return _guard(go)
+
+
+@router.post("/models")
+def create_model(body: CreateModelBody, state: AppState = Depends(get_state),
+                 bus: EventBus = Depends(get_bus)) -> dict:
+    def go():
+        state.require_edit()
+        mgr = state.require_arch()
+        copy_idx = state.model_index_by_id(body.copy_from_id) if body.copy_from_id is not None else None
+        m = mgr.create_model(body.name, body.status, copy_from_index=copy_idx)
+        bus.publish("db-changed", {"reason": "model-created", "model_id": m.id})
+        return {"id": m.id, "name": m.name, "status": m.status}
+    return _guard(go)
+
+
+@router.patch("/models/{model_id}")
+def patch_model(model_id: int, body: PatchModelBody,
+                state: AppState = Depends(get_state),
+                bus: EventBus = Depends(get_bus)) -> dict:
+    def go():
+        state.require_edit()
+        mgr = state.require_arch()
+        idx = state.model_index_by_id(model_id)
+        m = mgr.models[idx]
+        if body.name is not None:
+            m.name = body.name
+        if body.status is not None:
+            m.status = body.status
+        if body.is_deleted is True:
+            mgr.soft_delete_model(idx)
+        elif body.is_deleted is False:
+            mgr.restore_model(idx)
+        else:
+            mgr.save_registry()
+        bus.publish("db-changed", {"reason": "model-updated", "model_id": model_id})
+        return {"id": m.id, "name": m.name, "status": m.status, "is_deleted": m.is_deleted}
+    return _guard(go)
+
+
+@router.post("/models/{model_id}/activate")
+def activate_model(model_id: int, state: AppState = Depends(get_state),
+                   bus: EventBus = Depends(get_bus)) -> dict:
+    def go():
+        state.require_edit()
+        mgr = state.require_arch()
+        idx = state.model_index_by_id(model_id)
+        mgr.set_active_model(idx)
+        bus.publish("db-changed", {"reason": "model-activated", "model_id": model_id})
+        return state.status()
+    return _guard(go)
+
+
+# ---------------------------------------------------------------------------
+# Columns
+# ---------------------------------------------------------------------------
+class ColumnSpec(BaseModel):
+    name: str
+    type: str
+    visible: bool = True
+    width: int = 100
+
+
+class PutColumnsBody(BaseModel):
+    columns: list[ColumnSpec]
+
+
+def _columns_payload(db) -> dict:
+    return {"columns": [
+        {"name": n, "type": t, "visible": v, "width": w}
+        for (n, t, v, w) in db.load_column_layout()
+    ]}
+
+
+@router.get("/columns")
+def get_columns(state: AppState = Depends(get_state)) -> dict:
+    return _guard(lambda: _columns_payload(state.require_open()))
+
+
+@router.put("/columns")
+def put_columns(body: PutColumnsBody, state: AppState = Depends(get_state),
+                bus: EventBus = Depends(get_bus)) -> dict:
+    def go():
+        db = state.require_edit()
+        layout = [(c.name, c.type, c.visible, c.width) for c in body.columns]
+        db.save_column_layout(layout)
+        db.commit()
+        bus.publish("db-changed", {"reason": "columns-updated"})
+        return _columns_payload(db)
+    return _guard(go)
+
+
+# ---------------------------------------------------------------------------
+# Ports (rows)
+# ---------------------------------------------------------------------------
+class CellUpdate(BaseModel):
+    # Each value is either a scalar (sets/merges cell["text"]) or a full cell dict.
+    updates: dict[str, Any]
+
+
+@router.get("/models/{model_id}/ports")
+def get_ports(model_id: int,
+              offset: int = Query(0, ge=0),
+              limit: int = Query(200, ge=1, le=5000),
+              state: AppState = Depends(get_state)) -> dict:
+    def go():
+        db = state.require_open()
+        state.model_index_by_id(model_id)   # validates existence
+        rows = db.get_model_rows(model_id)
+        page = rows[offset:offset + limit]
+        return {
+            "model_id": model_id,
+            "total": len(rows),
+            "offset": offset,
+            "limit": limit,
+            "rows": [{"row_index": offset + i, "cells": r} for i, r in enumerate(page)],
+        }
+    return _guard(go)
+
+
+def _apply_updates(cell_row: dict, updates: dict) -> dict:
+    for col, val in updates.items():
+        if isinstance(val, dict):
+            cell_row[col] = val
+        else:
+            cell = cell_row.setdefault(col, {})
+            cell["text"] = val
+            # Mirror into widget_text for dropdown-style cells that use it, so
+            # the displayed value and the stored value stay in sync.
+            if "widget_text" in cell:
+                cell["widget_text"] = val
+    return cell_row
+
+
+@router.patch("/models/{model_id}/ports/{row_index}")
+def patch_port(model_id: int, row_index: int, body: CellUpdate,
+               state: AppState = Depends(get_state),
+               bus: EventBus = Depends(get_bus)) -> dict:
+    def go():
+        db = state.require_edit()
+        state.model_index_by_id(model_id)
+        rows = db.get_model_rows(model_id)
+        if not (0 <= row_index < len(rows)):
+            raise ProjectError(f"No such row: {row_index}")
+        updated = _apply_updates(dict(rows[row_index]), body.updates)
+        db.upsert_model_row(model_id, row_index, updated)
+        db.commit()
+        bus.publish("db-changed",
+                    {"reason": "port-edited", "model_id": model_id, "row_index": row_index})
+        return {"model_id": model_id, "row_index": row_index, "cells": updated}
+    return _guard(go)
+
+
+@router.post("/models/{model_id}/ports")
+def add_port(model_id: int, body: Optional[CellUpdate] = None,
+             state: AppState = Depends(get_state),
+             bus: EventBus = Depends(get_bus)) -> dict:
+    def go():
+        db = state.require_edit()
+        state.model_index_by_id(model_id)
+        rows = db.get_model_rows(model_id)
+        new_row = _apply_updates({}, body.updates) if body else {}
+        rows.append(new_row)
+        db.save_model_rows(model_id, rows)   # re-indexes contiguously
+        db.commit()
+        idx = len(rows) - 1
+        bus.publish("db-changed", {"reason": "port-added", "model_id": model_id, "row_index": idx})
+        return {"model_id": model_id, "row_index": idx, "cells": new_row, "total": len(rows)}
+    return _guard(go)
+
+
+@router.delete("/models/{model_id}/ports/{row_index}")
+def delete_port(model_id: int, row_index: int,
+                state: AppState = Depends(get_state),
+                bus: EventBus = Depends(get_bus)) -> dict:
+    def go():
+        db = state.require_edit()
+        state.model_index_by_id(model_id)
+        rows = db.get_model_rows(model_id)
+        if not (0 <= row_index < len(rows)):
+            raise ProjectError(f"No such row: {row_index}")
+        del rows[row_index]
+        db.save_model_rows(model_id, rows)   # re-indexes contiguously
+        db.commit()
+        bus.publish("db-changed", {"reason": "port-deleted", "model_id": model_id})
+        return {"model_id": model_id, "total": len(rows)}
+    return _guard(go)

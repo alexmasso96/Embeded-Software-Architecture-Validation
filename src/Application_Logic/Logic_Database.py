@@ -1026,6 +1026,13 @@ class ProjectDatabase:
             )
             return [json.loads(r[0]) for r in cur.fetchall()]
 
+    def get_row_count(self, model_id: int) -> int:
+        """Row count for a model without deserialising any row payloads."""
+        cur = self._conn.execute(
+            "SELECT COUNT(*) FROM architecture_rows WHERE model_id=?", (model_id,)
+        )
+        return int(cur.fetchone()[0])
+
     def get_model_row(self, model_id: int, row_index: int) -> dict:
         cur = self._conn.execute(
             "SELECT row_data FROM architecture_rows"

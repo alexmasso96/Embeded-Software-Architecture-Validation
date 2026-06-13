@@ -23,8 +23,11 @@ from .handlers import register_handlers
 from .jobs import JobManager
 from .security import generate_token
 from .state import AppState
+from .routers import architecture as architecture_router
 from .routers import jobs as jobs_router
 from .routers import project as project_router
+from .routers import releases as releases_router
+from .routers import symbols as symbols_router
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +56,9 @@ def create_app(token: str | None = None) -> FastAPI:
 
     app.include_router(project_router.router)
     app.include_router(jobs_router.router)
+    app.include_router(architecture_router.router)
+    app.include_router(releases_router.router)
+    app.include_router(symbols_router.router)
 
     @app.get("/api/health")
     def health() -> dict:

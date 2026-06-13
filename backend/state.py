@@ -49,6 +49,7 @@ class AppState:
         self.master_password_hash: Optional[str] = None
         self.integrity_mismatch: bool = False
         self.lock_info: dict = {}
+        self._matchers: dict = {}   # elf_hash -> SymbolMatcher (name-list cache)
 
     # ------------------------------------------------------------------
     @property
@@ -69,6 +70,55 @@ class AppState:
         if not self.can_edit:
             raise ProjectError("Project is open in view-only mode.")
         return db
+
+    def require_arch(self) -> ArchitectureManager:
+        self.require_open()
+        if self.arch_manager is None:
+            raise ProjectError("No architecture manager.")
+        return self.arch_manager
+
+    def model_index_by_id(self, model_id: int) -> int:
+        """Index of a model in the manager's list, or raise ProjectError."""
+        mgr = self.require_arch()
+        for i, m in enumerate(mgr.models):
+            if m.id == model_id:
+                return i
+        raise ProjectError(f"No such model: {model_id}")
+
+    def require_releases(self) -> ReleaseManager:
+        self.require_open()
+        if self.release_manager is None:
+            raise ProjectError("No release manager.")
+        return self.release_manager
+
+    def release_index_by_id(self, release_id: int) -> int:
+        rm = self.require_releases()
+        for i, r in enumerate(rm.releases):
+            if r.id == release_id:
+                return i
+        raise ProjectError(f"No such release: {release_id}")
+
+    def active_elf_hash(self) -> Optional[str]:
+        """ELF hash of the active release, or None when no ELF is imported."""
+        rm = self.release_manager
+        if rm is None:
+            return None
+        active = rm.get_active_release()
+        return active.elf_hash if active else None
+
+    def get_symbol_matcher(self, elf_hash: str):
+        """A name-list-only SymbolMatcher for ``elf_hash``, cached per session.
+
+        The DB-backed matcher loads only symbol *name* strings (not full objects)
+        and never touches the parser, so we build it with ``parser=None``.
+        """
+        from Application_Logic.Logic_Symbol_Matcher import SymbolMatcher
+        db = self.require_open()
+        if not db.has_elf(elf_hash):
+            raise ProjectError(f"No ELF in project for hash {elf_hash}.")
+        if elf_hash not in self._matchers:
+            self._matchers[elf_hash] = SymbolMatcher(None, db=db, elf_hash=elf_hash)
+        return self._matchers[elf_hash]
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -224,3 +274,4 @@ class AppState:
         self.master_password_hash = None
         self.integrity_mismatch = False
         self.lock_info = {}
+        self._matchers = {}

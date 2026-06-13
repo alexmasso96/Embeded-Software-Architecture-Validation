@@ -47,11 +47,13 @@ backend/
 | `POST /api/project/new\|open\|save\|close`, `GET /api/project/status` | ✅ | lock + view-only + integrity in `status` |
 | `POST /api/jobs/{kind}`, `GET /api/jobs/{id}`, `POST /api/jobs/{id}/cancel`, `GET /api/jobs` | ✅ | |
 | `GET /api/events` (SSE) | ✅ | job + db-changed + lock events; `?token=` auth for EventSource |
-| `GET/PUT /api/models`, `/api/models/{id}/ports` (paged), `PATCH /api/ports/{id}` | ❌ TODO | architecture router |
-| `GET/PUT /api/columns` | ❌ TODO | |
-| `GET /api/symbols?kind=&q=` (fuzzy candidates) | ❌ TODO | feeds the match-picker |
-| `GET /api/releases`, `POST /api/releases`, `POST /api/baselines` | ❌ TODO | releases router |
-| `GET /api/codemap/graph`, `GET /api/source/function/{name}` | ❌ TODO | codemap router |
+| `GET /api/models`, `POST /api/models`, `PATCH /api/models/{id}`, `POST /api/models/{id}/activate` | ✅ | architecture router; list has row_count (via new `db.get_row_count`) + is_active |
+| `GET /api/models/{id}/ports` (paged), `PATCH .../ports/{row}`, `POST .../ports`, `DELETE .../ports/{row}` | ✅ | single-cell edit returns updated row; widget_text mirrored for dropdown cells |
+| `GET/PUT /api/columns` | ✅ | `active_config` (name, type, visible, width) round-trip |
+| `GET /api/symbols?q=&kind=function\|variable\|any` | ✅ | fuzzy candidates from active release's ELF (cached `SymbolMatcher` per elf_hash); empty (not error) when no ELF |
+| `GET /api/releases`, `POST /api/releases`, `POST .../{id}/activate`, `PATCH/DELETE /api/releases/{id}` | ✅ | list marks `selectable` (real release) vs `is_baseline`; `baseline_previous` freeze on create |
+| `POST /api/baselines` (create_baseline) | ❌ TODO | needs layout + active-model snapshot assembly (mirror `handle_create_baseline` headlessly) |
+| `GET /api/codemap/graph`, `GET /api/source/function/{name}` | ❌ TODO | codemap router (build is wired as a job; graph/source endpoints pending) |
 | `POST /api/ai/chat` (SSE tokens), `GET/PUT /api/ai/providers` | ❌ TODO | ai router |
 | Port-state propagation (`POST /api/ports/{id}/state?dry_run=`) | ❌ TODO | two-step #8.2 flow |
 
@@ -68,6 +70,11 @@ or careful main-thread handoff before wiring as a job (it currently writes via t
 - `Tests/test_backend_api.py` (15) — auth, project lifecycle, job start/poll/cancel, no-PyQt6 import guard.
 - `Tests/test_backend_sse.py` (2) — real uvicorn server + async httpx: SSE delivers job events, bad-token 401.
   (The sync TestClient can't drive streaming SSE, hence the real-server test.)
+- `Tests/test_backend_architecture.py` (15) — models CRUD/activate, columns get/put, paged ports, single-cell + full-cell PATCH, add/delete row re-indexing, view-only write guard.
+- `Tests/test_backend_releases.py` (9) — list (selectable vs baseline), create, baseline_previous freeze, activate, rename, delete, view-only guard.
+- `Tests/test_backend_symbols.py` (7) — function/variable/any fuzzy candidates, explicit elf_hash, empty-when-no-ELF, works in view-only.
+
+**Known minor robustness gap:** opening a *model-less* project in view-only mode 500s — `ArchitectureManager.load_registry()` tries to persist a default model against the read-only DB. Real projects always have ≥1 model (new_project creates the schema + default while writable), so this only bites hand-built fixtures. Fix later: skip the default-model write when the DB is read_only.
 
 ## Exit criteria (plan §3.4) — progress
 
@@ -78,16 +85,29 @@ or careful main-thread handoff before wiring as a job (it currently writes via t
 
 ## Next steps (suggested order)
 
-1. **architecture router** — models list/CRUD, paged ports (`get_model_rows` + `active_config`),
-   single-cell `PATCH /api/ports/{id}` returning affected cells, columns. This is the Workspace backbone.
-2. **releases router** — list/create, `create_baseline` job, active-release switch.
-3. **symbols** — fuzzy candidates from `SymbolMatcher` (feeds the match picker).
-4. **codemap + source** router; **changelog** (diff already wired as a job); **ai** (chat SSE, providers).
-5. Lock heartbeat timer inside the worker (plan §3.3) + parent-PID watch (belongs with Phase 3 desktop shell).
+1. ~~architecture router~~ ✅ · ~~releases router~~ ✅ · ~~symbols~~ ✅
+2. **codemap + source router** — `GET /api/codemap/graph?model_id=&release_id=` (reads `db.get_model_code_map`,
+   reuses `compute_graph_levels` for depth-limited subgraphs), `GET /api/source/function/{name}`
+   (reuses `extract_function_block_by_line` + `db.read_release_source_file`). Build is already the
+   `build_code_map` job.
+3. **changelog router** — diffs already compute via the `release_diff` job + `db.get_code_diffs`;
+   add `GET /api/changelog/files` + `GET /api/changelog/diff/{file}` reading stored diffs (reuse
+   `parse_and_align_diff`).
+4. **ai router** — `GET/PUT /api/ai/providers` (Logic_AI_Providers + encrypted creds),
+   `POST /api/ai/chat` SSE-streamed tokens (wrap `run_chat_job`; stream via the real-server SSE pattern),
+   `build_mind_map`/`generate_tests` as job kinds (mind_map needs an own-connection wrapper first).
+5. **baselines** — `POST /api/baselines` assembling layout (`load_column_layout` + meta +
+   `get_test_case_design`) + active-model snapshot, mirroring `handle_create_baseline` headlessly.
+6. **port-state propagation** (#8.2) two-step: `POST /api/ports/{id}/state?dry_run=1` → affected list, then commit.
+7. Lock heartbeat timer inside the worker (plan §3.3) + parent-PID watch (with Phase 3 desktop shell).
+8. Minor: skip default-model write on read-only open (see robustness gap above).
 
 ## Session log
 
-- **2026-06-13** — Phase 1 started. Installed fastapi/uvicorn[standard]/httpx/sse-starlette into the v1 venv
+- **2026-06-13 (a)** — Phase 1 started. Installed fastapi/uvicorn[standard]/httpx/sse-starlette into the v1 venv
   (added to requirements.txt). Built the foundation: EventBus, JobManager, AppState, security, app factory,
   project + jobs/events routers, three job handlers. 17 backend tests (incl. real-server SSE). Full suite 496 passed.
-  Next: the architecture (Workspace) router.
+- **2026-06-13 (b)** — Added the **architecture**, **releases**, and **symbols** routers (+ `db.get_row_count`,
+  AppState matcher cache + release/model index helpers). 27 API routes total. 31 new backend tests
+  (architecture 15, releases 9, symbols 7). Full suite **527 passed**. All write endpoints honour the
+  view-only guard (409) and publish `db-changed` SSE events. Next: **codemap + source router**, then changelog, then ai.
