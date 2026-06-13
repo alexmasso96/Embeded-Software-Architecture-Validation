@@ -54,9 +54,30 @@ def _make_release_diff(state: AppState):
         prev = params.get("previous_release_id")
         if cur is None or prev is None:
             raise ProjectError("current_release_id and previous_release_id are required.")
+        model_id = params.get("model_id")
+        if model_id is None:
+            model_id = state.require_arch().active_model_id
+        if model_id is None:
+            raise ProjectError("model_id is required (no active model).")
+
         progress("Computing release diff…")
         diff_hash, diffs = run_release_diff(db.db_path, cur, prev)
-        return {"diff_hash": diff_hash, "file_count": len(diffs)}
+
+        # Persist on the worker's OWN connection (the crash-safe pattern: the
+        # main connection stays untouched from this thread). The Change Log then
+        # reads the rows back through the main connection.
+        progress("Saving diffs…")
+        from Application_Logic.Logic_Database import ProjectDatabase
+        wdb = ProjectDatabase()
+        try:
+            wdb.open(db.db_path, create_schema=False, apply_journal=False)
+            wdb.save_code_diffs(model_id, diff_hash, diffs)
+            wdb.set_model_diff_hash(model_id, diff_hash, release_id=cur)
+            wdb.set_meta("ai_last_diff_hash", diff_hash)
+            wdb.commit()
+        finally:
+            wdb.close()
+        return {"diff_hash": diff_hash, "file_count": len(diffs), "model_id": model_id}
     return handler
 
 

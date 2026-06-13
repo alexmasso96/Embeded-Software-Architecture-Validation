@@ -23,7 +23,10 @@ from .handlers import register_handlers
 from .jobs import JobManager
 from .security import generate_token
 from .state import AppState
+from .routers import ai as ai_router
 from .routers import architecture as architecture_router
+from .routers import changelog as changelog_router
+from .routers import codemap as codemap_router
 from .routers import jobs as jobs_router
 from .routers import project as project_router
 from .routers import releases as releases_router
@@ -59,6 +62,9 @@ def create_app(token: str | None = None) -> FastAPI:
     app.include_router(architecture_router.router)
     app.include_router(releases_router.router)
     app.include_router(symbols_router.router)
+    app.include_router(codemap_router.router)
+    app.include_router(changelog_router.router)
+    app.include_router(ai_router.router)
 
     @app.get("/api/health")
     def health() -> dict:

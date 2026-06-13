@@ -52,18 +52,21 @@ backend/
 | `GET/PUT /api/columns` | ✅ | `active_config` (name, type, visible, width) round-trip |
 | `GET /api/symbols?q=&kind=function\|variable\|any` | ✅ | fuzzy candidates from active release's ELF (cached `SymbolMatcher` per elf_hash); empty (not error) when no ELF |
 | `GET /api/releases`, `POST /api/releases`, `POST .../{id}/activate`, `PATCH/DELETE /api/releases/{id}` | ✅ | list marks `selectable` (real release) vs `is_baseline`; `baseline_previous` freeze on create |
+| `GET /api/codemap`, `/codemap/graph`, `/codemap/function/{name}`, `GET /api/source/function/{name}` | ✅ | reuses `compute_graph_levels`/`describe_symbol`/`extract_function_block_by_line`; build is the `build_code_map` job |
+| `GET /api/changelog`, `GET /api/changelog/diff?file=` | ✅ | reads diffs persisted by the `release_diff` job (now saves on its own connection + sets model diff hash); aligns via `parse_and_align_diff` |
+| `GET /api/ai/providers`, `PUT/DELETE /api/ai/providers/{id}`, `POST /api/ai/chat` (SSE tokens) | ✅ | creds machine-global (ARCHVALIDATOR_CONFIG_DIR); chat streams tokens via thread→loop bridge; mind-map grounding optional |
 | `POST /api/baselines` (create_baseline) | ❌ TODO | needs layout + active-model snapshot assembly (mirror `handle_create_baseline` headlessly) |
-| `GET /api/codemap/graph`, `GET /api/source/function/{name}` | ❌ TODO | codemap router (build is wired as a job; graph/source endpoints pending) |
-| `POST /api/ai/chat` (SSE tokens), `GET/PUT /api/ai/providers` | ❌ TODO | ai router |
-| Port-state propagation (`POST /api/ports/{id}/state?dry_run=`) | ❌ TODO | two-step #8.2 flow |
+| Port-state propagation (`POST /api/ports/{id}/state?dry_run=`) | ❌ TODO | two-step #8.2 flow (logic exists: `ArchitectureManager.propagate_status_to_ports`) |
 
 ## Job kinds — status
 
-Registered: `_demo` (test-only), `release_diff`, `build_code_map`.
+Registered: `_demo` (test-only), `release_diff` (now persists diffs + model diff hash on its OWN
+connection — the crash-safe pattern), `build_code_map`.
 TODO (wire as routers land): `parse_elf`, `index_source`, `import_architecture`, `fuzzy_rematch`,
-`create_baseline`, `generate_tests`, `build_mind_map`, `save_project`.
+`create_baseline`, `generate_tests`, `build_mind_map`.
 Note: `run_mindmap_job` takes a live `db` object (not a path) — needs an own-connection wrapper
 or careful main-thread handoff before wiring as a job (it currently writes via the shared connection).
+`generate_tests` (`run_generation_job`) is provider/network-bound and writes a file — wire with care.
 
 ## Tests
 
@@ -73,6 +76,9 @@ or careful main-thread handoff before wiring as a job (it currently writes via t
 - `Tests/test_backend_architecture.py` (15) — models CRUD/activate, columns get/put, paged ports, single-cell + full-cell PATCH, add/delete row re-indexing, view-only write guard.
 - `Tests/test_backend_releases.py` (9) — list (selectable vs baseline), create, baseline_previous freeze, activate, rename, delete, view-only guard.
 - `Tests/test_backend_symbols.py` (7) — function/variable/any fuzzy candidates, explicit elf_hash, empty-when-no-ELF, works in view-only.
+- `Tests/test_backend_codemap.py` (9) — function list, depth-limited graph (fwd/back), function details, source extraction (brace-matched), no-source / no-map paths.
+- `Tests/test_backend_changelog.py` (5) — seeded-diff read endpoints + aligned per-file diff, AI summary, **end-to-end release_diff job → changelog**.
+- `Tests/test_backend_ai.py` (7) — provider list/set/clear (creds redirected to temp dir), chat guards (404/409), **real-server SSE chat token stream with a faked provider**.
 
 **Known minor robustness gap:** opening a *model-less* project in view-only mode 500s — `ArchitectureManager.load_registry()` tries to persist a default model against the read-only DB. Real projects always have ≥1 model (new_project creates the schema + default while writable), so this only bites hand-built fixtures. Fix later: skip the default-model write when the DB is read_only.
 
@@ -85,22 +91,19 @@ or careful main-thread handoff before wiring as a job (it currently writes via t
 
 ## Next steps (suggested order)
 
-1. ~~architecture router~~ ✅ · ~~releases router~~ ✅ · ~~symbols~~ ✅
-2. **codemap + source router** — `GET /api/codemap/graph?model_id=&release_id=` (reads `db.get_model_code_map`,
-   reuses `compute_graph_levels` for depth-limited subgraphs), `GET /api/source/function/{name}`
-   (reuses `extract_function_block_by_line` + `db.read_release_source_file`). Build is already the
-   `build_code_map` job.
-3. **changelog router** — diffs already compute via the `release_diff` job + `db.get_code_diffs`;
-   add `GET /api/changelog/files` + `GET /api/changelog/diff/{file}` reading stored diffs (reuse
-   `parse_and_align_diff`).
-4. **ai router** — `GET/PUT /api/ai/providers` (Logic_AI_Providers + encrypted creds),
-   `POST /api/ai/chat` SSE-streamed tokens (wrap `run_chat_job`; stream via the real-server SSE pattern),
-   `build_mind_map`/`generate_tests` as job kinds (mind_map needs an own-connection wrapper first).
-5. **baselines** — `POST /api/baselines` assembling layout (`load_column_layout` + meta +
-   `get_test_case_design`) + active-model snapshot, mirroring `handle_create_baseline` headlessly.
-6. **port-state propagation** (#8.2) two-step: `POST /api/ports/{id}/state?dry_run=1` → affected list, then commit.
-7. Lock heartbeat timer inside the worker (plan §3.3) + parent-PID watch (with Phase 3 desktop shell).
-8. Minor: skip default-model write on read-only open (see robustness gap above).
+1. ~~architecture router~~ ✅ · ~~releases router~~ ✅ · ~~symbols~~ ✅ · ~~codemap+source~~ ✅ · ~~changelog~~ ✅ · ~~ai (providers+chat SSE)~~ ✅
+2. **baselines** — `POST /api/baselines` assembling layout (`load_column_layout` + meta +
+   `get_test_case_design`) + active-model snapshot, mirroring `handle_create_baseline` headlessly; load/exit too.
+3. **port-state propagation** (#8.2) two-step: `POST /api/ports/{id}/state?dry_run=1` → affected list, then commit.
+   Logic already in `ArchitectureManager.propagate_status_to_ports`.
+4. **More job kinds** — `build_mind_map` (needs own-connection wrapper for `run_mindmap_job`),
+   `generate_tests` (`run_generation_job`; network + writes a file), `import_architecture`, `fuzzy_rematch`, `parse_elf`/`index_source`.
+   These complete the "every feature reachable through the API" exit criterion.
+5. Lock heartbeat timer inside the worker (plan §3.3) + parent-PID watch (with Phase 3 desktop shell).
+6. Minor: skip default-model write on read-only open (see robustness gap above).
+
+Once §2–4 land, Phase 1's exit criterion #1 ("every feature reachable through the API") is met and
+**Phase 2 (React frontend)** can start against this API — develop in a plain browser with `uvicorn` + `vite dev`.
 
 ## Session log
 
@@ -110,4 +113,10 @@ or careful main-thread handoff before wiring as a job (it currently writes via t
 - **2026-06-13 (b)** — Added the **architecture**, **releases**, and **symbols** routers (+ `db.get_row_count`,
   AppState matcher cache + release/model index helpers). 27 API routes total. 31 new backend tests
   (architecture 15, releases 9, symbols 7). Full suite **527 passed**. All write endpoints honour the
-  view-only guard (409) and publish `db-changed` SSE events. Next: **codemap + source router**, then changelog, then ai.
+  view-only guard (409) and publish `db-changed` SSE events.
+- **2026-06-13 (c)** — Added the **codemap+source**, **changelog**, and **ai** routers. Made the
+  `release_diff` job persist diffs + model diff hash on its own connection (so the changelog reads them).
+  37 API routes total. 21 new tests (codemap 9, changelog 5, ai 7), incl. end-to-end release_diff→changelog
+  and a real-server SSE chat token stream (faked provider). Full suite **548 passed**. All seven feature
+  routers from plan §3.2 are now in. **Next: baselines, port-state propagation (#8.2), and more job kinds**
+  (build_mind_map / generate_tests) to finish the "every feature reachable" exit criterion — then Phase 2 (React).
