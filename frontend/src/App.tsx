@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api/client";
 import type { ProjectStatus } from "./api/types";
 import { useSSE } from "./api/useSSE";
+import { Preferences } from "./components/Preferences";
 import { StartScreen } from "./components/StartScreen";
 import { Titlebar, type Tab } from "./components/Titlebar";
 import { Workspace } from "./views/Workspace";
@@ -16,6 +17,7 @@ export default function App() {
   const [status, setStatus] = useState<ProjectStatus | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("Workspace");
   const [saving, setSaving] = useState(false);
+  const [prefsOpen, setPrefsOpen] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
 
@@ -67,10 +69,22 @@ export default function App() {
     }
   }
 
+  async function closeProject() {
+    try {
+      await api.post("/project/close");
+      setPrefsOpen(false);
+      reloadStatus();
+      toast("Project closed");
+    } catch (e) {
+      toast(`Close failed: ${(e as Error).message}`);
+    }
+  }
+
   if (!status || !status.open) {
     return (
       <div className="app">
-        <StartScreen onOpened={setStatus} />
+        <StartScreen onOpened={setStatus} onOpenPrefs={() => setPrefsOpen(true)} />
+        {prefsOpen && <Preferences onClose={() => setPrefsOpen(false)} />}
       </div>
     );
   }
@@ -89,6 +103,7 @@ export default function App() {
         saving={saving}
         onImport={() => toast("Import wizard: later slice")}
         onColumns={() => toast("Column customizer: later slice")}
+        onPrefs={() => setPrefsOpen(true)}
       />
 
       {status.lock_lost && (
@@ -114,6 +129,12 @@ export default function App() {
       )}
 
       {toastMsg && <div className="v-toast">{toastMsg}</div>}
+      {prefsOpen && (
+        <Preferences
+          onClose={() => setPrefsOpen(false)}
+          onCloseProject={closeProject}
+        />
+      )}
     </div>
   );
 }

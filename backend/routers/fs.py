@@ -44,8 +44,15 @@ def home() -> dict:
 
 
 @router.get("/list")
-def list_dir(path: str | None = Query(None)) -> dict:
-    """List the directories and ``.arch`` files under ``path`` (default: home)."""
+def list_dir(path: str | None = Query(None),
+             exts: str = Query(".arch")) -> dict:
+    """List the directories and selectable files under ``path`` (default: home).
+
+    ``exts`` is a comma-separated allow-list of file extensions to surface
+    (default ``.arch``; the Import picker passes ``.elf,.json``). Directories are
+    always listed; dotfiles are hidden.
+    """
+    allowed = {e.strip().lower() for e in exts.split(",") if e.strip()}
     base = Path(path).expanduser() if path else Path.home()
     try:
         base = base.resolve()
@@ -69,7 +76,7 @@ def list_dir(path: str | None = Query(None)) -> dict:
         if child.name.startswith("."):
             continue
         e = _entry(child)
-        if e["is_dir"] or e["is_arch"]:
+        if e["is_dir"] or child.suffix.lower() in allowed:
             entries.append(e)
 
     parent = str(base.parent)

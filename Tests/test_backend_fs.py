@@ -91,3 +91,14 @@ def test_mkdir_rejects_existing(client, tree):
 def test_mkdir_rejects_separators(client, tree):
     r = client.post("/api/fs/mkdir", json={"parent": tree, "name": "a/b"}, headers=AUTH)
     assert r.status_code == 400
+
+
+def test_list_exts_filter_surfaces_elf_and_json(client):
+    with tempfile.TemporaryDirectory() as d:
+        open(os.path.join(d, "fw.elf"), "w").close()
+        open(os.path.join(d, "cache.json"), "w").close()
+        open(os.path.join(d, "Project.arch"), "w").close()
+        r = client.get("/api/fs/list", params={"path": d, "exts": ".elf,.json"}, headers=AUTH)
+        names = {e["name"] for e in r.json()["entries"]}
+        assert "fw.elf" in names and "cache.json" in names
+        assert "Project.arch" not in names   # not in the allow-list

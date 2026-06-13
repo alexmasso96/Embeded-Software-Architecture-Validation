@@ -147,3 +147,85 @@ SSE streaming, mind-map status, requirements import). Then Phase 3 (pywebview sh
   opens view-only with a ✏️ secondary action for exclusive. All verified in-browser (drill 5 cols
   deep → open view-only; New Folder → create project inside → exclusive). Full suite **588 passed**
   (+3 mkdir); `npm run build` clean; no console errors.
+- **2026-06-13 (e)** — Miller-columns polish per Alex: **thicker draggable dividers** between
+  columns (`.picker-coldiv`, 7px with a center grip line, accent on hover), per-column **resize**
+  (drag), and **double-click-to-fit** (sizes a column to its widest row via `.picker-name`
+  scrollWidth). Verified in-browser (drag col0 +90px → 326; dbl-click col1 fit → 246).
+  `npm run build` clean; no console errors.
+- **2026-06-13 (f)** — **At-rest project encryption + master-password UX** (Alex upgraded the
+  "password request" to full DB encryption). Approach (Alex-approved): **session temp file**
+  (decrypt the .arch into a private 0700 temp dir, run the existing file-backed SQLite/WAL/jobs
+  architecture unchanged, re-encrypt on save) — chosen over pure in-memory because the Phase-1
+  job system relies on a *second connection to the same path*, which `:memory:` can't provide.
+  Crypto = `cryptography` Fernet + PBKDF2-HMAC-SHA256 (no SQLCipher → EDR-safe). New module
+  `src/Application_Logic/Logic_Crypto.py` (magic `ARCHENC1` | salt | token; `encrypt/decrypt_file`,
+  format detection, `PasswordRequired`/`PasswordInvalid`). **Dual-mode** open: plaintext SQLite
+  (magic `SQLite format 3\0`) opens directly (legacy/dev); encrypted needs the password.
+  **Test bypass:** no password OR `master123` → saved plaintext (keeps the 588 fixtures working);
+  `master123` blacklisted in the frontend setup form. `backend/state.py` rewired
+  (new/open/save/close: provision temp db-file, encrypt-to-disk, purge+shred temp on close/atexit;
+  `_check_integrity` skips for encrypted since Fernet authenticates; `status.encrypted` added).
+  `project` router: `password` on new/open; `PasswordRequired→401`, `PasswordInvalid→403`.
+  Frontend: `PasswordDialog` (setup: confirm+blacklist+min-len; unlock: retry on 403); `StartScreen`
+  New → folder-pick → **mandatory** master-pw setup → encrypted create; Open (picker/recents) →
+  401 prompts, 403 retries. Verified in-browser: encrypted create (on-disk magic = `ARCHENC1`),
+  blacklist/mismatch guards, close→reopen (wrong pw error → correct pw opens), temp dirs purged.
+  Backend tests `Tests/test_backend_crypto.py` (7). Full suite **595 passed**; `npm run build` clean;
+  no console errors.
+- **2026-06-13 (g)** — **Onboarding completed to the main table + Finder polish** (Alex).
+  Backend: `import_symbols` job (auto-detects ELF vs JSON by magic/extension → dispatches the right
+  ElfImportTask path → keys the release to the ELF hash; mirrors parse_elf but type-agnostic);
+  `/api/fs/list` gained an `exts` allow-list param (Import picker passes `.elf,.json`). +3 backend
+  tests (jobs 2, fs 1). Frontend: **2-option New flow** — after the encrypted .arch is created, a
+  choice dialog (Empty Project / Import); Import → Miller picker (.elf/.json) → release-name → create
+  release + activate + `import_symbols` job (polled) → lands in the Workspace. **Finder polish on the
+  Miller picker:** blue macOS folder + file SVG icons (`Icons.tsx`; also the Open Project card),
+  **grip dots** on each column divider (drag/dbl-click affordance), and a clickable **breadcrumb
+  path** (Macintosh HD › Users › … with folder icons + chevrons) replacing the plain text.
+  Verified in-browser end-to-end: New → New Folder → name → master-pw → Import → pick sample.elf →
+  R1.0 → import job → **main table** (model Architecture_1, release R1.0 active, symbols queryable,
+  encrypted, exclusive). Full suite **598 passed**; `npm run build` clean; no console errors.
+  **NEXT: Workspace parity** — column customizer, fuzzy match-candidate picker (+purple override),
+  model-management dialog, port-state propagation #8.2 UI, Excel/Rhapsody import wizard, useJob(kind)
+  progress hook (import currently polls inline).
+- **2026-06-13 (h)** — **Preferences panel + light/dark theming + accent switcher** (Alex).
+  `src/theme.ts`: theme mode (light/dark/**auto**=prefers-color-scheme, default auto) + accent,
+  persisted in localStorage, applied to `<html>` (`data-theme`) and `--accent`/`--v-accent`;
+  `initTheme()` runs in `main.tsx` before paint. **Full dark theme** via a token refactor of
+  `theme/macos.css`: added semantic surface tokens (`--surface/--bar/--titlebar-bg/--row-alt/--hover/
+  --statusbar-bg/--overlay/--v-warn-bg`), swept the hardcoded light literals onto them (white-on-accent
+  `color:#fff` and box-shadows left intact), and a `:root[data-theme="dark"]` override block.
+  `Preferences.tsx`: split-column modal (categories: Appearance active / AI Settings / Paths;
+  AI+Paths are placeholders) — Theme segmented control + accent pills with the Linux-distro joke
+  tooltips (Perfect Fedora / Bloated Ubuntu / Fresh Mint / Corporate Red Hat / Gamer Mode Bazzite /
+  Elitist Arch) + a rainbow **Distro Hop (Custom)** pill → hidden `<input type=color>` → live
+  `--v-accent`. Gear ⚙ entry points in the Titlebar and the StartScreen header (modal lives in App,
+  available with or without a project open). Verified in-browser: split layout, Light/Dark/Auto flip
+  (whole UI re-themes), accent click + custom hex both update `--accent`/`--v-accent` live and persist,
+  tooltips correct, no console errors. `npm run build` clean. Backend untouched (suite stays **598**).
+- **2026-06-13 (i)** — Preferences refinements per Alex: (1) **dark-mode readability fix** — global
+  `button { color: inherit }` + `input/select/textarea { color: var(--text) }` (native controls don't
+  inherit colour, so sidebar/inspector buttons rendered black-on-dark); (2) **theme-mode icons**
+  (Sun/Moon/Auto SVGs in `Icons.tsx`); (3) accent pills **smaller (20px) + right-aligned**, rows are
+  label-left/control-right (`.prefs-row`); (4) **removed redundant tooltips/hints** (kept aria-labels);
+  (5) **custom in-app `ColorPicker.tsx`** (HSV square + hue slider + hex, app-styled) replacing the
+  native OS colour dialog — drives `--accent`/`--v-accent` live. Fixed a bug where the picker was a
+  child of the overlay (its clicks closed the whole dialog) by rendering it inside `.prefs`. Verified
+  in-browser: icons show, pills compact/right-aligned, custom picker live-updates the accent
+  (#da2121) across the UI and persists, no console errors. `npm run build` clean.
+- **2026-06-13 (j)** — Appearance polish to macOS System-Settings style (Alex refs): (1) **theme
+  preview cards** replace the segmented control — Light / Dark / **System** each show a mini
+  app-window thumbnail (titlebar dots + accent/green/red/neutral lines; System = diagonal
+  light/dark clip) with a radio + label; active card gets the accent ring; the accent line in the
+  thumb reflects the chosen accent. (2) **multicolor pill polished** (clean `conic-gradient` at 22px,
+  no solid-colour override). (3) **selected accent name shown** under the pills (the distro names —
+  Perfect Fedora / Bloated Ubuntu / … / "Distro Hop (Custom)"), right-aligned like macOS "Multicolor".
+  Verified in-browser: cards render + switch theme live, accent name updates per selection, custom
+  picker still drives the accent. `npm run build` clean; no console errors.
+- **2026-06-13 (k)** — Polish: (1) multicolor accent pill — replaced the `border` (which left a
+  sub-pixel HiDPI gap with `background-clip`) with an `inset` box-shadow edge so the conic gradient
+  fills the whole circle. (2) **Folder icons follow the theme accent** — `FolderIcon` now uses
+  `currentColor` (two-tone via opacity); `.picker-icon`/`.crumb svg`/`.start-card-icon svg` set
+  `color: var(--accent)`, with `.picker-row.sel .picker-icon → #fff` so the selected row's folder
+  stays white on the accent fill. Files (`FileIcon`) remain neutral. Verified: folders recolor live
+  with the accent (blue → mint), breadcrumb included; no console errors; `npm run build` clean.

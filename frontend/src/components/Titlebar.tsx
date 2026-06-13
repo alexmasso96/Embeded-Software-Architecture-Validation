@@ -20,6 +20,7 @@ export function Titlebar({
   saving,
   onImport,
   onColumns,
+  onPrefs,
 }: {
   projectName: string;
   release: string | null;
@@ -30,6 +31,7 @@ export function Titlebar({
   saving: boolean;
   onImport: () => void;
   onColumns: () => void;
+  onPrefs: () => void;
 }) {
   return (
     <div className="titlebar">
@@ -57,6 +59,9 @@ export function Titlebar({
       </button>
       <button className="tb-icon" title="Columns" onClick={onColumns}>
         ▦
+      </button>
+      <button className="tb-icon" title="Preferences" onClick={onPrefs}>
+        ⚙
       </button>
       <button className="save-btn" onClick={onSave} disabled={!canSave || saving}>
         {saving ? "Saving…" : "Save"}

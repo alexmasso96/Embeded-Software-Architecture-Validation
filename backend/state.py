@@ -12,9 +12,12 @@ session physically cannot write), in addition to the edit lock.
 """
 from __future__ import annotations
 
+import atexit
 import hmac
 import logging
 import os
+import shutil
+import tempfile
 import threading
 from typing import Optional
 
@@ -22,9 +25,11 @@ from Application_Logic.Logic_Database import ProjectDatabase
 from Application_Logic.Logic_Architecture_Models import ArchitectureManager
 from Application_Logic.Logic_Release_Manager import ReleaseManager
 from Application_Logic.Logic_Project_Saving import ProjectSaver
+from Application_Logic.Logic_Security import SecurityManager
 from Application_Logic.Logic_File_Locking import (
     FileLockManager, LOCK_HEARTBEAT_INTERVAL_SECONDS,
 )
+from Application_Logic import Logic_Crypto as crypto
 
 from .events import EventBus
 
@@ -57,6 +62,16 @@ class AppState:
         self._matchers: dict = {}   # elf_hash -> SymbolMatcher (name-list cache)
         self._hb_thread: Optional[threading.Thread] = None
         self._hb_stop: Optional[threading.Event] = None
+
+        # At-rest encryption (master-password protected projects). For an
+        # encrypted project the live DB lives in a private temp file; project_path
+        # stays the user-facing encrypted .arch. Plaintext/legacy projects leave
+        # these at their defaults (db_file == project_path, encrypted False).
+        self._db_file: Optional[str] = None
+        self._encrypted: bool = False
+        self._password: Optional[str] = None
+        self._temp_dir: Optional[str] = None
+        self._atexit_registered: bool = False
 
     # ------------------------------------------------------------------
     @property
@@ -133,27 +148,51 @@ class AppState:
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
-    def new_project(self, path: str) -> dict:
-        """Create a fresh .arch at ``path`` and open it exclusive-edit."""
+    def new_project(self, path: str, password: Optional[str] = None) -> dict:
+        """Create a fresh .arch at ``path`` and open it exclusive-edit.
+
+        With a real ``password`` the project is encrypted at rest: the live DB is
+        created in a private temp file and the encrypted blob is written to
+        ``path``. No password (or a test-bypass password) → plaintext SQLite.
+        """
         with self._lock:
             self._close_locked()
             if os.path.exists(path):
                 raise ProjectError(f"File already exists: {path}")
-            # Create the .arch first — the lock manager keys its lock file off an
-            # existing project path, so the DB file must exist before we lock it.
+
+            encrypted = not crypto.bypasses_encryption(password)
+            db_file = self._provision_db_file(path, encrypted)
+
             db = ProjectDatabase()
-            db.open(path)            # create_schema=True by default
+            db.open(db_file)            # create_schema=True by default
+            if encrypted:
+                db.set_meta("master_password_hash", SecurityManager.hash_password(password))
             db.commit()
+
+            if encrypted:
+                # The lock manager keys its lock file off an existing project
+                # path, so the encrypted blob must exist before we lock it.
+                self._encrypt_to_disk(db, db_file, path, password)
+
             acquired, msg = FileLockManager.acquire_lock(path)
             if not acquired:
                 db.close()
+                self._purge_temp()
                 raise ProjectError(f"Could not acquire edit lock: {msg}")
+
+            self._db_file, self._encrypted, self._password = db_file, encrypted, password
             self._wire(db, path, MODE_EXCLUSIVE)
             self.bus.publish("db-changed", {"reason": "new"})
             return self.status()
 
-    def open_project(self, path: str, mode: str = MODE_EXCLUSIVE) -> dict:
-        """Open an existing .arch. ``mode`` is 'exclusive' or 'view'."""
+    def open_project(self, path: str, mode: str = MODE_EXCLUSIVE,
+                     password: Optional[str] = None) -> dict:
+        """Open an existing .arch. ``mode`` is 'exclusive' or 'view'.
+
+        Plaintext (legacy/dev) projects open directly. Encrypted projects need
+        the master password — without it, ``crypto.PasswordRequired`` is raised;
+        a wrong password raises ``crypto.PasswordInvalid`` (mapped to 401/403).
+        """
         if mode not in (MODE_VIEW, MODE_EXCLUSIVE):
             raise ProjectError(f"Unknown mode: {mode}")
         with self._lock:
@@ -161,17 +200,31 @@ class AppState:
             if not os.path.exists(path):
                 raise ProjectError(f"No such file: {path}")
 
+            encrypted = crypto.is_encrypted_file(path)
+            if encrypted:
+                if not password:
+                    raise crypto.PasswordRequired("Master password required.")
+                db_file = self._provision_db_file(path, encrypted=True)
+                # Raises PasswordInvalid on a wrong password (before we lock).
+                crypto.decrypt_file(path, db_file, password)
+            elif crypto.is_plaintext_sqlite(path):
+                db_file = path
+            else:
+                raise ProjectError("Unrecognized project file format.")
+
             if mode == MODE_EXCLUSIVE:
                 acquired, msg = FileLockManager.acquire_lock(path)
                 if not acquired:
                     # Fall back to view-only with the contended-lock detail.
                     self.lock_info = FileLockManager.check_lock(path)
+                    self._purge_temp()
                     raise ProjectError(f"Locked by another session: {msg}")
 
             db = ProjectDatabase()
-            db.open(path)
+            db.open(db_file)
             if mode == MODE_VIEW:
                 db.set_read_only(True)   # PRAGMA query_only=ON
+            self._db_file, self._encrypted, self._password = db_file, encrypted, password
             self._wire(db, path, mode)
             self._check_integrity()
             self.bus.publish("db-changed", {"reason": "open"})
@@ -195,6 +248,10 @@ class AppState:
                 except Exception:  # noqa: BLE001 — checkpoint best-effort
                     pass
                 db.commit()
+                if self._encrypted:
+                    # Re-encrypt the now-consistent temp DB back to the .arch.
+                    self._encrypt_to_disk(db, self._db_file, self.project_path,
+                                          self._password)
             except Exception as e:  # noqa: BLE001
                 raise ProjectError(f"Save failed: {e}") from e
             self.bus.publish("db-changed", {"reason": "save"})
@@ -232,6 +289,7 @@ class AppState:
                 "release_count": release_count,
                 "lock_info": self.lock_info,
                 "lock_lost": self.lock_lost,
+                "encrypted": self._encrypted,
             }
 
     # ------------------------------------------------------------------
@@ -260,6 +318,10 @@ class AppState:
         db = self.db
         if db is None:
             return
+        if self._encrypted:
+            # Fernet already authenticated the payload on decrypt — a wrong
+            # password or any tampering would have failed before we got here.
+            return
         try:
             stored = db.get_meta("integrity_hmac")
             if stored:
@@ -267,6 +329,57 @@ class AppState:
                 self.integrity_mismatch = not hmac.compare_digest(str(stored), str(expected))
         except Exception:  # noqa: BLE001 — legacy/partial projects open silently
             self.integrity_mismatch = False
+
+    # ------------------------------------------------------------------
+    # At-rest encryption helpers (call with self._lock held)
+    # ------------------------------------------------------------------
+    def _provision_db_file(self, project_path: str, encrypted: bool) -> str:
+        """The actual file the SQLite connection uses. Plaintext → the project
+        path itself; encrypted → a private temp file the blob decrypts into."""
+        if not encrypted:
+            return project_path
+        if not self._atexit_registered:
+            atexit.register(self._purge_temp)   # crash-safety net for the temp dir
+            self._atexit_registered = True
+        self._temp_dir = tempfile.mkdtemp(prefix="archsess_")
+        try:
+            os.chmod(self._temp_dir, 0o700)
+        except OSError:
+            pass
+        return os.path.join(self._temp_dir, "project.db")
+
+    def _encrypt_to_disk(self, db: ProjectDatabase, db_file: str,
+                         real_path: str, password: str) -> None:
+        """Checkpoint the live temp DB to a consistent on-disk state, then write
+        the encrypted blob to the user-facing .arch."""
+        db.commit()
+        try:
+            db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            db.commit()
+        except Exception:  # noqa: BLE001 — checkpoint best-effort
+            pass
+        crypto.encrypt_file(db_file, real_path, password)
+
+    def _purge_temp(self) -> None:
+        """Best-effort shred + remove the session temp dir (decrypted DB)."""
+        tmp = self._temp_dir
+        if not tmp:
+            return
+        try:
+            for name in os.listdir(tmp):
+                fp = os.path.join(tmp, name)
+                try:
+                    size = os.path.getsize(fp)
+                    with open(fp, "r+b") as f:
+                        f.write(b"\x00" * size)
+                        f.flush()
+                        os.fsync(f.fileno())
+                except OSError:
+                    pass
+        except OSError:
+            pass
+        shutil.rmtree(tmp, ignore_errors=True)
+        self._temp_dir = None
 
     # ------------------------------------------------------------------
     # Lock heartbeat (plan §3.3)
@@ -326,6 +439,7 @@ class AppState:
                 FileLockManager.release_lock(self.project_path)
             except Exception:  # noqa: BLE001
                 logger.warning("Error releasing lock", exc_info=True)
+        self._purge_temp()
         self.db = None
         self.project_path = None
         self.mode = None
@@ -335,3 +449,6 @@ class AppState:
         self.integrity_mismatch = False
         self.lock_info = {}
         self._matchers = {}
+        self._db_file = None
+        self._encrypted = False
+        self._password = None

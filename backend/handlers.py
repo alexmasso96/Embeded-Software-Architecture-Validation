@@ -31,6 +31,7 @@ def register_handlers(jobs: JobManager, state: AppState) -> None:
     jobs.register("build_mind_map", _make_build_mind_map(state))
     jobs.register("generate_tests", _make_generate_tests(state))
     jobs.register("parse_elf", _make_parse_elf(state))
+    jobs.register("import_symbols", _make_import_symbols(state))
 
 
 # ----------------------------------------------------------------------
@@ -308,4 +309,64 @@ def _make_parse_elf(state: AppState):
                     break
         state._matchers.pop(elf_hash, None)
         return {"elf_hash": elf_hash, "functions": fn_count, "release_id": release_id}
+    return handler
+
+
+def _detect_import_kind(file_path: str) -> str:
+    """'elf' or 'json' from the file — magic bytes first, then extension.
+
+    The new-project Import flow is type-agnostic: the UI hands us a file and we
+    pick the right importer (ELF binary vs exported JSON symbol cache).
+    """
+    import os
+    try:
+        with open(file_path, "rb") as f:
+            magic = f.read(4)
+    except OSError as e:
+        raise ProjectError(f"Cannot read import file: {e}") from e
+    if magic[:4] == b"\x7fELF":
+        return "elf"
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == ".json":
+        return "json"
+    if ext == ".elf":
+        return "elf"
+    raise ProjectError("Unsupported import file — expected an .elf binary or a .json symbol cache.")
+
+
+def _make_import_symbols(state: AppState):
+    """Auto-detecting symbol import (the new-project 'Import' option). Detects
+    ELF vs JSON and dispatches to the matching ElfImportTask path, then keys the
+    given release to the imported ELF hash. Mirrors parse_elf but type-agnostic."""
+    def handler(params: dict, progress: Callable[..., None], cancel: threading.Event):
+        from Application_Logic.Logic_New_Project import ElfImportTask
+        state.require_edit()
+        file_path = params.get("file_path")
+        release_id = params.get("release_id")
+        if not file_path or release_id is None:
+            raise ProjectError("file_path and release_id are required.")
+        kind = _detect_import_kind(file_path)
+
+        with _worker_db(state) as wdb:
+            task = ElfImportTask(project_db=wdb, db_path=None)
+            if kind == "elf":
+                progress("Parsing ELF…")
+                parser = task.import_elf(file_path)
+            else:
+                progress("Loading symbol cache…")
+                parser = task.import_json(file_path)
+            elf_hash = getattr(parser, "md5_hash", None) or getattr(parser, "_active_elf_hash", None)
+            wdb.update_release(release_id, elf_path=file_path, elf_hash=elf_hash)
+            wdb.commit()
+            fn_count = len(wdb.get_function_names(elf_hash)) if elf_hash else 0
+
+        if state.release_manager is not None:
+            for r in state.release_manager.releases:
+                if r.id == release_id:
+                    r.elf_path = file_path
+                    r.elf_hash = elf_hash
+                    break
+        state._matchers.pop(elf_hash, None)
+        return {"kind": kind, "elf_hash": elf_hash, "functions": fn_count,
+                "release_id": release_id}
     return handler

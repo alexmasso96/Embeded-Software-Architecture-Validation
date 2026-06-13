@@ -171,6 +171,45 @@ def test_parse_elf_missing_args_fails():
             assert body["status"] == "failed"
 
 
+def test_import_symbols_autodetects_elf():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "p.arch")
+        db = make_project_db(path, layout=[("Input Port", "Port Search", True)],
+                             models=[{"name": "A", "status": "In Work", "rows": []}],
+                             releases=[{"name": "R1"}])
+        rid = db.get_all_releases()[0]["id"]
+        db.set_active_release(rid)
+        db.commit(); db.close()
+
+        app = create_app(token=TOKEN)
+        with TestClient(app) as c:
+            c.post("/api/project/open", json={"path": path, "mode": "exclusive"}, headers=AUTH)
+            body = _run(c, "import_symbols", {"file_path": SAMPLE_ELF, "release_id": rid})
+            assert body["status"] == "done", body
+            assert body["result"]["kind"] == "elf"
+            assert body["result"]["functions"] > 0
+
+
+def test_import_symbols_rejects_unknown_type():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "p.arch")
+        junk = os.path.join(d, "thing.bin")
+        with open(junk, "wb") as f:
+            f.write(b"not elf not json")
+        db = make_project_db(path, layout=[("Input Port", "Port Search", True)],
+                             models=[{"name": "A", "status": "In Work", "rows": []}],
+                             releases=[{"name": "R1"}])
+        rid = db.get_all_releases()[0]["id"]
+        db.set_active_release(rid)
+        db.commit(); db.close()
+
+        app = create_app(token=TOKEN)
+        with TestClient(app) as c:
+            c.post("/api/project/open", json={"path": path, "mode": "exclusive"}, headers=AUTH)
+            body = _run(c, "import_symbols", {"file_path": junk, "release_id": rid})
+            assert body["status"] == "failed", body
+
+
 # ---------------------------------------------------------------------------
 # generate_tests (faked provider, no network)
 # ---------------------------------------------------------------------------
