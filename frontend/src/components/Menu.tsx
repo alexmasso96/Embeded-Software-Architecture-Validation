@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export interface MenuItem {
   label: string;
@@ -23,6 +23,19 @@ export function Menu({
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
+  const [viewportHeight, setViewportHeight] = useState(window.innerHeight);
+  useEffect(() => {
+    const handleResize = () => setViewportHeight(window.innerHeight);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  // Statically calculate maximum height: each option is ~30px plus padding/borders
+  const estimatedHeight = items.length * 30 + 15;
+  const showAbove = y + estimatedHeight > viewportHeight;
+  const topPos = showAbove ? y - 45 : y; // y - 4px padding - 37px row height - 4px gap = y - 45
+  const transform = showAbove ? "translateY(-100%)" : undefined;
+
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
@@ -39,7 +52,15 @@ export function Menu({
   }, [onClose]);
 
   return (
-    <div className="menu" ref={ref} style={{ left: x, top: y }}>
+    <div
+      className="menu"
+      ref={ref}
+      style={{
+        left: x,
+        top: topPos,
+        transform,
+      }}
+    >
       {items.map((it, i) => (
         <button
           key={i}

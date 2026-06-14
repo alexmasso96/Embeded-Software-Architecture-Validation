@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { confClass, type SymbolKind } from "../columns";
 
@@ -42,25 +42,19 @@ export function MatchPicker({
   const [loading, setLoading] = useState(true);
   const [noElf, setNoElf] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [adjustedY, setAdjustedY] = useState(y);
-  const [visible, setVisible] = useState(false);
 
-  useLayoutEffect(() => {
-    if (!ref.current) return;
-    const height = ref.current.offsetHeight;
-    const viewportHeight = window.innerHeight;
-    
-    // y is originally r.bottom + 4.
-    // If it overflows the viewport height, place it above the cell:
-    // Cell height is roughly 37px. Cell top is r.top (y - 4 - 37 = y - 41).
-    // Place 4px above cell top: r.top - height - 4 = y - 45 - height.
-    if (y + height > viewportHeight) {
-      setAdjustedY(Math.max(10, y - 45 - height));
-    } else {
-      setAdjustedY(y);
-    }
-    setVisible(true);
-  }, [y, candidates, loading, error]);
+  const [viewportHeight, setViewportHeight] = useState(window.innerHeight);
+  useEffect(() => {
+    const handleResize = () => setViewportHeight(window.innerHeight);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  // Statically determine if the picker overflows the bottom of the viewport
+  // using a safe maximum height threshold of 320px:
+  const showAbove = y + 320 > viewportHeight;
+  const topPos = showAbove ? y - 45 : y; // y - 4px padding - 37px row height - 4px gap = y - 45
+  const transform = showAbove ? "translateY(-100%)" : undefined;
 
   // Outside-click / Esc to close (same contract as Menu).
   useEffect(() => {
@@ -80,7 +74,12 @@ export function MatchPicker({
     };
   }, [onClose]);
 
-  // Debounced query → /api/symbols, cancel-on-change/unmount.
+  // Query → /api/symbols, cancel-on-change/unmount. The initial (seeded) query
+  // fires immediately so the picker shows real candidates as soon as the matcher
+  // returns — the spinner covers however long that takes (≈2ms on a small ELF,
+  // up to ~300ms on a big set / slow CPU), avoiding a flash of an empty window.
+  // Only subsequent typing is debounced (180ms) to avoid a query per keystroke.
+  const firstRun = useRef(true);
   useEffect(() => {
     const q = query.trim();
     if (!q) {
@@ -93,6 +92,8 @@ export function MatchPicker({
     let cancelled = false;
     setLoading(true);
     setError(null);
+    const delay = firstRun.current ? 0 : 180;
+    firstRun.current = false;
     const t = setTimeout(async () => {
       try {
         const r = await api.get<SymbolsResponse>(
@@ -106,7 +107,7 @@ export function MatchPicker({
       } finally {
         if (!cancelled) setLoading(false);
       }
-    }, 180);
+    }, delay);
     return () => {
       cancelled = true;
       clearTimeout(t);
@@ -119,8 +120,8 @@ export function MatchPicker({
       ref={ref}
       style={{
         left: x,
-        top: adjustedY,
-        visibility: visible ? "visible" : "hidden",
+        top: topPos,
+        transform,
       }}
     >
       <input
