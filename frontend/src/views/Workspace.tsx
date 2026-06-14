@@ -346,7 +346,6 @@ export function Workspace({
               onOpenMatch={(rowIndex, col, x, y) =>
                 setMatchTarget({ rowIndex, col, x, y })
               }
-              onRowMenu={(rowIndex, x, y) => setRowMenu({ rowIndex, x, y })}
               canEdit={canEdit}
             />
           )}

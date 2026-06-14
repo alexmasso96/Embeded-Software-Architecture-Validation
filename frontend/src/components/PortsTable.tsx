@@ -36,7 +36,6 @@ export function PortsTable({
   onSelectRow,
   onEditCell,
   onOpenMatch,
-  onRowMenu,
   canEdit,
 }: {
   columns: ResolvedColumn[];
@@ -45,7 +44,6 @@ export function PortsTable({
   onSelectRow: (rowIndex: number) => void;
   onEditCell: (rowIndex: number, colName: string, value: string) => void;
   onOpenMatch: (rowIndex: number, col: ResolvedColumn, x: number, y: number) => void;
-  onRowMenu: (rowIndex: number, x: number, y: number) => void;
   canEdit: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -60,8 +58,16 @@ export function PortsTable({
       const next = { ...prev };
       let changed = false;
       for (const c of columns) {
-        if (next[c.name] == null) {
-          next[c.name] = c.width || 120;
+        let targetW = c.width || 120;
+        if (c.name === "TC. ID") targetW = 65;
+        else if (c.name.endsWith(" (Init)")) targetW = 50;
+        else if (c.name.endsWith(" (Cyclic)")) targetW = 55;
+        else if (c.role === "review") targetW = 95;
+        else if (c.role === "state") targetW = 85;
+
+        // Force-override if the width is unset in state OR matches the database default
+        if (next[c.name] == null || next[c.name] === c.width) {
+          next[c.name] = targetW;
           changed = true;
         }
       }
@@ -126,32 +132,35 @@ export function PortsTable({
     const value = cellText(row.cells[col.name]);
 
     if (col.role === "state" || col.role === "review") {
-      if (!value) return <span className="dim">—</span>;
+      const displayValue = value || (col.role === "state" ? "In Work" : "Not Reviewed");
       const cls =
         col.role === "state"
-          ? PORT_STATE_CLASS[value] ?? "p-grey"
-          : REVIEW_CLASS[value] ?? "p-grey";
+          ? PORT_STATE_CLASS[displayValue] ?? "p-grey"
+          : REVIEW_CLASS[displayValue] ?? "p-grey";
       return (
         <button
-          className={`pill ${cls}${canEdit ? " editable" : ""}`}
-          onClick={(e) => openPill(e, row.row_index, col, value)}
+          className={`cell-btn ${cls}${canEdit ? " editable" : ""}`}
+          onClick={(e) => openPill(e, row.row_index, col, displayValue)}
         >
-          {value}
+          {displayValue}
         </button>
       );
     }
 
     if (col.role === "match") {
       const { name, score } = parseMatch(value);
-      const body = name ? (
-        <>
-          <span className="mono">{name}</span>
-          {score !== null && <span className={confClass(score)}>{score}%</span>}
-        </>
-      ) : (
-        <span className="dim">{canEdit ? "Pick…" : "—"}</span>
-      );
-      if (!canEdit) return body;
+      
+      if (!canEdit) {
+        return name ? (
+          <div className="matchcell-readonly">
+            <span className="mono match-name">{name}</span>
+            {score !== null && <span className={confClass(score)}>{score}%</span>}
+          </div>
+        ) : (
+          <span className="dim">—</span>
+        );
+      }
+
       return (
         <button
           className="matchcell"
@@ -163,7 +172,14 @@ export function PortsTable({
             onOpenMatch(row.row_index, col, r.left, r.bottom + 4);
           }}
         >
-          {body}
+          {name ? (
+            <>
+              <span className="mono match-name">{name}</span>
+              {score !== null && <span className={confClass(score)}>{score}%</span>}
+            </>
+          ) : (
+            <span className="dim">Pick…</span>
+          )}
         </button>
       );
     }
@@ -205,7 +221,6 @@ export function PortsTable({
           {columns.map((c) => (
             <col key={c.name} style={{ width: colWidth(c.name, c.width) }} />
           ))}
-          <col style={{ width: 44 }} />
         </colgroup>
         <thead>
           <tr>
@@ -219,7 +234,6 @@ export function PortsTable({
                 />
               </th>
             ))}
-            <th />
           </tr>
         </thead>
         <tbody>
@@ -237,27 +251,17 @@ export function PortsTable({
                 {columns.map((c) => {
                   const conflict = c.role === "match" && isConflict(row.cells[c.name]);
                   const tone = conflict ? "" : cellTone(row, c);
-                  const cls = conflict ? "conflict" : tone ? `tone-${tone}` : undefined;
+                  const isPillCol = c.role === "state" || c.role === "review";
+                  const cls = [
+                    conflict ? "conflict" : tone ? `tone-${tone}` : "",
+                    isPillCol ? "cell-button-td" : "",
+                  ].filter(Boolean).join(" ");
                   return (
-                    <td key={c.name} className={cls}>
+                    <td key={c.name} className={cls || undefined}>
                       {renderCell(row, c)}
                     </td>
                   );
                 })}
-                <td>
-                  <button
-                    className="kebab"
-                    title="Row actions"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onSelectRow(row.row_index);
-                      const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                      onRowMenu(row.row_index, r.right - 170, r.bottom + 4);
-                    }}
-                  >
-                    ⋯
-                  </button>
-                </td>
               </tr>
             );
           })}

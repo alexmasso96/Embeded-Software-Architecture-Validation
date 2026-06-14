@@ -35,6 +35,10 @@
   --v-purple: #8a3fd1;
   --v-purple-bg: rgba(138, 63, 209, 0.14);
   --v-radius: 9px;
+  --tone-ok-bg: rgba(40, 167, 69, 0.14);
+  --tone-warn-bg: rgba(214, 148, 10, 0.14);
+  --tone-err-bg: rgba(214, 48, 49, 0.12);
+  --tone-grey-bg: rgba(128, 128, 128, 0.10);
   --v-mono: ui-monospace, "SF Mono", Menlo, monospace;
 
   /* Semantic surface tokens (so light/dark theming flips in one place). */
@@ -75,6 +79,10 @@
   --v-err-bg: rgba(214, 48, 49, 0.24);
   --v-purple: #c08cf5;
   --v-purple-bg: rgba(170, 110, 235, 0.26);
+  --tone-ok-bg: rgba(40, 167, 69, 0.18);
+  --tone-warn-bg: rgba(214, 148, 10, 0.18);
+  --tone-err-bg: rgba(214, 48, 49, 0.16);
+  --tone-grey-bg: rgba(128, 128, 128, 0.12);
 
   --surface: #2c2c30;
   --bar: #252528;
@@ -587,22 +595,29 @@ body {
 /* Subtle per-cell gradient tint for coloured columns (#4) — helps the eye land
    on percentages / states. Skipped on the selected (accent) row. */
 .prow:not(.selected) td.tone-ok {
-  background-image: linear-gradient(90deg, rgba(40, 167, 69, 0.16), rgba(40, 167, 69, 0.03));
+  background: var(--tone-ok-bg);
 }
 .prow:not(.selected) td.tone-warn {
-  background-image: linear-gradient(90deg, rgba(214, 148, 10, 0.18), rgba(214, 148, 10, 0.03));
+  background: var(--tone-warn-bg);
 }
 .prow:not(.selected) td.tone-err {
-  background-image: linear-gradient(90deg, rgba(214, 48, 49, 0.16), rgba(214, 48, 49, 0.03));
+  background: var(--tone-err-bg);
 }
 .prow:not(.selected) td.tone-grey {
-  background-image: linear-gradient(90deg, rgba(128, 128, 128, 0.13), rgba(128, 128, 128, 0.02));
+  background: var(--tone-grey-bg);
 }
 
 /* Match cell: clickable picker trigger + conflict (purple) warning tint. */
-.matchcell {
-  display: inline-flex;
+.matchcell,
+.matchcell-readonly {
+  display: flex;
   align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+}
+.matchcell {
   border: 0;
   background: transparent;
   color: inherit;
@@ -611,10 +626,24 @@ body {
   padding: 1px 5px;
   margin: -1px -5px;
   border-radius: 6px;
-  max-width: 100%;
 }
 .matchcell:hover {
   background: var(--hover);
+}
+
+/* Truncate function name with ellipses and push the pill to the right */
+.match-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-grow: 1;
+  min-width: 0;
+}
+
+/* Fix flex shrink on confidence score pills to prevent them from squishing */
+.conf {
+  flex-shrink: 0;
+  margin-left: 8px; /* small adaptable padding */
 }
 .ptable td.conflict {
   background: var(--v-purple-bg, rgba(155, 89, 224, 0.16));
@@ -680,7 +709,34 @@ body {
   font-size: 12px;
 }
 
-/* ---------- Status pills ---------- */
+/* ---------- Status pills & Cell-wide button dropdowns ---------- */
+.ptable td.cell-button-td {
+  padding: 0 !important; /* Allow button to occupy entire cell space */
+  overflow: visible;     /* Prevent clipping of dropdown popup menus */
+}
+.cell-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 36px;
+  border: 0;
+  padding: 8px 14px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  box-sizing: border-box;
+  /* subtle top-light/bottom-shade gives it a little depth */
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(0, 0, 0, 0.06));
+}
+.cell-btn.editable::after {
+  content: "▾";
+  font-size: 8.5px;
+  opacity: 0.65;
+  margin-left: 5px;
+}
 .pill {
   display: inline-flex;
   align-items: center;
