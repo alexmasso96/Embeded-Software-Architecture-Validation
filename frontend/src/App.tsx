@@ -18,6 +18,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>("Workspace");
   const [saving, setSaving] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [columnsOpen, setColumnsOpen] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
 
@@ -101,8 +103,8 @@ export default function App() {
         onSave={save}
         canSave={canEdit}
         saving={saving}
-        onImport={() => toast("Import wizard: later slice")}
-        onColumns={() => toast("Column customizer: later slice")}
+        onImport={() => setImportOpen(true)}
+        onColumns={() => setColumnsOpen(true)}
         onPrefs={() => setPrefsOpen(true)}
       />
 
@@ -123,7 +125,15 @@ export default function App() {
       )}
 
       {activeTab === "Workspace" ? (
-        <Workspace status={status} onReloadStatus={reloadStatus} toast={toast} />
+        <Workspace
+          status={status}
+          onReloadStatus={reloadStatus}
+          toast={toast}
+          importOpen={importOpen}
+          onCloseImport={() => setImportOpen(false)}
+          columnsOpen={columnsOpen}
+          onCloseColumns={() => setColumnsOpen(false)}
+        />
       ) : (
         <div className="center-msg">{activeTab} — coming in a later Phase 2 slice.</div>
       )}

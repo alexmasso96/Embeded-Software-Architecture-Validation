@@ -84,6 +84,23 @@ def test_new_open_save_close_cycle(client, tmp_arch):
     assert client.post("/api/project/save", headers=AUTH).status_code == 409
 
 
+def test_new_project_seeds_default_layout(client, tmp_arch):
+    """A fresh project opens with the PyQt6 default columns (issue: new projects
+    should give the user basic columns to work with)."""
+    client.post("/api/project/new", json={"path": tmp_arch}, headers=AUTH)
+    cols = client.get("/api/columns", headers=AUTH).json()["columns"]
+    names = [c["name"] for c in cols]
+    assert names[0] == "TC. ID"
+    for expected in ["Input Port", "Input Port (Match)", "Mapped Func",
+                     "Mapped Parameter", "Review Status", "Port State"]:
+        assert expected in names, expected
+    # search columns carry their proper logic_key types
+    by_name = {c["name"]: c["type"] for c in cols}
+    assert by_name["Input Port"] == "Port Search"
+    assert by_name["Mapped Func"] == "Function Search"
+    assert by_name["Review Status"] == "Review Status"
+
+
 def test_new_project_rejects_existing_path(client, tmp_arch):
     assert client.post("/api/project/new", json={"path": tmp_arch}, headers=AUTH).status_code == 200
     client.post("/api/project/close", headers=AUTH)

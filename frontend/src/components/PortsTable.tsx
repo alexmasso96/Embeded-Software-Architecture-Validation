@@ -4,12 +4,17 @@ import type { PortRow } from "../api/types";
 import {
   cellText,
   confClass,
+  initCyclicValue,
+  isConflict,
   parseMatch,
+  pillTone,
   PORT_STATE_CLASS,
   PORT_STATE_OPTIONS,
   REVIEW_CLASS,
   REVIEW_OPTIONS,
+  scoreTone,
   type ResolvedColumn,
+  type Tone,
 } from "../columns";
 import { Menu, type MenuItem } from "./Menu";
 
@@ -30,6 +35,7 @@ export function PortsTable({
   selectedRowIndex,
   onSelectRow,
   onEditCell,
+  onOpenMatch,
   onRowMenu,
   canEdit,
 }: {
@@ -38,6 +44,7 @@ export function PortsTable({
   selectedRowIndex: number | null;
   onSelectRow: (rowIndex: number) => void;
   onEditCell: (rowIndex: number, colName: string, value: string) => void;
+  onOpenMatch: (rowIndex: number, col: ResolvedColumn, x: number, y: number) => void;
   onRowMenu: (rowIndex: number, x: number, y: number) => void;
   canEdit: boolean;
 }) {
@@ -136,13 +143,35 @@ export function PortsTable({
 
     if (col.role === "match") {
       const { name, score } = parseMatch(value);
-      if (!name) return <span className="dim">—</span>;
-      return (
+      const body = name ? (
         <>
           <span className="mono">{name}</span>
           {score !== null && <span className={confClass(score)}>{score}%</span>}
         </>
+      ) : (
+        <span className="dim">{canEdit ? "Pick…" : "—"}</span>
       );
+      if (!canEdit) return body;
+      return (
+        <button
+          className="matchcell"
+          title="Pick match candidate"
+          onClick={(e) => {
+            e.stopPropagation();
+            onSelectRow(row.row_index);
+            const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            onOpenMatch(row.row_index, col, r.left, r.bottom + 4);
+          }}
+        >
+          {body}
+        </button>
+      );
+    }
+
+    if (col.role === "init" || col.role === "cyclic") {
+      const { value: v, override } = initCyclicValue(col, row.cells);
+      if (!v) return <span className="dim">—</span>;
+      return <span className={"mono initc" + (override ? " override" : "")}>{v}</span>;
     }
 
     if (col.role === "tcid" || col.role === "port") {
@@ -150,6 +179,15 @@ export function PortsTable({
     }
 
     return value || <span className="dim">—</span>;
+  }
+
+  // Subtle background gradient for coloured cells (#4) so values read easily.
+  function cellTone(row: PortRow, col: ResolvedColumn): Tone {
+    const value = cellText(row.cells[col.name]);
+    if (col.role === "state") return value ? pillTone(PORT_STATE_CLASS[value] ?? "p-grey") : "";
+    if (col.role === "review") return value ? pillTone(REVIEW_CLASS[value] ?? "p-grey") : "";
+    if (col.role === "match") return scoreTone(parseMatch(value).score);
+    return "";
   }
 
   const pillMenuItems: MenuItem[] = pill
@@ -196,9 +234,16 @@ export function PortsTable({
                 style={{ height: ROW_H }}
                 onClick={() => onSelectRow(row.row_index)}
               >
-                {columns.map((c) => (
-                  <td key={c.name}>{renderCell(row, c)}</td>
-                ))}
+                {columns.map((c) => {
+                  const conflict = c.role === "match" && isConflict(row.cells[c.name]);
+                  const tone = conflict ? "" : cellTone(row, c);
+                  const cls = conflict ? "conflict" : tone ? `tone-${tone}` : undefined;
+                  return (
+                    <td key={c.name} className={cls}>
+                      {renderCell(row, c)}
+                    </td>
+                  );
+                })}
                 <td>
                   <button
                     className="kebab"

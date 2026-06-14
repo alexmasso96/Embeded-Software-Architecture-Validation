@@ -20,11 +20,15 @@ function extsFor(mode: PickerMode, exts?: string[]): string {
 export function FolderPicker({
   mode,
   exts,
+  title,
+  hint,
   onCancel,
   onConfirm,
 }: {
   mode: PickerMode;
   exts?: string[];
+  title?: string; // overrides the default header label
+  hint?: string; // overrides the import-mode footer hint
   onCancel: () => void;
   onConfirm: (path: string, openMode: ProjectMode) => void;
 }) {
@@ -180,11 +184,12 @@ export function FolderPicker({
   }
 
   const canConfirm = mode === "new" ? Boolean(filename.trim()) : Boolean(selectedFile);
-  const actionLabel = mode === "new" ? "Create" : mode === "import" ? "Import" : "Open";
-  const title =
-    mode === "open" ? "Open Project"
-      : mode === "import" ? "Import Symbols — choose an .elf or .json"
-        : "New Project — choose location";
+  const actionLabel = mode === "new" ? "Create" : mode === "import" ? "Choose" : "Open";
+  const headerTitle =
+    title ??
+    (mode === "open" ? "Open Project"
+      : mode === "import" ? "Import — choose an .elf or .json"
+        : "New Project — choose location");
 
   // Breadcrumb of the current directory (Finder-style segmented path).
   const crumbs: { name: string; path: string }[] = [];
@@ -201,7 +206,7 @@ export function FolderPicker({
   return (
     <div className="modal-overlay" onMouseDown={onCancel}>
       <div className="modal picker" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="modal-head">{title}</div>
+        <div className="modal-head">{headerTitle}</div>
 
         <div className="picker-bar">
           <div className="crumbs">
@@ -319,7 +324,9 @@ export function FolderPicker({
             </label>
           ) : (
             <span className="picker-mode">
-              {selectedFile ? selectedFile.split(/[\\/]/).pop() : "Select an .elf or .json file"}
+              {selectedFile
+                ? selectedFile.split(/[\\/]/).pop()
+                : hint ?? "Select an .elf or .json file"}
             </span>
           )}
           <div className="spacer" />

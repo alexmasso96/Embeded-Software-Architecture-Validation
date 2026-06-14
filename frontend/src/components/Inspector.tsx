@@ -11,7 +11,7 @@ export function Inspector({
 }: {
   label: string | null;
   canEdit: boolean;
-  onPickMatch: () => void;
+  onPickMatch: (e: React.MouseEvent) => void;
   onShowInCodeMap: () => void;
   onHistory: () => void;
   onDuplicate: () => void;
@@ -20,7 +20,7 @@ export function Inspector({
   return (
     <div className="inspector">
       <span className="sel">{label ?? "No row selected"}</span>
-      <button disabled={!label || !canEdit} onClick={onPickMatch}>
+      <button disabled={!label || !canEdit} onClick={(e) => onPickMatch(e)}>
         Pick match candidate…
       </button>
       <button disabled={!label} onClick={onShowInCodeMap}>

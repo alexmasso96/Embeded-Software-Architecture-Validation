@@ -2,9 +2,19 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { useColumns, useModels, usePorts, useReleases } from "../api/hooks";
 import type { ProjectStatus } from "../api/types";
-import { cellText, resolveColumns } from "../columns";
+import {
+  cellText,
+  initCyclicValue,
+  parseMatch,
+  resolveColumns,
+  type ResolvedColumn,
+} from "../columns";
 import { Sidebar } from "../components/Sidebar";
+import { ModelManager } from "../components/ModelManager";
+import { ImportWizard } from "../components/ImportWizard";
+import { ColumnCustomizer } from "../components/ColumnCustomizer";
 import { PortsTable } from "../components/PortsTable";
+import { MatchPicker } from "../components/MatchPicker";
 import { Inspector } from "../components/Inspector";
 import { StatusBar } from "../components/StatusBar";
 import { Menu, type MenuItem } from "../components/Menu";
@@ -15,14 +25,29 @@ interface RowMenu {
   rowIndex: number;
 }
 
+interface MatchTarget {
+  x: number;
+  y: number;
+  rowIndex: number;
+  col: ResolvedColumn;
+}
+
 export function Workspace({
   status,
   onReloadStatus,
   toast,
+  importOpen,
+  onCloseImport,
+  columnsOpen,
+  onCloseColumns,
 }: {
   status: ProjectStatus;
   onReloadStatus: () => void;
   toast: (msg: string) => void;
+  importOpen: boolean;
+  onCloseImport: () => void;
+  columnsOpen: boolean;
+  onCloseColumns: () => void;
 }) {
   const open = status.open;
   const canEdit = status.can_edit && !status.lock_lost;
@@ -35,6 +60,8 @@ export function Workspace({
   const [query, setQuery] = useState("");
   const [selectedRow, setSelectedRow] = useState<number | null>(null);
   const [rowMenu, setRowMenu] = useState<RowMenu | null>(null);
+  const [matchTarget, setMatchTarget] = useState<MatchTarget | null>(null);
+  const [manageOpen, setManageOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(230);
 
   function startSidebarResize(e: React.MouseEvent) {
@@ -56,9 +83,13 @@ export function Workspace({
     document.body.style.userSelect = "none";
   }
 
-  // Default the selected model to the server's active model once loaded.
+  // Default the selected model to the server's active model once loaded, and
+  // re-home the selection if the current model vanished (e.g. soft-deleted via
+  // the model manager) so the table never queries a stale id.
   useEffect(() => {
-    if (models.data && activeModelId === null) {
+    if (!models.data) return;
+    const exists = models.data.models.some((m) => m.id === activeModelId);
+    if (activeModelId === null || !exists) {
       setActiveModelId(models.data.active_model_id ?? models.data.models[0]?.id ?? null);
     }
   }, [models.data, activeModelId]);
@@ -74,12 +105,20 @@ export function Workspace({
     onReloadStatus();
   }
 
-  const resolved = useMemo(
-    () => (columns.data ? resolveColumns(columns.data.columns).filter((c) => c.visible) : []),
-    [columns.data],
-  );
-
   const allRows = ports.data?.rows ?? [];
+
+  const resolved = useMemo(() => {
+    if (!columns.data) return [];
+    return resolveColumns(columns.data.columns).filter((c) => {
+      if (c.visible === true) return true;
+      if (c.visible === false) return false;
+      // null = "Auto" (Init/Cyclic): show only when some row has a meaningful value.
+      return allRows.some((r) => {
+        const { value } = initCyclicValue(c, r.cells);
+        return value && value !== "0";
+      });
+    });
+  }, [columns.data, allRows]);
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return allRows;
@@ -115,6 +154,50 @@ export function Workspace({
     } catch (e) {
       toast(`Edit failed: ${(e as Error).message}`);
     }
+  }
+
+  // Persist a chosen fuzzy-match candidate into its Match cell. Writes the
+  // canonical "Name (NN%)" into widget_text, records the user's acknowledgment
+  // (user_changed), and clears any conflict tint (is_purple → false). Merges
+  // onto the existing cell so other fields (e.g. last_func) survive.
+  async function pickMatch(
+    rowIndex: number,
+    colName: string,
+    name: string,
+    score: number,
+  ) {
+    if (activeModelId === null) return;
+    const row = allRows.find((r) => r.row_index === rowIndex);
+    const existing = row?.cells[colName] ?? {};
+    const text = `${name} (${score}%)`;
+    const cell = {
+      ...existing,
+      text,
+      widget_text: text,
+      user_changed: true,
+      is_purple: false,
+    };
+    try {
+      await api.patch(`/models/${activeModelId}/ports/${rowIndex}`, {
+        updates: { [colName]: cell },
+      });
+      ports.reload();
+    } catch (e) {
+      toast(`Match update failed: ${(e as Error).message}`);
+    }
+  }
+
+  // Open the match picker for a row's first Match column (used by the Inspector
+  // strip, which has no per-cell anchor — anchor at the triggering button).
+  function openMatchForSelected(e: React.MouseEvent) {
+    if (selectedRow === null) return;
+    const matchCol = resolved.find((c) => c.role === "match");
+    if (!matchCol) {
+      toast("No match column in this model");
+      return;
+    }
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setMatchTarget({ rowIndex: selectedRow, col: matchCol, x: r.left, y: r.bottom + 4 });
   }
 
   async function deleteRow(rowIndex: number) {
@@ -199,7 +282,7 @@ export function Workspace({
             setActiveModelId(id);
             setSelectedRow(null);
           }}
-          onManageModels={() => toast("Model management: later slice")}
+          onManageModels={() => setManageOpen(true)}
           releases={releases.data?.releases ?? []}
           activeReleaseId={releases.data?.active_release_id ?? null}
           onSelectRelease={async (id) => {
@@ -260,6 +343,9 @@ export function Workspace({
               selectedRowIndex={selectedRow}
               onSelectRow={setSelectedRow}
               onEditCell={editCell}
+              onOpenMatch={(rowIndex, col, x, y) =>
+                setMatchTarget({ rowIndex, col, x, y })
+              }
               onRowMenu={(rowIndex, x, y) => setRowMenu({ rowIndex, x, y })}
               canEdit={canEdit}
             />
@@ -268,7 +354,7 @@ export function Workspace({
           <Inspector
             label={selectedLabel}
             canEdit={canEdit}
-            onPickMatch={() => toast("Match picker: later slice")}
+            onPickMatch={openMatchForSelected}
             onShowInCodeMap={() => toast("Code Map: later slice")}
             onHistory={() => toast("History: later slice")}
             onDuplicate={() => selectedRow !== null && duplicateRow(selectedRow)}
@@ -290,6 +376,61 @@ export function Workspace({
           y={rowMenu.y}
           items={rowMenuItems}
           onClose={() => setRowMenu(null)}
+        />
+      )}
+
+      {manageOpen && (
+        <ModelManager
+          canEdit={canEdit}
+          onClose={() => setManageOpen(false)}
+          onChanged={refreshAll}
+          toast={toast}
+        />
+      )}
+
+      {importOpen && (
+        <ImportWizard
+          activeModelId={activeModelId}
+          activeModelName={activeModel?.name ?? null}
+          currentRelease={status.active_release}
+          columns={columns.data?.columns ?? []}
+          onChanged={refreshAll}
+          onClose={onCloseImport}
+        />
+      )}
+
+      {columnsOpen && (
+        <ColumnCustomizer
+          canEdit={canEdit}
+          onClose={onCloseColumns}
+          onChanged={refreshAll}
+          toast={toast}
+        />
+      )}
+
+      {matchTarget && (
+        <MatchPicker
+          x={matchTarget.x}
+          y={matchTarget.y}
+          kind={matchTarget.col.kind ?? "any"}
+          initialQuery={cellText(
+            allRows.find((r) => r.row_index === matchTarget.rowIndex)?.cells[
+              matchTarget.col.searchCol ?? ""
+            ],
+          )}
+          current={
+            parseMatch(
+              cellText(
+                allRows.find((r) => r.row_index === matchTarget.rowIndex)?.cells[
+                  matchTarget.col.name
+                ],
+              ),
+            ).name
+          }
+          onPick={(name, score) =>
+            pickMatch(matchTarget.rowIndex, matchTarget.col.name, name, score)
+          }
+          onClose={() => setMatchTarget(null)}
         />
       )}
     </>

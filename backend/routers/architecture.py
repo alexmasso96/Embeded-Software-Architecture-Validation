@@ -127,12 +127,15 @@ def activate_model(model_id: int, state: AppState = Depends(get_state),
 class ColumnSpec(BaseModel):
     name: str
     type: str
-    visible: bool = True
+    visible: Optional[bool] = True  # True=Show, False=Hide, None=Auto (Init/Cyclic)
     width: int = 100
 
 
 class PutColumnsBody(BaseModel):
     columns: list[ColumnSpec]
+    # Columns renamed in this save, as {old_name: new_name}. Used to migrate the
+    # cell key in every model's rows (cells are keyed by column name).
+    renames: dict[str, str] = {}
 
 
 def _columns_payload(db) -> dict:
@@ -147,13 +150,57 @@ def get_columns(state: AppState = Depends(get_state)) -> dict:
     return _guard(lambda: _columns_payload(state.require_open()))
 
 
+@router.get("/columns/editor")
+def get_columns_editor(state: AppState = Depends(get_state)) -> dict:
+    """Everything the column customizer needs: the layout, the locked columns
+    (computed from the active model's reviewed rows), and the addable types."""
+    from Application_Logic.Logic_Column_Layout import compute_locked_columns, ADDABLE_TYPES
+
+    def go():
+        db = state.require_open()
+        mgr = state.require_arch()
+        layout = db.load_column_layout()
+        active = mgr.get_active_model()
+        rows = db.get_model_rows(active.id) if active and active.id is not None else []
+        return {
+            **_columns_payload(db),
+            "locked": sorted(compute_locked_columns(layout, rows)),
+            "addable_types": ADDABLE_TYPES,
+        }
+    return _guard(go)
+
+
 @router.put("/columns")
 def put_columns(body: PutColumnsBody, state: AppState = Depends(get_state),
                 bus: EventBus = Depends(get_bus)) -> dict:
+    from Application_Logic.Logic_Column_Layout import (
+        validate_layout, migrate_rows, diff_layout,
+    )
+
     def go():
         db = state.require_edit()
-        layout = [(c.name, c.type, c.visible, c.width) for c in body.columns]
-        db.save_column_layout(layout)
+        mgr = state.require_arch()
+        new_layout = [(c.name, c.type, c.visible, c.width) for c in body.columns]
+        try:
+            validate_layout(new_layout)
+        except ValueError as e:
+            raise ProjectError(str(e)) from e
+
+        old_names = [c[0] for c in db.load_column_layout()]
+        renames = {k: v for k, v in body.renames.items() if k != v}
+        removed = diff_layout(old_names, [c[0] for c in new_layout], renames)
+
+        # Migrate cell keys across every model (layout is project-global; cells
+        # are per-model and keyed by column name).
+        if renames or removed:
+            for m in mgr.models:
+                if m.id is None:
+                    continue
+                rows = db.get_model_rows(m.id)
+                migrate_rows(rows, renames, removed)
+                db.save_model_rows(m.id, rows)
+
+        db.save_column_layout(new_layout)
         db.commit()
         bus.publish("db-changed", {"reason": "columns-updated"})
         return _columns_payload(db)

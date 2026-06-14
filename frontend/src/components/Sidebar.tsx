@@ -30,64 +30,67 @@ export function Sidebar({
     <div className="sidebar" style={{ width }}>
       <div className="sl-head">
         Models
-        <button title="Manage models" onClick={onManageModels}>
+        <button title="Manage models…" onClick={onManageModels}>
           ＋
         </button>
       </div>
 
-      {models.length === 0 && (
+      <div className="sl-list">
+        {models.length === 0 && (
+          <div className="sl-status">
+            <span>No models yet</span>
+          </div>
+        )}
+        {models.map((m) => (
+          <div
+            key={m.id}
+            className={
+              "sl-row" +
+              (m.id === activeModelId ? " active" : "") +
+              (m.is_deleted ? " deleted" : "")
+            }
+            onClick={() => onSelectModel(m.id)}
+            title={`${m.name} — ${m.status} · ${m.row_count} ports`}
+          >
+            <span className="sl-icon">▣</span>
+            <span className="sl-name">{m.name}</span>
+            <span className="badge">{m.row_count}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="sl-foot">
+        <div className="sl-head">Release</div>
+        <div className="release-pick">
+          <select
+            value={activeReleaseId ?? ""}
+            onChange={(e) => onSelectRelease(Number(e.target.value))}
+            disabled={releases.length === 0}
+          >
+            {releases.length === 0 && <option value="">No releases</option>}
+            {releases
+              .filter((r) => r.selectable !== false)
+              .map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                  {r.is_active ? " (active)" : ""}
+                </option>
+              ))}
+          </select>
+        </div>
+
         <div className="sl-status">
-          <span>No models yet</span>
+          <span>Source</span>
+          <b className={hasSource ? "" : "off"}>{hasSource ? "✓ linked" : "— none"}</b>
         </div>
-      )}
-      {models.map((m) => (
-        <div
-          key={m.id}
-          className={
-            "sl-row" +
-            (m.id === activeModelId ? " active" : "") +
-            (m.is_deleted ? " deleted" : "")
-          }
-          onClick={() => onSelectModel(m.id)}
-          title={m.status}
-        >
-          <span className="sl-icon">▣</span>
-          {m.name}
-          <span className="badge">{m.row_count}</span>
+
+        <div className="side-actions">
+          <button className="primary" disabled={!canEdit}>
+            Generate Test Cases
+          </button>
+          <button>Create Baseline…</button>
+          <button>Load Baseline…</button>
         </div>
-      ))}
-
-      <div className="sl-sep" />
-      <div className="sl-head">Release</div>
-      <div className="release-pick">
-        <select
-          value={activeReleaseId ?? ""}
-          onChange={(e) => onSelectRelease(Number(e.target.value))}
-          disabled={releases.length === 0}
-        >
-          {releases.length === 0 && <option value="">No releases</option>}
-          {releases
-            .filter((r) => r.selectable !== false)
-            .map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.name}
-                {r.is_active ? " (active)" : ""}
-              </option>
-            ))}
-        </select>
-      </div>
-
-      <div className="sl-status">
-        <span>Source</span>
-        <b className={hasSource ? "" : "off"}>{hasSource ? "✓ linked" : "— none"}</b>
-      </div>
-
-      <div className="side-actions">
-        <button className="primary" disabled={!canEdit}>
-          Generate Test Cases
-        </button>
-        <button>Create Baseline…</button>
-        <button>Load Baseline…</button>
       </div>
     </div>
   );

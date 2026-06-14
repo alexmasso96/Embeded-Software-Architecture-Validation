@@ -34,7 +34,7 @@ export interface ModelsResponse {
 export interface ColumnSpec {
   name: string;
   type: string; // logic_key — e.g. "Port Search", "PortStateColumn", "MatchColumn"
-  visible: boolean;
+  visible: boolean | null; // true=Show, false=Hide, null=Auto (Init/Cyclic)
   width: number;
 }
 

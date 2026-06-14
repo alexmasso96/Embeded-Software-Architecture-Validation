@@ -21,6 +21,13 @@ from typing import Optional
 # Override via environment: ARCH_SQLITE_JOURNAL_MODE=DELETE for network shares
 _JOURNAL_MODE = os.environ.get("ARCH_SQLITE_JOURNAL_MODE", "WAL").upper()
 
+
+def _decode_visible(v):
+    """Column visibility: 2→None (Auto), 1→True (Show), 0→False (Hide)."""
+    if v == 2:
+        return None
+    return bool(v)
+
 # Set ARCH_PERF_LOG=1 to enable timing logs for hot DB paths
 _PERF_LOG = os.environ.get("ARCH_PERF_LOG", "0") == "1"
 _perf_logger = logging.getLogger("arch.perf")
@@ -930,13 +937,17 @@ class ProjectDatabase:
     # ------------------------------------------------------------------
 
     def save_column_layout(self, layout: list):
+        # Visibility is tri-state: True=Show (1), False=Hide (0), None=Auto (2).
+        # "Auto" is used by Init/Cyclic columns whose effective visibility is
+        # computed from row content at render time.
         with self._conn:
             self._conn.execute("DELETE FROM column_layout")
             rows = []
             for i, col in enumerate(layout):
                 name = col[0]
                 col_type = col[1]
-                visible = int(col[2]) if len(col) > 2 and col[2] is not None else 1
+                vis = col[2] if len(col) > 2 else True
+                visible = 2 if vis is None else (1 if vis else 0)
                 width = int(col[3]) if len(col) > 3 and col[3] is not None else 100
                 rows.append((i, name, col_type, visible, width))
             self._conn.executemany(
@@ -950,7 +961,7 @@ class ProjectDatabase:
             "SELECT col_name, col_type, col_visible, col_width"
             " FROM column_layout ORDER BY sort_order"
         )
-        return [(r[0], r[1], bool(r[2]), r[3]) for r in cur.fetchall()]
+        return [(r[0], r[1], _decode_visible(r[2]), r[3]) for r in cur.fetchall()]
 
     # ------------------------------------------------------------------
     # Test-case design

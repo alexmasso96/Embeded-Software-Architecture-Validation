@@ -165,6 +165,10 @@ class AppState:
 
             db = ProjectDatabase()
             db.open(db_file)            # create_schema=True by default
+            # Seed the default table layout so a brand-new project opens with the
+            # same basic columns the PyQt6 app provided (Logic_Column_Layout).
+            from Application_Logic.Logic_Column_Layout import DEFAULT_COLUMN_LAYOUT
+            db.save_column_layout(DEFAULT_COLUMN_LAYOUT)
             if encrypted:
                 db.set_meta("master_password_hash", SecurityManager.hash_password(password))
             db.commit()
