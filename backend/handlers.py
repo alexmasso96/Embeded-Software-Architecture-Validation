@@ -32,6 +32,7 @@ def register_handlers(jobs: JobManager, state: AppState) -> None:
     jobs.register("generate_tests", _make_generate_tests(state))
     jobs.register("parse_elf", _make_parse_elf(state))
     jobs.register("import_symbols", _make_import_symbols(state))
+    jobs.register("import_source", _make_import_source(state))
 
 
 # ----------------------------------------------------------------------
@@ -44,6 +45,7 @@ def _worker_db(state: AppState):
     main = state.require_open()
     wdb = ProjectDatabase()
     wdb.open(main.db_path, create_schema=False, apply_journal=False)
+    wdb.set_block_cipher(state.block_cipher())
     try:
         yield wdb
     finally:
@@ -116,7 +118,8 @@ def _make_release_diff(state: AppState):
             raise ProjectError("model_id is required (no active model).")
 
         progress("Computing release diff…")
-        diff_hash, diffs = run_release_diff(db.db_path, cur, prev)
+        diff_hash, diffs = run_release_diff(db.db_path, cur, prev,
+                                            cipher=state.block_cipher())
 
         # Persist on the worker's OWN connection (the crash-safe pattern: the
         # main connection stays untouched from this thread). The Change Log then
@@ -126,6 +129,7 @@ def _make_release_diff(state: AppState):
         wdb = ProjectDatabase()
         try:
             wdb.open(db.db_path, create_schema=False, apply_journal=False)
+            wdb.set_block_cipher(state.block_cipher())
             wdb.save_code_diffs(model_id, diff_hash, diffs)
             wdb.set_model_diff_hash(model_id, diff_hash, release_id=cur)
             wdb.set_meta("ai_last_diff_hash", diff_hash)
@@ -151,7 +155,14 @@ def _make_build_code_map(state: AppState):
             model_id,
             params.get("release_id"),
             progress_cb=lambda msg: progress(msg),
+            cipher=state.block_cipher(),
         )
+        # The build may have imported source into the DB (an explicitly chosen
+        # folder) — tell clients so the ✓ Source badge / Code Map source status
+        # refresh without a manual reload.
+        state.bus.publish("db-changed",
+                          {"reason": "code-map-built",
+                           "release_id": params.get("release_id")})
         return {"functions": len(code_map.get("functions", {}))}
     return handler
 
@@ -309,6 +320,41 @@ def _make_parse_elf(state: AppState):
                     break
         state._matchers.pop(elf_hash, None)
         return {"elf_hash": elf_hash, "functions": fn_count, "release_id": release_id}
+    return handler
+
+
+# ----------------------------------------------------------------------
+# import_source — import C/H source from a local folder into the DB, keyed to a
+# release (#2E). Stored gzip-compressed so the source travels with the .arch and
+# the code map / test injection can read it without the original tree present.
+# ----------------------------------------------------------------------
+def _make_import_source(state: AppState):
+    def handler(params: dict, progress: Callable[..., None], cancel: threading.Event):
+        from Application_Logic.Logic_Source_Store import FilesystemSourceProvider
+        state.require_edit()
+        release_id = params.get("release_id")
+        source_dir = params.get("source_dir")
+        if release_id is None or not source_dir:
+            raise ProjectError("release_id and source_dir are required.")
+
+        with _worker_db(state) as wdb:
+            progress("Scanning source folder…")
+            # save_release_source_files calls progress(rel_path, idx, total_or_None)
+            # per file — surface it as the job's per-file message (total is None,
+            # so the bar stays indeterminate).
+            count = wdb.save_release_source_files(
+                release_id,
+                FilesystemSourceProvider(source_dir).iter_text(),
+                progress=lambda rel_path, idx, _total: progress(
+                    f"Importing {rel_path}"),
+            )
+            wdb.commit()
+
+        # Tell every client the source set changed so the Release Manager's
+        # ✓ Source badge + the workspace refresh without a manual reload.
+        state.bus.publish("db-changed",
+                          {"reason": "source-imported", "release_id": release_id})
+        return {"files": count, "release_id": release_id}
     return handler
 
 

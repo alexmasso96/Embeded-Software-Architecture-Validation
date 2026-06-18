@@ -6,9 +6,6 @@ The "dirty" concept is tracked via a sidecar .dirty flag file.
 """
 import os
 import logging
-import hashlib
-import hmac
-import json
 
 from .qt_compat import gui_active
 from .Logic_Database import ProjectDatabase
@@ -68,42 +65,6 @@ class ProjectSaver:
             return False, str(e)
 
     # ------------------------------------------------------------------
-    # Integrity hash
-    # ------------------------------------------------------------------
-
-    # Fallback key used for projects that have no master password configured.
-    # Integrity still detects accidental external modification; it just isn't
-    # keyed to a user secret in that case.
-    _DEFAULT_INTEGRITY_KEY = b"arch-validator-integrity-v1"
-
-    @staticmethod
-    def _integrity_key(master_hash) -> bytes:
-        if master_hash:
-            return str(master_hash).encode("utf-8")
-        return ProjectSaver._DEFAULT_INTEGRITY_KEY
-
-    @staticmethod
-    def compute_integrity_hmac(db, master_hash) -> str:
-        """
-        HMAC-SHA256 over the project's canonical logical content, keyed by the
-        master-password hash (or a fixed fallback key when none is set).
-
-        This replaces the old whole-file SHA-256. The file-byte approach was
-        unstable: SQLite rewrites its own header (change counter, version
-        fields), checkpoints the WAL on close, and the app commits to the DB
-        outside the save path (ui_state, history) — so the raw bytes changed on
-        nearly every reopen and triggered spurious master-password prompts.
-        Hashing logical content instead is stable across reopen and SQLite
-        versions while remaining tamper-evident.
-        """
-        digest = db.compute_content_digest()
-        return hmac.new(
-            ProjectSaver._integrity_key(master_hash),
-            digest.encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
-
-    # ------------------------------------------------------------------
     # ELF cache helpers
     # ------------------------------------------------------------------
 
@@ -125,8 +86,8 @@ class ProjectSaver:
             the Save-As DB handoff, flushing the live table, and collecting the
             test-case-design text. Widgets must only be touched on the GUI thread.
           * Phase 2 (`_persist`, off-thread when progress=True): all DB writes,
-            ELF-cache export, integrity HMAC and WAL checkpoint. These touch only
-            the DB / managers / files, never widgets.
+            ELF-cache export and WAL checkpoint. These touch only the DB /
+            managers / files, never widgets.
 
         progress=True runs Phase 2 in a worker behind a responsive modal
         (LoadingDialog.run_task — the safe exec() form, see the modal pitfall
@@ -219,7 +180,7 @@ class ProjectSaver:
 
     @staticmethod
     def _persist(main_window, db, path, payload, is_temp):
-        """Phase 2 of save: DB writes, ELF cache, integrity HMAC, WAL checkpoint.
+        """Phase 2 of save: DB writes, ELF cache, WAL checkpoint.
 
         Touches only the DB connection, the (widget-free) model/release managers,
         the parser and the filesystem — safe to run on a worker thread. Progress
@@ -285,16 +246,6 @@ class ProjectSaver:
         else:
             main_window.history_manager.set_db(db)
 
-        # Integrity stamp: HMAC over canonical logical content, stored INSIDE
-        # the DB (so it travels with the file and can't desync like the old
-        # sidecar). Must be the last content write before commit; it is
-        # excluded from the digest so it isn't self-referential.
-        if not is_temp:
-            logger.info("Computing integrity stamp…")
-            master_hash = db.get_meta("master_password_hash")
-            integrity = ProjectSaver.compute_integrity_hmac(db, master_hash)
-            db.set_meta("integrity_hmac", integrity)
-
         db.commit()
 
         if not is_temp:
@@ -303,14 +254,6 @@ class ProjectSaver:
             if db.is_open:
                 logger.info("Checkpointing database…")
                 db.execute("PRAGMA wal_checkpoint(FULL)")
-
-            # Remove any stale sidecar left by the old file-byte scheme.
-            legacy_sidecar = path + ".integrity"
-            if os.path.exists(legacy_sidecar):
-                try:
-                    os.remove(legacy_sidecar)
-                except Exception:
-                    pass
 
     # ------------------------------------------------------------------
     # Load
@@ -343,23 +286,6 @@ class ProjectSaver:
             db.open(path)
             main_window.project_db = db
             main_window.arch_controller.set_project_db(db)
-
-            # Integrity check: recompute the HMAC over canonical logical content
-            # and compare to the value stored in the DB. Done right after open,
-            # before any load-time writes. Legacy projects (no stored integrity)
-            # open silently and get stamped on the next save.
-            integrity_mismatch = False
-            try:
-                stored = db.get_meta("integrity_hmac")
-                if stored:
-                    master_hash = db.get_meta("master_password_hash")
-                    expected = ProjectSaver.compute_integrity_hmac(db, master_hash)
-                    integrity_mismatch = not hmac.compare_digest(
-                        str(stored), str(expected)
-                    )
-            except Exception:
-                integrity_mismatch = False
-            main_window.integrity_mismatch = integrity_mismatch
 
             success, msg = ProjectSaver._load_from_db(main_window, db, path)
             main_window.arch_controller.is_loading = False

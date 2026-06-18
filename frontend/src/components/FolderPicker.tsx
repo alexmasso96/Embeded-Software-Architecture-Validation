@@ -1,15 +1,24 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
-import type { FsEntry, FsListResponse, ProjectMode } from "../api/types";
+import type {
+  DriveEntry,
+  FsEntry,
+  FsListResponse,
+  ProjectMode,
+} from "../api/types";
 import { FileIcon, FolderIcon } from "./Icons";
 
 const DEFAULT_COL_W = 236;
 
-type PickerMode = "open" | "new" | "import";
+type PickerMode = "open" | "new" | "import" | "folder";
 
 function extsFor(mode: PickerMode, exts?: string[]): string {
   if (exts && exts.length) return exts.join(",");
-  return mode === "import" ? ".elf,.json" : ".arch";
+  if (mode === "import") return ".elf,.json";
+  // "folder" navigates directories only — pass a sentinel that matches no file
+  // so the listing surfaces folders alone (dirs are always listed by /api/fs).
+  if (mode === "folder") return ".__no_files__";
+  return ".arch";
 }
 
 // Finder-style Miller-columns browser backed by GET /api/fs/list (dev stand-in
@@ -42,6 +51,7 @@ export function FolderPicker({
   const [filename, setFilename] = useState("");
   const [editMode, setEditMode] = useState(false); // open mode: default view-only
   const [newFolderName, setNewFolderName] = useState<string | null>(null);
+  const [drives, setDrives] = useState<DriveEntry[]>([]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const extsParam = extsFor(mode, exts);
@@ -67,6 +77,11 @@ export function FolderPicker({
       }
       setLoading(false);
     })();
+    // Logical drives / volumes for the quick-switch shortcut row (best-effort).
+    api
+      .get<{ drives: DriveEntry[] }>("/fs/drives")
+      .then((r) => setDrives(r.drives ?? []))
+      .catch(() => setDrives([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -173,6 +188,10 @@ export function FolderPicker({
   }
 
   function confirm() {
+    if (mode === "folder") {
+      if (currentDir) onConfirm(currentDir, "view");
+      return;
+    }
     if (mode === "new") {
       if (!currentDir || !filename.trim()) return;
       let name = filename.trim();
@@ -183,13 +202,21 @@ export function FolderPicker({
     }
   }
 
-  const canConfirm = mode === "new" ? Boolean(filename.trim()) : Boolean(selectedFile);
-  const actionLabel = mode === "new" ? "Create" : mode === "import" ? "Choose" : "Open";
+  const canConfirm =
+    mode === "new" ? Boolean(filename.trim())
+      : mode === "folder" ? Boolean(currentDir)
+        : Boolean(selectedFile);
+  const actionLabel =
+    mode === "new" ? "Create"
+      : mode === "import" ? "Choose"
+        : mode === "folder" ? "Choose Folder"
+          : "Open";
   const headerTitle =
     title ??
     (mode === "open" ? "Open Project"
       : mode === "import" ? "Import — choose an .elf or .json"
-        : "New Project — choose location");
+        : mode === "folder" ? "Choose a source folder"
+          : "New Project — choose location");
 
   // Breadcrumb of the current directory (Finder-style segmented path).
   const crumbs: { name: string; path: string }[] = [];
@@ -207,6 +234,24 @@ export function FolderPicker({
     <div className="modal-overlay" onMouseDown={onCancel}>
       <div className="modal picker" onMouseDown={(e) => e.stopPropagation()}>
         <div className="modal-head">{headerTitle}</div>
+
+        {drives.length > 0 && (
+          <div className="picker-drives">
+            {drives.map((d) => (
+              <button
+                key={d.path}
+                className={
+                  "drive-chip" + (currentDir === d.path ? " current" : "")
+                }
+                title={d.path}
+                onClick={() => navigateTo(d.path)}
+              >
+                <FolderIcon size={12} />
+                <span>{d.name}</span>
+              </button>
+            ))}
+          </div>
+        )}
 
         <div className="picker-bar">
           <div className="crumbs">
@@ -313,6 +358,10 @@ export function FolderPicker({
               onChange={(ev) => setFilename(ev.target.value)}
               onKeyDown={(ev) => ev.key === "Enter" && confirm()}
             />
+          ) : mode === "folder" ? (
+            <span className="picker-mode">
+              {currentDir ?? hint ?? "Navigate to a source folder"}
+            </span>
           ) : mode === "open" ? (
             <label className="picker-mode">
               <input

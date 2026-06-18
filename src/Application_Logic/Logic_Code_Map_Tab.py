@@ -17,7 +17,7 @@ MAX_GRAPH_NODES = 60
 
 
 def build_code_map_job(db_path, elf_hash, elf_path, source_dir, model_id,
-                       release_id=None, progress_cb=lambda msg: None):
+                       release_id=None, progress_cb=lambda msg: None, cipher=None):
     """Builds the C source index + joined code map. Run me on a worker thread.
 
     Crash-safety: uses its OWN SQLite connection (not the app's shared one).
@@ -40,6 +40,8 @@ def build_code_map_job(db_path, elf_hash, elf_path, source_dir, model_id,
     try:
         # Own connection to the same .arch (lightweight: no journal/schema redo).
         wdb.open(db_path, create_schema=False, apply_journal=False)
+        # Attach the session cipher so DB-stored source / maps decrypt + re-encrypt.
+        wdb.set_block_cipher(cipher)
 
         # Worker-side parser bound to the worker's own connection (DB-backed
         # DWARF reads) + the ELF path (Capstone reads function bytes from disk).
@@ -65,6 +67,18 @@ def build_code_map_job(db_path, elf_hash, elf_path, source_dir, model_id,
 
         code_index = None
         from Application_Logic.Logic_Code_Index import build_index
+        # #2E: an explicitly chosen source folder is imported + linked to the
+        # release (replacing any previously stored source) so the source travels
+        # inside the .arch. After this the release HAS source, so we always index
+        # from the DB below (WAL-independent, on the worker's OWN connection).
+        # The Code Map UI passes an empty source_dir for a plain "build from the
+        # already-imported source", which skips this and indexes the DB directly.
+        if (release_id is not None and source_dir and os.path.exists(source_dir)):
+            progress_cb("Importing release source into the database…")
+            from Application_Logic.Logic_Source_Store import FilesystemSourceProvider
+            wdb.save_release_source_files(
+                release_id, FilesystemSourceProvider(source_dir).iter_text())
+
         # #2E: prefer source stored in the DB for this release (read on the
         # worker's OWN connection — WAL-independent); else a linked local folder.
         if (release_id is not None and wdb.has_release_source(release_id)):

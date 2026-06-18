@@ -27,7 +27,7 @@ export function useSSE(onEvent: (e: BusEvent) => void, enabled = true) {
     };
 
     // Known named events from the worker's EventBus.
-    for (const name of ["db-changed", "lock", "lock_lost", "job"]) {
+    for (const name of ["db-changed", "lock", "lock_lost", "job", "build"]) {
       es.addEventListener(name, handler(name) as EventListener);
     }
     // Fallback for unnamed messages.

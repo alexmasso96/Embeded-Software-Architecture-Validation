@@ -13,7 +13,7 @@ session physically cannot write), in addition to the edit lock.
 from __future__ import annotations
 
 import atexit
-import hmac
+import base64
 import logging
 import os
 import shutil
@@ -24,7 +24,6 @@ from typing import Optional
 from Application_Logic.Logic_Database import ProjectDatabase
 from Application_Logic.Logic_Architecture_Models import ArchitectureManager
 from Application_Logic.Logic_Release_Manager import ReleaseManager
-from Application_Logic.Logic_Project_Saving import ProjectSaver
 from Application_Logic.Logic_Security import SecurityManager
 from Application_Logic.Logic_File_Locking import (
     FileLockManager, LOCK_HEARTBEAT_INTERVAL_SECONDS,
@@ -56,22 +55,30 @@ class AppState:
         self.arch_manager: Optional[ArchitectureManager] = None
         self.release_manager: Optional[ReleaseManager] = None
         self.master_password_hash: Optional[str] = None
-        self.integrity_mismatch: bool = False
         self.lock_info: dict = {}
         self.lock_lost: bool = False
         self._matchers: dict = {}   # elf_hash -> SymbolMatcher (name-list cache)
         self._hb_thread: Optional[threading.Thread] = None
         self._hb_stop: Optional[threading.Event] = None
 
-        # At-rest encryption (master-password protected projects). For an
-        # encrypted project the live DB lives in a private temp file; project_path
-        # stays the user-facing encrypted .arch. Plaintext/legacy projects leave
-        # these at their defaults (db_file == project_path, encrypted False).
+        # Per-block at-rest encryption (master-password protected projects). The
+        # .arch is a PLAINTEXT SQLite file opened directly — only sensitive content
+        # columns are encrypted, each under a per-category key held in
+        # ``_block_cipher`` for the session. ``_encrypted`` means "has a block
+        # cipher". The temp-file machinery below is used ONLY by the one-time
+        # legacy whole-file (ARCHENC1) migration.
         self._db_file: Optional[str] = None
         self._encrypted: bool = False
         self._password: Optional[str] = None
+        self._block_cipher = None
         self._temp_dir: Optional[str] = None
         self._atexit_registered: bool = False
+
+    def block_cipher(self):
+        """The session's per-block content cipher (or None). Read by worker
+        threads to set_block_cipher on their own connections. Immutable once set,
+        so safe to share across threads."""
+        return self._block_cipher
 
     # ------------------------------------------------------------------
     @property
@@ -151,9 +158,10 @@ class AppState:
     def new_project(self, path: str, password: Optional[str] = None) -> dict:
         """Create a fresh .arch at ``path`` and open it exclusive-edit.
 
-        With a real ``password`` the project is encrypted at rest: the live DB is
-        created in a private temp file and the encrypted blob is written to
-        ``path``. No password (or a test-bypass password) → plaintext SQLite.
+        With a real ``password`` the project uses per-block content encryption:
+        the .arch is a plaintext SQLite file (opened directly) whose sensitive
+        columns are encrypted under per-category keys derived from the password.
+        No password (or a test-bypass password) → fully plaintext SQLite.
         """
         with self._lock:
             self._close_locked()
@@ -161,30 +169,28 @@ class AppState:
                 raise ProjectError(f"File already exists: {path}")
 
             encrypted = not crypto.bypasses_encryption(password)
-            db_file = self._provision_db_file(path, encrypted)
 
             db = ProjectDatabase()
-            db.open(db_file)            # create_schema=True by default
+            db.open(path)               # plaintext SQLite directly at path
+            cipher = None
+            if encrypted:
+                cipher = self._init_block_encryption(db, password)
+                db.set_block_cipher(cipher)
             # Seed the default table layout so a brand-new project opens with the
             # same basic columns the PyQt6 app provided (Logic_Column_Layout).
             from Application_Logic.Logic_Column_Layout import DEFAULT_COLUMN_LAYOUT
             db.save_column_layout(DEFAULT_COLUMN_LAYOUT)
-            if encrypted:
-                db.set_meta("master_password_hash", SecurityManager.hash_password(password))
             db.commit()
-
-            if encrypted:
-                # The lock manager keys its lock file off an existing project
-                # path, so the encrypted blob must exist before we lock it.
-                self._encrypt_to_disk(db, db_file, path, password)
 
             acquired, msg = FileLockManager.acquire_lock(path)
             if not acquired:
                 db.close()
-                self._purge_temp()
                 raise ProjectError(f"Could not acquire edit lock: {msg}")
 
-            self._db_file, self._encrypted, self._password = db_file, encrypted, password
+            self._db_file = path
+            self._encrypted = encrypted
+            self._password = password
+            self._block_cipher = cipher
             self._wire(db, path, MODE_EXCLUSIVE)
             self.bus.publish("db-changed", {"reason": "new"})
             return self.status()
@@ -204,58 +210,53 @@ class AppState:
             if not os.path.exists(path):
                 raise ProjectError(f"No such file: {path}")
 
-            encrypted = crypto.is_encrypted_file(path)
-            if encrypted:
-                if not password:
-                    raise crypto.PasswordRequired("Master password required.")
-                db_file = self._provision_db_file(path, encrypted=True)
-                # Raises PasswordInvalid on a wrong password (before we lock).
-                crypto.decrypt_file(path, db_file, password)
-            elif crypto.is_plaintext_sqlite(path):
-                db_file = path
-            else:
-                raise ProjectError("Unrecognized project file format.")
+            # Resolve the per-block cipher (and migrate a legacy whole-file
+            # ARCHENC1 project to per-block in place). Raises PasswordRequired /
+            # PasswordInvalid for the existing 401/403 mapping — before we lock.
+            cipher = self._resolve_cipher_on_open(path, password)
+            encrypted = cipher is not None
 
             if mode == MODE_EXCLUSIVE:
                 acquired, msg = FileLockManager.acquire_lock(path)
                 if not acquired:
                     # Fall back to view-only with the contended-lock detail.
                     self.lock_info = FileLockManager.check_lock(path)
-                    self._purge_temp()
                     raise ProjectError(f"Locked by another session: {msg}")
 
             db = ProjectDatabase()
-            db.open(db_file)
+            db.open(path)
+            # Attach the cipher BEFORE _wire (registry loads read encrypted rows)
+            # and before read-only (reads still need to decrypt in view mode).
+            if cipher is not None:
+                db.set_block_cipher(cipher)
             if mode == MODE_VIEW:
                 db.set_read_only(True)   # PRAGMA query_only=ON
-            self._db_file, self._encrypted, self._password = db_file, encrypted, password
+            self._db_file = path
+            self._encrypted = encrypted
+            self._password = password
+            self._block_cipher = cipher
             self._wire(db, path, mode)
-            self._check_integrity()
             self.bus.publish("db-changed", {"reason": "open"})
             return self.status()
 
     def save_project(self) -> dict:
-        """Persist pending work: commit, re-stamp the integrity HMAC, checkpoint.
+        """Persist pending work: commit, checkpoint.
 
         In the worker the .arch *is* the live DB — routers mutate it directly —
-        so 'save' is a durability barrier (commit + WAL checkpoint) plus a fresh
-        tamper-evident integrity stamp, not a table-flush like the Qt app.
+        so 'save' is a durability barrier (commit + WAL checkpoint), not a
+        table-flush like the Qt app.
         """
         with self._lock:
             db = self.require_edit()
             try:
-                stamp = ProjectSaver.compute_integrity_hmac(db, self.master_password_hash)
-                db.set_meta("integrity_hmac", stamp)
                 db.commit()
                 try:
                     db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 except Exception:  # noqa: BLE001 — checkpoint best-effort
                     pass
                 db.commit()
-                if self._encrypted:
-                    # Re-encrypt the now-consistent temp DB back to the .arch.
-                    self._encrypt_to_disk(db, self._db_file, self.project_path,
-                                          self._password)
+                # No whole-file re-encryption: content is already encrypted at the
+                # column level, so the .arch on disk is durable after the commit.
             except Exception as e:  # noqa: BLE001
                 raise ProjectError(f"Save failed: {e}") from e
             self.bus.publish("db-changed", {"reason": "save"})
@@ -286,7 +287,6 @@ class AppState:
                 "path": self.project_path,
                 "mode": self.mode,
                 "can_edit": self.can_edit,
-                "integrity_mismatch": self.integrity_mismatch,
                 "active_model": active_model,
                 "active_release": active_release,
                 "model_count": model_count,
@@ -317,31 +317,93 @@ class AppState:
         else:
             self.lock_info = FileLockManager.check_lock(path)
 
-    def _check_integrity(self) -> None:
-        self.integrity_mismatch = False
-        db = self.db
-        if db is None:
-            return
-        if self._encrypted:
-            # Fernet already authenticated the payload on decrypt — a wrong
-            # password or any tampering would have failed before we got here.
-            return
-        try:
-            stored = db.get_meta("integrity_hmac")
-            if stored:
-                expected = ProjectSaver.compute_integrity_hmac(db, self.master_password_hash)
-                self.integrity_mismatch = not hmac.compare_digest(str(stored), str(expected))
-        except Exception:  # noqa: BLE001 — legacy/partial projects open silently
-            self.integrity_mismatch = False
+    # ------------------------------------------------------------------
+    # Per-block encryption helpers (call with self._lock held)
+    # ------------------------------------------------------------------
+    def _init_block_encryption(self, db: ProjectDatabase, password: str):
+        """Generate a salt + cipher for a NEW encrypted project and stamp the
+        scheme/salt/canary/master-hash into project_meta. Returns the cipher.
+        Called before set_block_cipher, so the meta writes land plaintext (the
+        canary is already cipher output; the salt/scheme/hash must stay plain)."""
+        from Application_Logic.Logic_Block_Crypto import BlockCipher, ENC_SCHEME
+        salt = BlockCipher.new_salt()
+        cipher = BlockCipher.from_password(password, salt)
+        db.set_meta("enc_scheme", ENC_SCHEME)
+        db.set_meta("enc_kdf_salt", base64.urlsafe_b64encode(salt).decode("ascii"))
+        db.set_meta("enc_canary", cipher.make_canary())
+        db.set_meta("master_password_hash", SecurityManager.hash_password(password))
+        return cipher
 
-    # ------------------------------------------------------------------
-    # At-rest encryption helpers (call with self._lock held)
-    # ------------------------------------------------------------------
+    def _resolve_cipher_on_open(self, path: str, password: Optional[str]):
+        """Resolve the per-block cipher for an existing file, migrating a legacy
+        whole-file (ARCHENC1) project in place. Returns the cipher, or None for a
+        plaintext/test-bypass project. Raises PasswordRequired/PasswordInvalid."""
+        from Application_Logic.Logic_Block_Crypto import BlockCipher, ENC_SCHEME
+        if crypto.is_encrypted_file(path):
+            if not password:
+                raise crypto.PasswordRequired("Master password required.")
+            return self._migrate_legacy_encrypted(path, password)
+        if not crypto.is_plaintext_sqlite(path):
+            raise ProjectError("Unrecognized project file format.")
+        scheme, salt_b64, canary = self._peek_enc_meta(path)
+        if scheme != ENC_SCHEME:
+            return None  # plaintext / test-bypass project — no cipher
+        if not password:
+            raise crypto.PasswordRequired("Master password required.")
+        if not salt_b64:
+            raise ProjectError("Encrypted project is missing its key salt.")
+        salt = base64.urlsafe_b64decode(salt_b64.encode("ascii"))
+        cipher = BlockCipher.from_password(password, salt)
+        cipher.verify_canary(canary)   # raises PasswordInvalid on wrong password
+        return cipher
+
+    @staticmethod
+    def _peek_enc_meta(path: str):
+        """Read (enc_scheme, enc_kdf_salt, enc_canary) from a plaintext SQLite
+        without going through the full open path. Returns (None, None, None) for
+        a project that predates per-block encryption."""
+        import sqlite3
+        conn = sqlite3.connect(path)
+        try:
+            def g(k):
+                try:
+                    row = conn.execute(
+                        "SELECT value FROM project_meta WHERE key=?", (k,)).fetchone()
+                    return row[0] if row else None
+                except sqlite3.Error:
+                    return None
+            return g("enc_scheme"), g("enc_kdf_salt"), g("enc_canary")
+        finally:
+            conn.close()
+
+    def _migrate_legacy_encrypted(self, path: str, password: str):
+        """One-time: decrypt a legacy ARCHENC1 whole-file project to a temp DB,
+        encrypt all content columns per-block, then write the plaintext SQLite
+        back over ``path``. Returns the cipher."""
+        from Application_Logic.Logic_Block_Crypto import migrate_to_per_block
+        from Application_Logic.Logic_Database import ENCRYPTED_META_KEYS
+        db_file = self._provision_db_file(path, encrypted=True)
+        crypto.decrypt_file(path, db_file, password)   # PasswordInvalid on wrong pw
+        db = ProjectDatabase()
+        db.open(db_file)               # create_schema=True runs any v→4 upgrade
+        try:
+            cipher = migrate_to_per_block(db, password, meta_keys=ENCRYPTED_META_KEYS)
+            db.commit()
+            try:
+                db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                db.commit()
+            except Exception:  # noqa: BLE001 — checkpoint best-effort
+                pass
+        finally:
+            db.close()
+        tmp = path + ".mig.tmp"
+        shutil.copyfile(db_file, tmp)
+        os.replace(tmp, path)          # atomic replace of the ARCHENC1 blob
+        self._purge_temp()
+        return cipher
+
     def _provision_db_file(self, project_path: str, encrypted: bool) -> str:
-        """The actual file the SQLite connection uses. Plaintext → the project
-        path itself; encrypted → a private temp file the blob decrypts into."""
-        if not encrypted:
-            return project_path
+        """A private temp file for the one-time legacy-migration decrypt."""
         if not self._atexit_registered:
             atexit.register(self._purge_temp)   # crash-safety net for the temp dir
             self._atexit_registered = True
@@ -351,18 +413,6 @@ class AppState:
         except OSError:
             pass
         return os.path.join(self._temp_dir, "project.db")
-
-    def _encrypt_to_disk(self, db: ProjectDatabase, db_file: str,
-                         real_path: str, password: str) -> None:
-        """Checkpoint the live temp DB to a consistent on-disk state, then write
-        the encrypted blob to the user-facing .arch."""
-        db.commit()
-        try:
-            db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            db.commit()
-        except Exception:  # noqa: BLE001 — checkpoint best-effort
-            pass
-        crypto.encrypt_file(db_file, real_path, password)
 
     def _purge_temp(self) -> None:
         """Best-effort shred + remove the session temp dir (decrypted DB)."""
@@ -450,9 +500,9 @@ class AppState:
         self.arch_manager = None
         self.release_manager = None
         self.master_password_hash = None
-        self.integrity_mismatch = False
         self.lock_info = {}
         self._matchers = {}
         self._db_file = None
         self._encrypted = False
         self._password = None
+        self._block_cipher = None

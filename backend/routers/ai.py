@@ -28,10 +28,17 @@ from Application_Logic import Logic_AI_Credentials as creds
 
 from ..deps import get_state
 from ..security import require_token
-from ..state import AppState
+from ..state import AppState, ProjectError
 
 router = APIRouter(prefix="/api/ai", tags=["ai"],
                    dependencies=[Depends(require_token)])
+
+
+def _guard(fn):
+    try:
+        return fn()
+    except ProjectError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +84,95 @@ def clear_provider_key(provider_id: str) -> dict:
         raise HTTPException(status_code=404, detail=f"Unknown provider: {provider_id}")
     creds.delete_key(provider_id)
     return _provider_view(p)
+
+
+# ---------------------------------------------------------------------------
+# Prompt / rules editing (AI Generation + AI Chat). These live in project_meta
+# (de-roleplayed defaults via Logic_AI_Context) so they travel with the .arch.
+# ---------------------------------------------------------------------------
+class PromptsBody(BaseModel):
+    rules: Optional[str] = None
+    prompt: Optional[str] = None
+    chat_rules: Optional[str] = None
+
+
+@router.get("/prompts")
+def get_prompts(state: AppState = Depends(get_state)) -> dict:
+    def go():
+        from Application_Logic import Logic_AI_Context as ctx
+        db = state.require_open()
+        return {
+            "rules": ctx.get_rules(db),
+            "prompt": ctx.get_prompt(db),
+            "chat_rules": ctx.get_chat_rules(db),
+        }
+    return _guard(go)
+
+
+@router.put("/prompts")
+def set_prompts(body: PromptsBody, state: AppState = Depends(get_state)) -> dict:
+    def go():
+        from Application_Logic import Logic_AI_Context as ctx
+        db = state.require_edit()
+        if body.rules is not None:
+            ctx.set_rules(db, body.rules)
+        if body.prompt is not None:
+            ctx.set_prompt(db, body.prompt)
+        if body.chat_rules is not None:
+            ctx.set_chat_rules(db, body.chat_rules)
+        db.commit()
+        return {
+            "rules": ctx.get_rules(db),
+            "prompt": ctx.get_prompt(db),
+            "chat_rules": ctx.get_chat_rules(db),
+        }
+    return _guard(go)
+
+
+# ---------------------------------------------------------------------------
+# Mind-map status (AI Generation grounds + regenerates the model/release map).
+# ---------------------------------------------------------------------------
+@router.get("/mindmap")
+def mindmap_status(model_id: Optional[int] = None, release_id: Optional[int] = None,
+                   state: AppState = Depends(get_state)) -> dict:
+    def go():
+        db = state.require_open()
+        mid = model_id
+        if mid is None and state.arch_manager is not None:
+            mid = state.arch_manager.active_model_id
+        rid = release_id if release_id is not None else db.get_active_release_id()
+        if mid is None:
+            return {"model_id": None, "release_id": rid, "has_mindmap": False, "meta": None}
+        meta = db.get_model_mindmap_meta(mid, release_id=rid)
+        return {
+            "model_id": mid,
+            "release_id": rid,
+            "has_mindmap": db.has_model_mindmap(mid, release_id=rid),
+            "has_source": db.has_release_source(rid) if rid is not None else False,
+            "meta": meta,
+        }
+    return _guard(go)
+
+
+# ---------------------------------------------------------------------------
+# HLT design-file parsing (AI Generation checklist)
+# ---------------------------------------------------------------------------
+class ParseHltBody(BaseModel):
+    file_path: str
+
+
+@router.post("/parse-hlt")
+def parse_hlt(body: ParseHltBody) -> dict:
+    """Parse one HLT ``*_Test_Case_Design.md`` into its title/model + test-case
+    checklist so the frontend can show them for selection before generation."""
+    import os
+    from Application_Logic import Logic_AI_Context as ctx
+    if not body.file_path or not os.path.isfile(body.file_path):
+        raise HTTPException(status_code=404, detail=f"No such file: {body.file_path}")
+    try:
+        return ctx.parse_hlt_file(body.file_path)
+    except Exception as e:  # noqa: BLE001 — surface parse failures as 400
+        raise HTTPException(status_code=400, detail=f"Could not parse HLT file: {e}") from e
 
 
 # ---------------------------------------------------------------------------

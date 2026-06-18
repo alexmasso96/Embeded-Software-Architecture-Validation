@@ -30,10 +30,12 @@ from .routers import changelog as changelog_router
 from .routers import codemap as codemap_router
 from .routers import fs as fs_router
 from .routers import imports as imports_router
+from .routers import injection as injection_router
 from .routers import jobs as jobs_router
 from .routers import project as project_router
 from .routers import releases as releases_router
 from .routers import symbols as symbols_router
+from .routers import testdesign as testdesign_router
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +73,8 @@ def create_app(token: str | None = None, heartbeat_interval: float | None = None
     app.include_router(ai_router.router)
     app.include_router(imports_router.router)
     app.include_router(fs_router.router)
+    app.include_router(injection_router.router)
+    app.include_router(testdesign_router.router)
 
     @app.get("/api/health")
     def health() -> dict:

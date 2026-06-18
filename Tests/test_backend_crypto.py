@@ -60,22 +60,31 @@ def client():
 
 
 def test_encrypted_project_roundtrip(client):
+    """Per-block model: the .arch is a PLAINTEXT SQLite file on disk (so open/save
+    are fast — no whole-file crypto), but it is stamped with the per-block scheme
+    and the password still gates reopening (canary verification)."""
+    import sqlite3
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "Secret.arch")
         r = client.post("/api/project/new", json={"path": path, "password": PW}, headers=AUTH)
         assert r.status_code == 200
         assert r.json()["encrypted"] is True
 
-        # On disk it must be ciphertext, not a plaintext SQLite header.
-        assert crypto.is_encrypted_file(path)
-        assert not crypto.is_plaintext_sqlite(path)
+        # On disk it is now plaintext SQLite (structure visible) — NOT a whole-file
+        # ARCHENC1 blob. The per-block scheme is recorded in project_meta.
+        assert crypto.is_plaintext_sqlite(path)
+        assert not crypto.is_encrypted_file(path)
+        conn = sqlite3.connect(path)
+        scheme = conn.execute(
+            "SELECT value FROM project_meta WHERE key='enc_scheme'").fetchone()[0]
+        conn.close()
+        assert scheme == "per-block-v1"
 
         client.post("/api/project/save", headers=AUTH)
         client.post("/api/project/close", headers=AUTH)
-        # Still ciphertext after a save.
-        assert crypto.is_encrypted_file(path)
+        assert crypto.is_plaintext_sqlite(path)  # still plaintext SQLite after save
 
-        # Reopen needs the password.
+        # Reopen still needs the password (canary verification drives 401/403).
         assert client.post("/api/project/open",
                            json={"path": path, "mode": "exclusive"},
                            headers=AUTH).status_code == 401

@@ -8,6 +8,7 @@ import {
   isCustomAccent,
   type ThemeMode,
 } from "../theme";
+import { AISettings } from "./AISettings";
 import { ColorPicker } from "./ColorPicker";
 
 type Category = "appearance" | "ai" | "paths";
@@ -181,13 +182,7 @@ export function Preferences({
             </div>
           )}
 
-          {category === "ai" && (
-            <div className="prefs-body">
-              <div className="prefs-placeholder">
-                AI provider configuration moves here in a later slice.
-              </div>
-            </div>
-          )}
+          {category === "ai" && <AISettings />}
 
           {category === "paths" && (
             <div className="prefs-body">

@@ -709,56 +709,9 @@ class ApplicationWindow(QMainWindow):
         ProjectSaver._cached_elf_data = None
         ProjectSaver._cached_parser_hash = None
 
-        self.integrity_mismatch = False
         success, msg = ProjectSaver.load_project(self, file_path)
-        
+
         if success:
-            if getattr(self, 'integrity_mismatch', False):
-                # Prompt the user for master password (Feature 4)
-                from Application_Logic.Logic_Security import SecurityManager
-                from UI.Dialog_Master_Password import MasterPasswordPromptDialog
-
-                # Read stored password hash from DB
-                master_password_hash = None
-                db = getattr(self, 'project_db', None)
-                if db and db.is_open:
-                    try:
-                        master_password_hash = db.get_meta("master_password_hash")
-                    except Exception:
-                        pass
-
-                if master_password_hash:
-                    authenticated = False
-                    for attempt in range(3):
-                        prompt_dialog = MasterPasswordPromptDialog(self, "Integrity Mismatch Detected. Enter Master Password:")
-                        if prompt_dialog.exec():
-                            entered_password = prompt_dialog.get_password()
-                            if SecurityManager.verify_password(entered_password, master_password_hash):
-                                authenticated = True
-                                break
-                            else:
-                                QMessageBox.warning(self, "Invalid Password", f"Incorrect password. Attempt {attempt + 1} of 3.")
-                        else:
-                            break # Cancelled
-                    
-                    if not authenticated:
-                        if edit_mode:
-                            from Application_Logic.Logic_File_Locking import FileLockManager
-                            FileLockManager.release_lock(file_path)
-                        
-                        self.current_project_file = None
-                        self.arch_controller.reset_controller()
-                        self.setWindowTitle("Architecture Testing Tool")
-                        QMessageBox.critical(self, "Integrity Error", "Project loading cancelled due to integrity validation failure.")
-                        self.ui.statusbar.showMessage("Project load failed due to integrity mismatch.")
-                        return
-                else:
-                    # No master password set (legacy project)
-                    # Show a warning and allow user to proceed
-                    QMessageBox.warning(self, "Integrity Warning", 
-                                        "Project integrity verification failed (missing hash/metadata) and no master password is set.\n"
-                                        "This may indicate a legacy project or possible corruption. Proceeding to open.")
-            
             # If successfully opened, apply master_password_hash & auto_save_interval
             self.current_project_file = file_path
             self.set_app_mode(edit_mode)

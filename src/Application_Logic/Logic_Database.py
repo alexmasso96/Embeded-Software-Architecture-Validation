@@ -49,25 +49,17 @@ def _timed(label: str, **extra):
     detail = " ".join(f"{k}={v}" for k, v in extra.items())
     _perf_logger.info("[PERF] %-45s %6.1f ms  %s", label, ms, detail)
 
-DB_SCHEMA_VERSION = 3
+DB_SCHEMA_VERSION = 4
 
-# --- Finding D: integrity-digest sort keys -------------------------------
-# compute_content_digest() must order rows deterministically AND independently of
-# physical/rowid order (so the same logical project digests identically across
-# machines). The old code ordered by ALL columns, which means sorting by the big
-# `row_data` JSON blob — the dominant cost on Ctrl+S. For the heavy tables we sort
-# by a cheap, unique content key instead (the row bytes are still fully hashed —
-# we just don't SORT by the megabytes of JSON). Other (small) tables keep the
-# all-columns ordering. NOTE: this changes the digest VALUE once, so existing
-# projects show a one-time "integrity mismatch" prompt after upgrading (accepted).
-_DIGEST_ORDER_KEYS = {
-    "release_rows": ("release_id", "row_index"),
-    "architecture_rows": ("model_id", "row_index"),
-    "release_results": ("release_id", "col_name"),
-    "release_column_metadata": ("release_id", "col_name"),
-    "model_metadata": ("model_id", "key"),
-    "project_meta": ("key",),
-}
+# Category-E project_meta keys (free-text settings, never queried by value) that
+# are encrypted at rest when a block cipher is attached. Structural / pre-cipher
+# keys (schema_version, enc_*, master_password_hash, activity_status) are
+# deliberately excluded — they must be readable before the cipher exists.
+ENCRYPTED_META_KEYS = frozenset({
+    "ai_prompt", "ai_rules_md", "mind_map_prompt", "mind_map_rules",
+    "chat_rules", "ai_requirements_context",
+    "inject_build_command", "inject_build_cwd",
+})
 
 # --- Finding F: WAL vs DELETE journal mode -------------------------------
 # WAL corrupts on network filesystems (its shared-memory index can't work over
@@ -194,35 +186,6 @@ def _history_row_hmac(prev_head: str, timestamp: str, username: str,
     ).encode("utf-8")
     return hmac.new(_HISTORY_HMAC_KEY, payload, hashlib.sha256).hexdigest()
 
-# Tables excluded from the integrity content digest. These are either cosmetic /
-# volatile state the app writes OUTSIDE an explicit save (so they must not affect
-# integrity), or bulky ELF caches that are already hash-addressed by their own
-# md5 and don't need re-hashing here.
-_INTEGRITY_EXCLUDED_TABLES = frozenset({
-    "ui_state",          # active model id, geometry — written on selection/load
-    "history",           # audit log, appended independently of save
-    "elf_symbols",       # large, hash-addressed ELF cache
-    "elf_functions",
-    "elf_structures",
-    "elf_global_vars",
-    "sqlite_sequence",   # internal AUTOINCREMENT bookkeeping
-    "ai_model_mindmaps", # derived AI cache, recomputable from source (legacy)
-    "ai_release_maps",   # #2E: per-release derived AI cache, recomputable
-    "ai_code_diffs",     # derived AI cache, recomputable from source
-    "release_source_files",  # #2E: large source blobs; never hash GBs on save/open
-})
-
-# project_meta keys excluded from the digest: the integrity value itself (would be
-# self-referential) and volatile bookkeeping keys.
-_INTEGRITY_EXCLUDED_META = frozenset({
-    "integrity_hmac",
-    "schema_version",
-    "last_exported_elf_hash",
-    "ai_source_path",            # machine-specific absolute path
-    "ai_previous_source_path",   # machine-specific absolute path
-    "ai_requirements_context",   # non-critical AI support metadata (user-locked)
-})
-
 
 class ProjectDatabase:
 
@@ -233,6 +196,11 @@ class ProjectDatabase:
         # query_only) plus skip-guards on the KV writers so a viewer can never
         # mutate the shared file even via an un-gated code path.
         self.read_only: bool = False
+        # Per-block content cipher (Logic_Block_Crypto.BlockCipher) or None.
+        # None ⇒ plaintext project / test-bypass / the unit-test suite, where the
+        # _enc/_dec helpers are identity. Set via set_block_cipher() right after
+        # open(), BEFORE anything reads encrypted columns (registry loads, workers).
+        self._cipher = None
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -343,6 +311,27 @@ class ProjectDatabase:
 
     def executemany(self, sql: str, params):
         return self._conn.executemany(sql, params)
+
+    # ------------------------------------------------------------------
+    # Per-block content encryption (see Logic_Block_Crypto)
+    # ------------------------------------------------------------------
+    def set_block_cipher(self, cipher) -> None:
+        """Attach (or clear, with None) the per-category content cipher. Must be
+        called before any read of an encrypted column. Plaintext/test projects
+        leave this None → the _enc/_dec helpers below are pure identity."""
+        self._cipher = cipher
+
+    def _enc_blob(self, category: str, b):
+        return self._cipher.encrypt(category, b) if (self._cipher and b) else b
+
+    def _dec_blob(self, category: str, b):
+        return self._cipher.decrypt(category, b) if (self._cipher and b) else b
+
+    def _enc_text(self, category: str, s):
+        return self._cipher.encrypt_text(category, s) if (self._cipher and s) else s
+
+    def _dec_text(self, category: str, s):
+        return self._cipher.decrypt_text(category, s) if (self._cipher and s) else s
 
     # ------------------------------------------------------------------
     # Schema
@@ -563,6 +552,45 @@ class ProjectDatabase:
                     updated_at      TEXT,
                     PRIMARY KEY (model_id, release_id)
                 );
+
+                -- Source-Level Test Code Injection -----------------------
+                -- A test project bundles imported helper files plus a set of
+                -- injection hooks that splice snippets into production source.
+                CREATE TABLE IF NOT EXISTS test_projects (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name       TEXT    NOT NULL,
+                    created_at TEXT    NOT NULL DEFAULT ''
+                );
+
+                -- Imported .c/.h helper files (gzip-compressed; read lazily).
+                CREATE TABLE IF NOT EXISTS test_project_files (
+                    test_project_id INTEGER NOT NULL
+                                        REFERENCES test_projects(id) ON DELETE CASCADE,
+                    rel_path        TEXT    NOT NULL,
+                    content_gzip    BLOB    NOT NULL,
+                    size            INTEGER NOT NULL DEFAULT 0,
+                    ext             TEXT,
+                    PRIMARY KEY (test_project_id, rel_path)
+                );
+                CREATE INDEX IF NOT EXISTS idx_test_project_files
+                    ON test_project_files(test_project_id);
+
+                -- Injection hooks: anchor lines locate the splice point, the
+                -- fuzzy resolver re-finds it as the source shifts underneath.
+                CREATE TABLE IF NOT EXISTS test_code_injections (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    test_project_id INTEGER NOT NULL
+                                        REFERENCES test_projects(id) ON DELETE CASCADE,
+                    src_file_path   TEXT    NOT NULL,
+                    function_name   TEXT    NOT NULL DEFAULT '',
+                    line_above_code TEXT    NOT NULL DEFAULT '',
+                    line_below_code TEXT    NOT NULL DEFAULT '',
+                    injected_code   TEXT    NOT NULL DEFAULT '',
+                    offset_lines    INTEGER NOT NULL DEFAULT 0,
+                    created_at      TEXT    NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_test_code_injections
+                    ON test_code_injections(test_project_id);
             """)
 
             # Add parser_backend column to elf_index if missing (Phase 13 migration)
@@ -644,20 +672,28 @@ class ProjectDatabase:
     def get_meta(self, key: str, default=None):
         cur = self._conn.execute("SELECT value FROM project_meta WHERE key=?", (key,))
         row = cur.fetchone()
-        return row[0] if row else default
+        if not row:
+            return default
+        if key in ENCRYPTED_META_KEYS:
+            return self._dec_text("E", row[0])
+        return row[0]
 
     def set_meta(self, key: str, value):
         if self.read_only:
             return  # View-Only: silently ignore incidental metadata writes.
+        stored = str(value) if value is not None else None
+        if stored is not None and key in ENCRYPTED_META_KEYS:
+            stored = self._enc_text("E", stored)
         with self._conn:
             self._conn.execute(
                 "INSERT OR REPLACE INTO project_meta (key, value) VALUES (?, ?)",
-                (key, str(value) if value is not None else None)
+                (key, stored)
             )
 
     def get_all_meta(self) -> dict:
         cur = self._conn.execute("SELECT key, value FROM project_meta")
-        return {r[0]: r[1] for r in cur.fetchall()}
+        return {r[0]: (self._dec_text("E", r[1]) if r[0] in ENCRYPTED_META_KEYS else r[1])
+                for r in cur.fetchall()}
 
     # ------------------------------------------------------------------
     # Multi-user activity broadcast (editor writes; View-Only sessions poll)
@@ -712,7 +748,7 @@ class ProjectDatabase:
         if not row or not row[0]:
             return None
         try:
-            return json.loads(row[0])
+            return json.loads(self._dec_text("C", row[0]))
         except (ValueError, TypeError):
             return None
 
@@ -753,15 +789,18 @@ class ProjectDatabase:
             existing = self._conn.execute(
                 "SELECT code_map_json FROM ai_release_maps "
                 "WHERE model_id=? AND release_id=?", (model_id, rid)).fetchone()
-            cm = code_map_json if code_map_json is not None else (
-                existing[0] if existing else None)
+            # Decrypt the preserved existing value so the single _enc_text below
+            # encrypts exactly once (never double-encrypts retained ciphertext).
+            existing_cm = self._dec_text("C", existing[0]) if existing else None
+            cm = code_map_json if code_map_json is not None else existing_cm
             self._conn.execute(
                 "INSERT OR REPLACE INTO ai_release_maps "
                 "(model_id, release_id, mindmap_json, source_hash, diff_hash, "
                 " builder_version, char_count, updated_at, code_map_json) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (model_id, rid, mindmap_json, source_hash, diff_hash, builder_version,
-                 int(char_count or 0), updated_at, cm))
+                (model_id, rid, self._enc_text("C", mindmap_json), source_hash,
+                 diff_hash, builder_version, int(char_count or 0), updated_at,
+                 self._enc_text("C", cm)))
 
     def get_model_code_map(self, model_id: int, release_id=None) -> Optional[dict]:
         """Return the parsed CodeMap dict for a model+release, or None."""
@@ -773,7 +812,7 @@ class ProjectDatabase:
         if not row or not row[0]:
             return None
         try:
-            return json.loads(row[0])
+            return json.loads(self._dec_text("C", row[0]))
         except (ValueError, TypeError):
             return None
 
@@ -781,6 +820,7 @@ class ProjectDatabase:
                             release_id=None) -> None:
         """Save or update the CodeMap JSON for a model+release (keeps any mind map)."""
         rid = self._resolve_release_id(release_id)
+        enc_cm = self._enc_text("C", code_map_json)
         with self._conn:
             cur = self._conn.execute(
                 "SELECT 1 FROM ai_release_maps WHERE model_id=? AND release_id=?",
@@ -788,13 +828,13 @@ class ProjectDatabase:
             if cur.fetchone():
                 self._conn.execute(
                     "UPDATE ai_release_maps SET code_map_json=? "
-                    "WHERE model_id=? AND release_id=?", (code_map_json, model_id, rid))
+                    "WHERE model_id=? AND release_id=?", (enc_cm, model_id, rid))
             else:
                 ts = datetime.datetime.now().isoformat()
                 self._conn.execute(
                     "INSERT INTO ai_release_maps "
                     "(model_id, release_id, mindmap_json, updated_at, code_map_json) "
-                    "VALUES (?, ?, ?, ?, ?)", (model_id, rid, "", ts, code_map_json))
+                    "VALUES (?, ?, ?, ?, ?)", (model_id, rid, "", ts, enc_cm))
 
     def delete_model_mindmap(self, model_id: int, release_id=None) -> None:
         """Remove a model's map row(s) AND its code-diff rows (the diff table is not
@@ -856,7 +896,8 @@ class ProjectDatabase:
                 "(model_id, diff_hash, file_path, status, unified_diff) "
                 "VALUES (?, ?, ?, ?, ?)",
                 [(model_id, diff_hash, d.get("file_path", ""),
-                  d.get("status", ""), d.get("unified_diff", "")) for d in diffs],
+                  d.get("status", ""), self._enc_text("C", d.get("unified_diff", "")))
+                 for d in diffs],
             )
 
     def get_code_diffs(self, model_id: int, diff_hash: str) -> list:
@@ -864,7 +905,8 @@ class ProjectDatabase:
             "SELECT file_path, status, unified_diff FROM ai_code_diffs "
             "WHERE model_id=? AND diff_hash=? ORDER BY file_path",
             (model_id, diff_hash))
-        return [{"file_path": r[0], "status": r[1], "unified_diff": r[2]}
+        return [{"file_path": r[0], "status": r[1],
+                 "unified_diff": self._dec_text("C", r[2])}
                 for r in cur.fetchall()]
 
     def has_code_diff(self, model_id: int, diff_hash: str) -> bool:
@@ -878,59 +920,6 @@ class ProjectDatabase:
             "SELECT file_path FROM ai_code_diffs WHERE model_id=? AND diff_hash=? "
             "ORDER BY file_path", (model_id, diff_hash))
         return [r[0] for r in cur.fetchall()]
-
-    # ------------------------------------------------------------------
-    # Integrity content digest
-    # ------------------------------------------------------------------
-
-    def compute_content_digest(self) -> str:
-        """
-        Deterministic SHA-256 over the project's *logical* content.
-
-        Unlike hashing the raw .arch file bytes, this is stable across
-        save -> close -> reopen cycles and across SQLite versions: it ignores
-        SQLite's internal bookkeeping (file change counter, WAL state, page
-        layout, freelist) and the volatile/cosmetic tables the app writes
-        outside of an explicit save (UI state, history), as well as the
-        integrity value itself. That makes it suitable as the basis for a
-        tamper-evidence check that does NOT fire on every benign reopen.
-        """
-        h = hashlib.sha256()
-        cur = self._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        )
-        tables = [
-            r[0] for r in cur.fetchall()
-            if r[0] not in _INTEGRITY_EXCLUDED_TABLES
-            and not r[0].startswith("sqlite_")
-        ]
-        for tbl in tables:
-            cols = [r[1] for r in self._conn.execute(
-                f'PRAGMA table_info("{tbl}")'
-            ).fetchall()]
-            if not cols:
-                continue
-            # Order rows deterministically and independently of physical/rowid
-            # order. Heavy tables (big row_data JSON) use a cheap unique content
-            # key (Finding D) so we don't sort by megabytes of JSON; small tables
-            # keep the all-columns ordering. The full row bytes are still hashed.
-            order_key = _DIGEST_ORDER_KEYS.get(tbl)
-            if order_key:
-                key_cols = [c for c in order_key if c in cols]
-                order_cols = key_cols if key_cols else cols
-            else:
-                order_cols = cols
-            order = ", ".join(f'"{c}"' for c in order_cols)
-            h.update(b"\x00TABLE\x00")
-            h.update(tbl.encode("utf-8"))
-            for row in self._conn.execute(f'SELECT * FROM "{tbl}" ORDER BY {order}'):
-                if tbl == "project_meta" and row[0] in _INTEGRITY_EXCLUDED_META:
-                    continue
-                h.update(b"\x00ROW\x00")
-                h.update(json.dumps(
-                    list(row), default=str, ensure_ascii=False, sort_keys=True
-                ).encode("utf-8"))
-        return h.hexdigest()
 
     # ------------------------------------------------------------------
     # Column layout
@@ -1035,7 +1024,7 @@ class ProjectDatabase:
                 " WHERE model_id=? ORDER BY row_index",
                 (model_id,)
             )
-            return [json.loads(r[0]) for r in cur.fetchall()]
+            return [json.loads(self._dec_text("A", r[0])) for r in cur.fetchall()]
 
     def get_row_count(self, model_id: int) -> int:
         """Row count for a model without deserialising any row payloads."""
@@ -1051,7 +1040,7 @@ class ProjectDatabase:
             (model_id, row_index)
         )
         row = cur.fetchone()
-        return json.loads(row[0]) if row else {}
+        return json.loads(self._dec_text("A", row[0])) if row else {}
 
     def save_model_rows(self, model_id: int, rows: list):
         with _timed("save_model_rows", model_id=model_id, rows=len(rows)):
@@ -1061,7 +1050,8 @@ class ProjectDatabase:
                 )
                 self._conn.executemany(
                     "INSERT INTO architecture_rows (model_id, row_index, row_data) VALUES (?,?,?)",
-                    [(model_id, i, json.dumps(row)) for i, row in enumerate(rows)]
+                    [(model_id, i, self._enc_text("A", json.dumps(row)))
+                     for i, row in enumerate(rows)]
                 )
 
     def upsert_model_row(self, model_id: int, row_index: int, row_data: dict):
@@ -1073,7 +1063,7 @@ class ProjectDatabase:
                     " VALUES (?, ?, ?)"
                     " ON CONFLICT(model_id, row_index)"
                     " DO UPDATE SET row_data=excluded.row_data",
-                    (model_id, row_index, json.dumps(row_data))
+                    (model_id, row_index, self._enc_text("A", json.dumps(row_data)))
                 )
 
     def upsert_model_rows_batch(self, model_id: int, rows: dict):
@@ -1085,7 +1075,8 @@ class ProjectDatabase:
                     " VALUES (?, ?, ?)"
                     " ON CONFLICT(model_id, row_index)"
                     " DO UPDATE SET row_data=excluded.row_data",
-                    [(model_id, idx, json.dumps(data)) for idx, data in rows.items()]
+                    [(model_id, idx, self._enc_text("A", json.dumps(data)))
+                     for idx, data in rows.items()]
                 )
 
     def delete_model_row(self, model_id: int, row_index: int):
@@ -1104,7 +1095,8 @@ class ProjectDatabase:
             "SELECT key, value FROM model_metadata WHERE model_id=?",
             (model_id,)
         )
-        return {r[0]: json.loads(r[1]) if r[1] else None for r in cur.fetchall()}
+        return {r[0]: json.loads(self._dec_text("A", r[1])) if r[1] else None
+                for r in cur.fetchall()}
 
     def save_model_metadata(self, model_id: int, metadata: dict):
         with self._conn:
@@ -1112,7 +1104,8 @@ class ProjectDatabase:
             if metadata:
                 self._conn.executemany(
                     "INSERT INTO model_metadata (model_id, key, value) VALUES (?,?,?)",
-                    [(model_id, k, json.dumps(v)) for k, v in metadata.items()]
+                    [(model_id, k, self._enc_text("A", json.dumps(v)))
+                     for k, v in metadata.items()]
                 )
 
     def copy_model_metadata(self, src_model_id: int, dst_model_id: int):
@@ -1202,7 +1195,7 @@ class ProjectDatabase:
             count = 0
             for rel_path, text in files:
                 data = (text or "").encode("utf-8", errors="replace")
-                blob = gzip.compress(data)
+                blob = self._enc_blob("B", gzip.compress(data))
                 content_hash = hashlib.sha256(data).hexdigest()
                 ext = os.path.splitext(rel_path)[1].lower()
                 rows.append((release_id, rel_path, blob, len(data), content_hash, ext))
@@ -1240,7 +1233,7 @@ class ProjectDatabase:
         if not row or row[0] is None:
             return None
         try:
-            return gzip.decompress(row[0]).decode("utf-8", errors="replace")
+            return gzip.decompress(self._dec_blob("B", row[0])).decode("utf-8", errors="replace")
         except (OSError, EOFError):
             return None
 
@@ -1269,6 +1262,213 @@ class ProjectDatabase:
             self._conn.execute(
                 "DELETE FROM release_source_files WHERE release_id=?", (release_id,))
 
+    # ------------------------------------------------------------------
+    # Source-Level Test Code Injection — test projects, helper files, hooks
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _now_iso() -> str:
+        return datetime.datetime.now().isoformat(timespec="seconds")
+
+    # -- test projects --------------------------------------------------
+    def create_test_project(self, name: str) -> int:
+        """Create a new test project and return its id."""
+        ts = self._now_iso()
+        with self._conn:
+            cur = self._conn.execute(
+                "INSERT INTO test_projects (name, created_at) VALUES (?, ?)",
+                (name, ts))
+            return int(cur.lastrowid)
+
+    def list_test_projects(self) -> list:
+        """All test projects (newest first) with their file/injection counts."""
+        cur = self._conn.execute(
+            "SELECT p.id, p.name, p.created_at, "
+            "  (SELECT COUNT(*) FROM test_project_files f WHERE f.test_project_id=p.id), "
+            "  (SELECT COUNT(*) FROM test_code_injections i WHERE i.test_project_id=p.id) "
+            "FROM test_projects p ORDER BY p.id DESC")
+        return [{"id": r[0], "name": r[1], "created_at": r[2],
+                 "file_count": r[3], "injection_count": r[4]}
+                for r in cur.fetchall()]
+
+    def rename_test_project(self, test_project_id: int, name: str) -> None:
+        with self._conn:
+            self._conn.execute(
+                "UPDATE test_projects SET name=? WHERE id=?", (name, test_project_id))
+
+    def delete_test_project(self, test_project_id: int) -> None:
+        """Delete a test project; ON DELETE CASCADE drops its files + injections."""
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM test_projects WHERE id=?", (test_project_id,))
+
+    # -- test helper files (gzip blobs) ---------------------------------
+    def import_test_project_files(self, test_project_id: int, files,
+                                  progress=None, batch: int = 200) -> int:
+        """Import ``(rel_path, text)`` helper files, gzip-compressing each.
+
+        Inserts/replaces in batches so peak RAM stays at ~one batch. Returns the
+        number of files stored. Existing files with the same rel_path are
+        overwritten (re-import).
+        """
+        rows = []
+        count = 0
+        with self._conn:
+            for rel_path, text in files:
+                data = (text or "").encode("utf-8", errors="replace")
+                blob = self._enc_blob("D", gzip.compress(data))
+                ext = os.path.splitext(rel_path)[1].lower()
+                rows.append((test_project_id, rel_path, blob, len(data), ext))
+                count += 1
+                if progress is not None:
+                    progress(rel_path, count, None)
+                if len(rows) >= batch:
+                    self._conn.executemany(
+                        "INSERT OR REPLACE INTO test_project_files "
+                        "(test_project_id, rel_path, content_gzip, size, ext) "
+                        "VALUES (?,?,?,?,?)", rows)
+                    rows = []
+            if rows:
+                self._conn.executemany(
+                    "INSERT OR REPLACE INTO test_project_files "
+                    "(test_project_id, rel_path, content_gzip, size, ext) "
+                    "VALUES (?,?,?,?,?)", rows)
+        return count
+
+    def list_test_project_files(self, test_project_id: int) -> list:
+        """[{rel_path, size, ext}] WITHOUT decompressing (cheap listing)."""
+        cur = self._conn.execute(
+            "SELECT rel_path, size, ext FROM test_project_files "
+            "WHERE test_project_id=? ORDER BY rel_path", (test_project_id,))
+        return [{"rel_path": r[0], "size": r[1], "ext": r[2]}
+                for r in cur.fetchall()]
+
+    def read_test_project_file(self, test_project_id: int,
+                               rel_path: str) -> Optional[str]:
+        """Decompress and return a single helper file's text, or None."""
+        cur = self._conn.execute(
+            "SELECT content_gzip FROM test_project_files "
+            "WHERE test_project_id=? AND rel_path=?", (test_project_id, rel_path))
+        row = cur.fetchone()
+        if not row or row[0] is None:
+            return None
+        try:
+            return gzip.decompress(self._dec_blob("D", row[0])).decode("utf-8", errors="replace")
+        except (OSError, EOFError):
+            return None
+
+    def delete_test_project_file(self, test_project_id: int, rel_path: str) -> None:
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM test_project_files "
+                "WHERE test_project_id=? AND rel_path=?", (test_project_id, rel_path))
+
+    # -- injection hooks ------------------------------------------------
+    def add_injection(self, test_project_id: int, src_file_path: str,
+                      function_name: str = "", line_above_code: str = "",
+                      line_below_code: str = "", injected_code: str = "",
+                      offset_lines: int = 0) -> int:
+        """Insert a new injection hook and return its id."""
+        ts = self._now_iso()
+        with self._conn:
+            cur = self._conn.execute(
+                "INSERT INTO test_code_injections "
+                "(test_project_id, src_file_path, function_name, line_above_code, "
+                " line_below_code, injected_code, offset_lines, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (test_project_id, src_file_path, function_name,
+                 self._enc_text("D", line_above_code),
+                 self._enc_text("D", line_below_code),
+                 self._enc_text("D", injected_code), int(offset_lines), ts))
+            return int(cur.lastrowid)
+
+    def update_injection(self, injection_id: int, **fields) -> None:
+        """Update any subset of {function_name, src_file_path, line_above_code,
+        line_below_code, injected_code, offset_lines} on an injection row."""
+        allowed = {"function_name", "src_file_path", "line_above_code",
+                   "line_below_code", "injected_code", "offset_lines"}
+        encrypted = {"line_above_code", "line_below_code", "injected_code"}
+        sets, params = [], []
+        for k, v in fields.items():
+            if k in allowed:
+                sets.append(f"{k}=?")
+                if k == "offset_lines":
+                    params.append(int(v))
+                elif k in encrypted:
+                    params.append(self._enc_text("D", v))
+                else:
+                    params.append(v)
+        if not sets:
+            return
+        params.append(injection_id)
+        with self._conn:
+            self._conn.execute(
+                f"UPDATE test_code_injections SET {', '.join(sets)} WHERE id=?",
+                params)
+
+    def update_injection_anchors(self, injection_id: int, line_above_code: str,
+                                 line_below_code: str,
+                                 offset_lines: Optional[int] = None) -> None:
+        """Re-anchor an injection after the surrounding code shifted."""
+        above = self._enc_text("D", line_above_code)
+        below = self._enc_text("D", line_below_code)
+        if offset_lines is None:
+            with self._conn:
+                self._conn.execute(
+                    "UPDATE test_code_injections "
+                    "SET line_above_code=?, line_below_code=? WHERE id=?",
+                    (above, below, injection_id))
+        else:
+            with self._conn:
+                self._conn.execute(
+                    "UPDATE test_code_injections "
+                    "SET line_above_code=?, line_below_code=?, offset_lines=? "
+                    "WHERE id=?",
+                    (above, below, int(offset_lines), injection_id))
+
+    def remove_injection(self, injection_id: int) -> None:
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM test_code_injections WHERE id=?", (injection_id,))
+
+    def get_injection(self, injection_id: int) -> Optional[dict]:
+        cur = self._conn.execute(
+            "SELECT id, test_project_id, src_file_path, function_name, "
+            "line_above_code, line_below_code, injected_code, offset_lines, created_at "
+            "FROM test_code_injections WHERE id=?", (injection_id,))
+        row = cur.fetchone()
+        return self._injection_dict(row) if row else None
+
+    def list_injections(self, test_project_id: int,
+                        src_file_path: Optional[str] = None) -> list:
+        """All injection hooks for a test project, optionally filtered to one file."""
+        if src_file_path is None:
+            cur = self._conn.execute(
+                "SELECT id, test_project_id, src_file_path, function_name, "
+                "line_above_code, line_below_code, injected_code, offset_lines, created_at "
+                "FROM test_code_injections WHERE test_project_id=? ORDER BY id",
+                (test_project_id,))
+        else:
+            cur = self._conn.execute(
+                "SELECT id, test_project_id, src_file_path, function_name, "
+                "line_above_code, line_below_code, injected_code, offset_lines, created_at "
+                "FROM test_code_injections WHERE test_project_id=? AND src_file_path=? "
+                "ORDER BY id", (test_project_id, src_file_path))
+        return [self._injection_dict(r) for r in cur.fetchall()]
+
+    def _injection_dict(self, row) -> dict:
+        return {
+            "id": row[0],
+            "test_project_id": row[1],
+            "src_file_path": row[2],
+            "function_name": row[3],
+            "line_above_code": self._dec_text("D", row[4]),
+            "line_below_code": self._dec_text("D", row[5]),
+            "injected_code": self._dec_text("D", row[6]),
+            "offset_lines": row[7],
+            "created_at": row[8],
+        }
+
     def is_release_frozen(self, release_id: int) -> bool:
         """True if the release exists and is a frozen baseline (is_baseline=1)."""
         cur = self._conn.execute(
@@ -1292,7 +1492,7 @@ class ProjectDatabase:
             " WHERE release_id=? ORDER BY row_index",
             (release_id,)
         )
-        return [json.loads(r[0]) for r in cur.fetchall()]
+        return [json.loads(self._dec_text("A", r[0])) for r in cur.fetchall()]
 
     def save_release_rows(self, release_id: int, rows: list, _allow_frozen: bool = False):
         self._guard_release_writable(release_id, _allow_frozen)
@@ -1302,7 +1502,8 @@ class ProjectDatabase:
             )
             self._conn.executemany(
                 "INSERT INTO release_rows (release_id, row_index, row_data) VALUES (?,?,?)",
-                [(release_id, i, json.dumps(row)) for i, row in enumerate(rows)]
+                [(release_id, i, self._enc_text("A", json.dumps(row)))
+                 for i, row in enumerate(rows)]
             )
 
     def copy_release_rows(self, src_id: int, dst_id: int):
@@ -1314,7 +1515,7 @@ class ProjectDatabase:
             "SELECT col_name, metadata FROM release_column_metadata WHERE release_id=?",
             (release_id,)
         )
-        return {r[0]: json.loads(r[1]) for r in cur.fetchall()}
+        return {r[0]: json.loads(self._dec_text("A", r[1])) for r in cur.fetchall()}
 
     def save_release_column_metadata(self, release_id: int, metadata: dict,
                                      _allow_frozen: bool = False):
@@ -1326,7 +1527,8 @@ class ProjectDatabase:
             self._conn.executemany(
                 "INSERT INTO release_column_metadata (release_id, col_name, metadata)"
                 " VALUES (?,?,?)",
-                [(release_id, k, json.dumps(v)) for k, v in metadata.items()]
+                [(release_id, k, self._enc_text("A", json.dumps(v)))
+                 for k, v in metadata.items()]
             )
 
     def get_release_results(self, release_id: int) -> dict:
@@ -1334,7 +1536,7 @@ class ProjectDatabase:
             "SELECT col_name, results FROM release_results WHERE release_id=?",
             (release_id,)
         )
-        return {r[0]: json.loads(r[1]) for r in cur.fetchall()}
+        return {r[0]: json.loads(self._dec_text("A", r[1])) for r in cur.fetchall()}
 
     def save_release_results(self, release_id: int, results: dict,
                              _allow_frozen: bool = False):
@@ -1345,7 +1547,8 @@ class ProjectDatabase:
             )
             self._conn.executemany(
                 "INSERT INTO release_results (release_id, col_name, results) VALUES (?,?,?)",
-                [(release_id, k, json.dumps(v)) for k, v in results.items()]
+                [(release_id, k, self._enc_text("A", json.dumps(v)))
+                 for k, v in results.items()]
             )
 
     def get_release_linked_column(self, release_id: int) -> Optional[str]:
@@ -1356,7 +1559,7 @@ class ProjectDatabase:
         )
         row = cur.fetchone()
         if row:
-            return json.loads(row[0]).get("value")
+            return json.loads(self._dec_text("A", row[0])).get("value")
         return None
 
     def save_release_linked_column(self, release_id: int, col_name: Optional[str]):
@@ -1370,7 +1573,8 @@ class ProjectDatabase:
                 self._conn.execute(
                     "INSERT INTO release_column_metadata (release_id, col_name, metadata)"
                     " VALUES (?,?,?)",
-                    (release_id, "__linked_release_column__", json.dumps({"value": col_name}))
+                    (release_id, "__linked_release_column__",
+                     self._enc_text("A", json.dumps({"value": col_name})))
                 )
 
     # ------------------------------------------------------------------
@@ -1460,8 +1664,8 @@ class ProjectDatabase:
                       f.get("name", "") if isinstance(f, dict) else f.name,
                       f.get("address", 0) if isinstance(f, dict) else f.address,
                       f.get("size", 0) if isinstance(f, dict) else f.size,
-                      json.dumps(f.get("parameters", []) if isinstance(f, dict) else f.parameters),
-                      f.get("return_type") if isinstance(f, dict) else f.return_type)
+                      self._enc_text("A", json.dumps(f.get("parameters", []) if isinstance(f, dict) else f.parameters)),
+                      self._enc_text("A", f.get("return_type") if isinstance(f, dict) else f.return_type))
                      for f in batch]
                 )
                 batch.clear()
@@ -1474,8 +1678,8 @@ class ProjectDatabase:
                       f.get("name", "") if isinstance(f, dict) else f.name,
                       f.get("address", 0) if isinstance(f, dict) else f.address,
                       f.get("size", 0) if isinstance(f, dict) else f.size,
-                      json.dumps(f.get("parameters", []) if isinstance(f, dict) else f.parameters),
-                      f.get("return_type") if isinstance(f, dict) else f.return_type)
+                      self._enc_text("A", json.dumps(f.get("parameters", []) if isinstance(f, dict) else f.parameters)),
+                      self._enc_text("A", f.get("return_type") if isinstance(f, dict) else f.return_type))
                      for f in batch]
                 )
 
@@ -1487,7 +1691,8 @@ class ProjectDatabase:
                 batch = items[i:i + BATCH]
                 self._conn.executemany(
                     "INSERT INTO elf_structures (elf_hash, name, fields) VALUES (?,?,?)",
-                    [(elf_hash, name, json.dumps(fields)) for name, fields in batch]
+                    [(elf_hash, name, self._enc_text("A", json.dumps(fields)))
+                     for name, fields in batch]
                 )
 
     def bulk_insert_global_vars(self, elf_hash: str, global_vars: dict):
@@ -1498,7 +1703,8 @@ class ProjectDatabase:
                 batch = items[i:i + BATCH]
                 self._conn.executemany(
                     "INSERT INTO elf_global_vars (elf_hash, name, var_type) VALUES (?,?,?)",
-                    [(elf_hash, name, var_type) for name, var_type in batch]
+                    [(elf_hash, name, self._enc_text("A", var_type))
+                     for name, var_type in batch]
                 )
 
     def update_function_params(self, elf_hash: str, name: str,
@@ -1507,7 +1713,8 @@ class ProjectDatabase:
             self._conn.execute(
                 "UPDATE elf_functions SET parameters=?, return_type=?"
                 " WHERE elf_hash=? AND name=?",
-                (json.dumps(parameters), return_type, elf_hash, name)
+                (self._enc_text("A", json.dumps(parameters)),
+                 self._enc_text("A", return_type), elf_hash, name)
             )
 
     def get_function_names(self, elf_hash: str) -> list:
@@ -1555,10 +1762,11 @@ class ProjectDatabase:
             )
         results = []
         for r in cur.fetchall():
+            dec_params = self._dec_text("A", r[3])
             results.append({
                 "name": r[0], "address": r[1], "size": r[2],
-                "parameters": json.loads(r[3]) if r[3] else [],
-                "return_type": r[4]
+                "parameters": json.loads(dec_params) if dec_params else [],
+                "return_type": self._dec_text("A", r[4])
             })
         results.sort(key=lambda f: f["name"] != name)
         return results
@@ -1567,13 +1775,13 @@ class ProjectDatabase:
         cur = self._conn.execute(
             "SELECT name, fields FROM elf_structures WHERE elf_hash=?", (elf_hash,)
         )
-        return {r[0]: json.loads(r[1]) for r in cur.fetchall()}
+        return {r[0]: json.loads(self._dec_text("A", r[1])) for r in cur.fetchall()}
 
     def get_all_global_vars(self, elf_hash: str) -> dict:
         cur = self._conn.execute(
             "SELECT name, var_type FROM elf_global_vars WHERE elf_hash=?", (elf_hash,)
         )
-        return dict(cur.fetchall())
+        return {r[0]: self._dec_text("A", r[1]) for r in cur.fetchall()}
 
     def get_elf_stats(self, elf_hash: str) -> dict:
         sym_count = self._conn.execute(
@@ -1621,7 +1829,12 @@ class ProjectDatabase:
                           model_name: str = "", username: str = "", release_id: Optional[int] = None):
         # NC-3: obfuscate the description at rest and extend the HMAC hash-chain.
         ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        stored_desc = _obfuscate_history(description)
+        # Encrypt under category A when a project cipher is attached; otherwise
+        # fall back to the legacy app-key obfuscation so plaintext/legacy projects
+        # still store an obfuscated description (and the test suite's cipher-less
+        # fixtures keep their existing "enc:" behavior).
+        stored_desc = (self._enc_text("A", description) if self._cipher
+                       else _obfuscate_history(description))
         with self._conn:
             prev = self._history_chain_head()
             entry_hmac = _history_row_hmac(prev, ts, username, model_name,
@@ -1646,9 +1859,16 @@ class ProjectDatabase:
             )
         return [
             {"timestamp": r[0], "user": r[1], "model": r[2],
-             "description": _deobfuscate_history(r[3])}
+             "description": self._read_history_desc(r[3])}
             for r in cur.fetchall()
         ]
+
+    def _read_history_desc(self, stored: str) -> str:
+        """Decode a stored description: category-A ciphertext (``fb1:``) via the
+        project cipher, legacy app-key obfuscation (``enc:``) otherwise."""
+        if self._cipher and isinstance(stored, str) and stored.startswith("fb1:"):
+            return self._dec_text("A", stored)
+        return _deobfuscate_history(stored)
 
     def copy_release_history(self, src_release_id: int, dst_release_id: int):
         # Clone the (already-obfuscated) descriptions verbatim but re-chain each

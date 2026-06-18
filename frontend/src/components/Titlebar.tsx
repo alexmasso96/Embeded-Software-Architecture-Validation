@@ -4,6 +4,7 @@ export const TABS = [
   "AI Generation",
   "AI Chat",
   "Code Map",
+  "Test Injection",
   "Change Log",
 ] as const;
 export type Tab = (typeof TABS)[number];
@@ -41,17 +42,17 @@ export function Titlebar({
       </div>
 
       <div className="seg">
-        {TABS.map((t) => (
-          <button
-            key={t}
-            className={t === activeTab ? "active" : ""}
-            disabled={t !== "Workspace"}
-            title={t !== "Workspace" ? "Coming in a later Phase 2 slice" : undefined}
-            onClick={() => onTab(t)}
-          >
-            {t}
-          </button>
-        ))}
+        {TABS.map((t) => {
+          return (
+            <button
+              key={t}
+              className={t === activeTab ? "active" : ""}
+              onClick={() => onTab(t)}
+            >
+              {t}
+            </button>
+          );
+        })}
       </div>
 
       <button className="tb-icon" title="Import" onClick={onImport}>

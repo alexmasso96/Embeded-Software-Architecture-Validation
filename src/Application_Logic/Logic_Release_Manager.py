@@ -145,6 +145,8 @@ class ReleaseManager:
             self._db.commit()
 
     def flush_active_release_data(self):
+        if self._db and getattr(self._db, "read_only", False):
+            return
         active = self.get_active_release()
         if active and active.data_cache:
             self._save_data(active, active.data_cache)
@@ -209,6 +211,74 @@ class ReleaseManager:
             self._db.commit()
 
         # Shift existing sort orders
+        for r in self.releases:
+            r.sort_order += 1
+        new_release.sort_order = 0
+
+        self.releases.insert(0, new_release)
+        self.active_release_index = 0
+        self.save_registry()
+        return new_release
+
+    def branch_release(self, src_index: int, name: str,
+                       description: str = "") -> ReleaseModel:
+        """Fork a new software release off an existing one (Release & Baseline
+        Manager). Clones the source release's rows + validation state (column
+        metadata, release results, linked-column) as the new branch's starting
+        point and chains it to the source via ``parent_release_name``. The new
+        branch is inserted at the front and made active (mirrors create_release).
+        """
+        if not (0 <= src_index < len(self.releases)):
+            raise ValueError("Invalid source release index.")
+        name = name.strip()
+        if not name:
+            raise ValueError("Branch name cannot be empty.")
+        if any(r.name == name for r in self.releases):
+            raise ValueError(f"Release '{name}' already exists.")
+
+        src = self.releases[src_index]
+        ts = datetime.datetime.now().isoformat()
+
+        # Snapshot the source's data (rows + validation state). deepcopy so later
+        # edits on the branch never bleed back into the parent's cache.
+        data = copy.deepcopy(self._load_data(src))
+        data.pop("database", None)  # strip legacy ELF blob if present
+
+        new_release = ReleaseModel(
+            name=name,
+            is_baseline=False,
+            parent_release_name=src.name,
+            description=description,
+            timestamp=ts,
+            elf_path=src.elf_path,
+            elf_hash=src.elf_hash,
+            sort_order=0,
+        )
+        new_release.data_cache = data
+
+        if self._db:
+            new_release.id = self._db.create_release(
+                name=name, is_baseline=0,
+                parent_release_name=src.name,
+                description=description, timestamp=ts,
+                elf_path=src.elf_path, elf_hash=src.elf_hash,
+                sort_order=0,
+            )
+            self._db.save_release_rows(new_release.id, data.get("rows", []))
+            col_meta = data.get("column_metadata", {})
+            if col_meta:
+                self._db.save_release_column_metadata(new_release.id, col_meta)
+            results = data.get("release_results", {})
+            if results:
+                self._db.save_release_results(new_release.id, results)
+            linked = data.get("linked_release_column")
+            if linked:
+                self._db.save_release_linked_column(new_release.id, linked)
+            if src.id is not None:
+                self._db.copy_release_history(src.id, new_release.id)
+            self._db.commit()
+
+        # Shift existing sort orders so the new branch sits at the front.
         for r in self.releases:
             r.sort_order += 1
         new_release.sort_order = 0
@@ -347,6 +417,23 @@ class ReleaseManager:
             self.active_release_index -= 1
         self.save_registry()
         return True, "Deleted"
+
+    def restore_release(self, index: int):
+        """Un-delete a soft-deleted baseline (Release Manager "Restore"). Only
+        baselines soft-delete, so this is the inverse of that path; refuses if a
+        live release/baseline already claims the name."""
+        if not (0 <= index < len(self.releases)):
+            return False, "Invalid index"
+        model = self.releases[index]
+        if not model.is_deleted:
+            return True, "Not deleted"
+        if any(r.name == model.name and not r.is_deleted and r is not model
+               for r in self.releases):
+            return False, "Name already exists"
+        model.is_deleted = False
+        model.deletion_comment = ""
+        self.save_registry()
+        return True, "Restored"
 
     def selectable_releases(self) -> List[ReleaseModel]:
         """#2E: the releases offered in every source/release picker — real software

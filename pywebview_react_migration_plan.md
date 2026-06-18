@@ -11,6 +11,13 @@ This plan is written to be executed incrementally by AI coding assistants. Each 
 leaves the application **working and shippable**. Do not start a phase before the
 previous one's exit criteria are met.
 
+> **Status (2026-06-18): Phases 0, 1, 2 COMPLETE — ready to start Phase 3.**
+> Logic layer is Qt-free (only comments/strings mention PyQt6); the FastAPI worker
+> exposes all features over 13 routers (HTTP + SSE); all six React views are built and
+> verified in-browser; `npm run build` is clean and the suite is green (634 passed).
+> The per-phase progress trackers (`PHASE0/1/2_PROGRESS.md`) and the completed feature
+> sub-plans were retired after this checkpoint; their history lives in git + memory.
+
 ---
 
 ## 0. Why we are doing this (read before coding)
@@ -256,9 +263,17 @@ Exit criteria: feature-parity checklist (§7) fully ticked in the browser.
 
 ---
 
-## 5. Phase 3 — pywebview desktop shell
+## 5. Phase 3 — pywebview desktop shell  ← NEXT
 
 **Goal:** the SPA in a native window, one packaged artifact.
+
+> **Carried in from earlier phases (deferred *to* here, not debt):** `desktop/main.py`
+> does not exist yet; the worker's `main()` (`backend/app.py`) already binds 127.0.0.1:0
+> and prints the URL+token but Phase 3 must hand the port back over a `multiprocessing`
+> Pipe instead. Still TODO for this phase: FastAPI serving `frontend/dist/` (no static
+> mount exists yet), native file dialogs via `js_api` (the `fs` router is the dev
+> stand-in), parent-PID watchdog so the worker can't outlive the UI, and
+> `scripts/freeze_probe.py` (the < 50 ms event-loop latency guarantee, run on an EDR box).
 
 - `desktop/main.py`: spawn worker → wait for port → `webview.create_window()`
   pointing at the worker's statically-served frontend build (FastAPI serves

@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api/client";
-import type { ProjectStatus } from "./api/types";
+import type { JobPayload, ProjectStatus } from "./api/types";
 import { useSSE } from "./api/useSSE";
+import { JobProgressOverlay } from "./components/JobProgressOverlay";
 import { Preferences } from "./components/Preferences";
 import { StartScreen } from "./components/StartScreen";
 import { Titlebar, type Tab } from "./components/Titlebar";
+import { AIChat } from "./views/AIChat";
+import { AIGeneration } from "./views/AIGeneration";
+import { ChangeLog } from "./views/ChangeLog";
+import { CodeMap } from "./views/CodeMap";
+import { TestCodeInjection } from "./views/TestCodeInjection";
+import { TestDesign } from "./views/TestDesign";
 import { Workspace } from "./views/Workspace";
 
 function basename(path: string | null): string {
@@ -22,6 +29,13 @@ export default function App() {
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
+  const [activeJobs, setActiveJobs] = useState<Record<string, JobPayload>>({});
+  const jobTimers = useRef<Record<string, number>>({});
+
+  // Editing is allowed only with the exclusive lock still held. Computed with
+  // optional chaining so the keyboard handler (mounted before the open/closed
+  // branch) can read it via a ref without tripping the rules-of-hooks order.
+  const canEdit = !!(status?.can_edit && !status?.lock_lost);
 
   const reloadStatus = useCallback(async () => {
     try {
@@ -51,12 +65,69 @@ export default function App() {
           if (e.event === "lock_lost" || e.data?.lock_lost) {
             toast("Edit lock lost — switched to view-only");
           }
+        } else if (e.event === "job") {
+          const job = e.data as unknown as JobPayload;
+          if (!job.job_id) return;
+          setActiveJobs((prev) => ({ ...prev, [job.job_id]: job }));
+          // Keep terminal jobs on screen briefly so the user sees the final
+          // state, then drop them. Replace any pending timer (a late update may
+          // arrive after the first terminal event).
+          if (
+            job.status === "done" ||
+            job.status === "failed" ||
+            job.status === "cancelled"
+          ) {
+            if (jobTimers.current[job.job_id]) {
+              window.clearTimeout(jobTimers.current[job.job_id]);
+            }
+            jobTimers.current[job.job_id] = window.setTimeout(() => {
+              delete jobTimers.current[job.job_id];
+              setActiveJobs((prev) => {
+                const next = { ...prev };
+                delete next[job.job_id];
+                return next;
+              });
+            }, 3000);
+          }
         }
       },
       [reloadStatus, toast],
     ),
     Boolean(status?.open),
   );
+
+  // Clear any outstanding job-removal timers on unmount.
+  useEffect(() => {
+    const timers = jobTimers.current;
+    return () => {
+      Object.values(timers).forEach((t) => window.clearTimeout(t));
+    };
+  }, []);
+
+  // Global keyboard shortcuts. Mounted once; reads the latest save()/canEdit via
+  // refs so it never re-subscribes. ⌘/Ctrl+S saves, ⌘/Ctrl+F focuses the search
+  // box (via a custom event Workspace listens for), Escape closes App-owned
+  // modals (the others manage their own Escape with rename-aware nuance).
+  const saveRef = useRef<() => void>(() => {});
+  const canEditRef = useRef(canEdit);
+  canEditRef.current = canEdit;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && (e.key === "s" || e.key === "S")) {
+        e.preventDefault();
+        if (canEditRef.current) saveRef.current();
+      } else if (mod && (e.key === "f" || e.key === "F")) {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("focus-search-input"));
+      } else if (e.key === "Escape") {
+        setPrefsOpen(false);
+        setImportOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   async function save() {
     setSaving(true);
@@ -70,6 +141,7 @@ export default function App() {
       setSaving(false);
     }
   }
+  saveRef.current = save;
 
   async function closeProject() {
     try {
@@ -90,8 +162,6 @@ export default function App() {
       </div>
     );
   }
-
-  const canEdit = status.can_edit && !status.lock_lost;
 
   return (
     <div className="app">
@@ -118,11 +188,6 @@ export default function App() {
           👁 View-only mode — editing is disabled.
         </div>
       )}
-      {status.integrity_mismatch && (
-        <div className="banner warn">
-          ⚠ Project integrity check failed — the file may have been modified outside the app.
-        </div>
-      )}
 
       {activeTab === "Workspace" ? (
         <Workspace
@@ -134,9 +199,30 @@ export default function App() {
           columnsOpen={columnsOpen}
           onCloseColumns={() => setColumnsOpen(false)}
         />
+      ) : activeTab === "Test Design" ? (
+        <TestDesign toast={toast} />
+      ) : activeTab === "AI Generation" ? (
+        <AIGeneration toast={toast} />
+      ) : activeTab === "AI Chat" ? (
+        <AIChat toast={toast} />
+      ) : activeTab === "Code Map" ? (
+        <CodeMap toast={toast} />
+      ) : activeTab === "Test Injection" ? (
+        <TestCodeInjection toast={toast} canEdit={canEdit} />
+      ) : activeTab === "Change Log" ? (
+        <ChangeLog toast={toast} />
       ) : (
         <div className="center-msg">{activeTab} — coming in a later Phase 2 slice.</div>
       )}
+
+      <JobProgressOverlay
+        jobs={Object.values(activeJobs)}
+        onCancel={(id) => {
+          api
+            .post(`/jobs/${id}/cancel`)
+            .catch((e) => toast(`Cancel failed: ${(e as Error).message}`));
+        }}
+      />
 
       {toastMsg && <div className="v-toast">{toastMsg}</div>}
       {prefsOpen && (

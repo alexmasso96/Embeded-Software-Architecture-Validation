@@ -13,6 +13,8 @@ navigates and selects); dotfiles are hidden.
 from __future__ import annotations
 
 import os
+import string
+import sys
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -22,6 +24,54 @@ from ..security import require_token
 
 router = APIRouter(prefix="/api/fs", tags=["fs"],
                    dependencies=[Depends(require_token)])
+
+
+def _list_drives() -> list[dict]:
+    """Logical drive/volume roots for the picker's quick-switch shortcuts.
+
+      * Windows — every present logical drive letter (``C:\\``, ``D:\\``…).
+      * macOS   — root ``/`` plus each mounted volume under ``/Volumes``.
+      * Linux   — root ``/`` plus mounts under ``/media`` and ``/mnt``.
+    Each entry is ``{"name", "path"}``; unreadable roots are skipped.
+    """
+    drives: list[dict] = []
+    if os.name == "nt":
+        try:
+            import ctypes
+            bitmask = ctypes.windll.kernel32.GetLogicalDrives()
+        except Exception:  # noqa: BLE001 — fall back to brute-force existence check
+            bitmask = 0
+        for i, letter in enumerate(string.ascii_uppercase):
+            present = (bitmask >> i) & 1 if bitmask else os.path.exists(f"{letter}:\\")
+            if present:
+                root = f"{letter}:\\"
+                drives.append({"name": root, "path": root})
+        return drives
+
+    # POSIX: always offer the filesystem root, then mounted media/volumes.
+    drives.append({"name": "/", "path": "/"})
+    mount_parents = ["/Volumes"] if sys.platform == "darwin" else ["/media", "/mnt"]
+    for parent in mount_parents:
+        p = Path(parent)
+        if not p.is_dir():
+            continue
+        try:
+            children = sorted(p.iterdir(), key=lambda c: c.name.lower())
+        except OSError:
+            continue
+        for child in children:
+            if child.name.startswith("."):
+                continue
+            if _is_dir_safe(child):
+                drives.append({"name": child.name, "path": str(child)})
+    return drives
+
+
+@router.get("/drives")
+def drives() -> dict:
+    """Logical drives (Windows) or volume/mount roots (macOS/Linux) as picker
+    shortcuts. Always returns at least one entry (the root) on POSIX."""
+    return {"drives": _list_drives()}
 
 
 def _entry(p: Path) -> dict:

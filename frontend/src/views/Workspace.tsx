@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { useColumns, useModels, usePorts, useReleases } from "../api/hooks";
+import { useSSE } from "../api/useSSE";
 import type { ProjectStatus } from "../api/types";
 import {
   cellText,
@@ -11,6 +12,8 @@ import {
 } from "../columns";
 import { Sidebar } from "../components/Sidebar";
 import { ModelManager } from "../components/ModelManager";
+import { ReleaseManager } from "../components/ReleaseManager";
+import { getReleaseRecents, touchReleaseRecent } from "../releaseRecents";
 import { ImportWizard } from "../components/ImportWizard";
 import { ColumnCustomizer } from "../components/ColumnCustomizer";
 import { PortsTable } from "../components/PortsTable";
@@ -31,6 +34,12 @@ interface MatchTarget {
   rowIndex: number;
   col: ResolvedColumn;
 }
+
+type FilterMode = "all" | "reviewed" | "not-reviewed" | "conflicts" | "broken";
+
+// Background jobs that mutate the port table — when one of these finishes we
+// must refetch so the grid reflects the new matches/symbols.
+const MUTATING_JOBS = new Set(["fuzzy_rematch", "import_symbols", "parse_elf"]);
 
 export function Workspace({
   status,
@@ -58,11 +67,43 @@ export function Workspace({
 
   const [activeModelId, setActiveModelId] = useState<number | null>(null);
   const [query, setQuery] = useState("");
+  const [filterMode, setFilterMode] = useState<FilterMode>("all");
+  const [filterMenu, setFilterMenu] = useState<{ x: number; y: number } | null>(null);
   const [selectedRow, setSelectedRow] = useState<number | null>(null);
   const [rowMenu, setRowMenu] = useState<RowMenu | null>(null);
   const [matchTarget, setMatchTarget] = useState<MatchTarget | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  // ⌘/Ctrl+F (handled globally in App) fires this event; focus + select the box.
+  useEffect(() => {
+    const onFocus = () => {
+      searchRef.current?.focus();
+      searchRef.current?.select();
+    };
+    window.addEventListener("focus-search-input", onFocus);
+    return () => window.removeEventListener("focus-search-input", onFocus);
+  }, []);
   const [manageOpen, setManageOpen] = useState(false);
+  const [releaseMgrOpen, setReleaseMgrOpen] = useState(false);
+  const [recentReleaseIds, setRecentReleaseIds] = useState<number[]>(() =>
+    getReleaseRecents(status.path),
+  );
   const [sidebarWidth, setSidebarWidth] = useState(230);
+
+  // Re-read recents when the open project changes (ids are per-project).
+  useEffect(() => {
+    setRecentReleaseIds(getReleaseRecents(status.path));
+  }, [status.path]);
+
+  // The active release is, by definition, the most-recently-accessed one. Track
+  // it off the authoritative server value so every switch (sidebar, branch, or
+  // manager "Activate") feeds the dropdown's recents — no guessing pre-refetch.
+  const activeReleaseId = releases.data?.active_release_id ?? null;
+  useEffect(() => {
+    if (activeReleaseId != null) {
+      setRecentReleaseIds(touchReleaseRecent(status.path, activeReleaseId));
+    }
+  }, [activeReleaseId, status.path]);
 
   function startSidebarResize(e: React.MouseEvent) {
     e.preventDefault();
@@ -105,6 +146,21 @@ export function Workspace({
     onReloadStatus();
   }
 
+  // Live-refresh when a port-mutating job finishes (the Re-match Symbols button,
+  // or an import's auto-match) or another client changes the DB. Without this the
+  // grid kept showing stale/empty Match cells until a manual model switch.
+  useSSE((e) => {
+    if (e.event === "db-changed") {
+      refreshAll();
+    } else if (
+      e.event === "job" &&
+      e.data?.status === "done" &&
+      MUTATING_JOBS.has(String(e.data?.kind))
+    ) {
+      refreshAll();
+    }
+  }, open);
+
   const allRows = ports.data?.rows ?? [];
 
   const resolved = useMemo(() => {
@@ -119,20 +175,66 @@ export function Workspace({
       });
     });
   }, [columns.data, allRows]);
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return allRows;
-    return allRows.filter((r) =>
-      Object.values(r.cells).some((cell) =>
-        cellText(cell).toLowerCase().includes(q),
-      ),
-    );
-  }, [allRows, query]);
-
   const reviewCol = resolved.find((c) => c.role === "review");
+  const matchColNames = useMemo(
+    () => resolved.filter((c) => c.role === "match").map((c) => c.name),
+    [resolved],
+  );
+
+  // Rows are narrowed by the scope filter first, then the text query.
+  const filtered = useMemo(() => {
+    let rows = allRows;
+    if (filterMode !== "all") {
+      rows = rows.filter((r) => {
+        if (filterMode === "conflicts") {
+          return matchColNames.some((n) => r.cells[n]?.is_purple === true);
+        }
+        if (!reviewCol) return false;
+        const review = cellText(r.cells[reviewCol.name]);
+        if (filterMode === "reviewed") return review === "Reviewed";
+        if (filterMode === "not-reviewed") return review === "Not Reviewed";
+        if (filterMode === "broken") return review === "Broken Link";
+        return true;
+      });
+    }
+    const q = query.trim().toLowerCase();
+    if (q) {
+      rows = rows.filter((r) =>
+        Object.values(r.cells).some((cell) =>
+          cellText(cell).toLowerCase().includes(q),
+        ),
+      );
+    }
+    return rows;
+  }, [allRows, query, filterMode, reviewCol, matchColNames]);
+
   const reviewedCount = reviewCol
     ? allRows.filter((r) => cellText(r.cells[reviewCol.name]) === "Reviewed").length
     : 0;
+
+  const filterMenuItems: MenuItem[] = [
+    { label: "Show All", checked: filterMode === "all", onClick: () => setFilterMode("all") },
+    {
+      label: "Show Reviewed Only",
+      checked: filterMode === "reviewed",
+      onClick: () => setFilterMode("reviewed"),
+    },
+    {
+      label: "Show Not Reviewed Only",
+      checked: filterMode === "not-reviewed",
+      onClick: () => setFilterMode("not-reviewed"),
+    },
+    {
+      label: "Show Conflicts Only",
+      checked: filterMode === "conflicts",
+      onClick: () => setFilterMode("conflicts"),
+    },
+    {
+      label: "Show Broken Links Only",
+      checked: filterMode === "broken",
+      onClick: () => setFilterMode("broken"),
+    },
+  ];
 
   const activeModel = models.data?.models.find((m) => m.id === activeModelId) ?? null;
   const selectedRowData =
@@ -278,13 +380,23 @@ export function Workspace({
         <Sidebar
           models={models.data?.models ?? []}
           activeModelId={activeModelId}
-          onSelectModel={(id) => {
-            setActiveModelId(id);
-            setSelectedRow(null);
+          onSelectModel={async (id) => {
+            // Activate server-side first so the worker's active model matches the
+            // client (fixes models other than the default showing no data), then
+            // sync local selection and refetch models/ports/status.
+            try {
+              await api.post(`/models/${id}/activate`);
+              setActiveModelId(id);
+              setSelectedRow(null);
+              refreshAll();
+            } catch (e) {
+              toast(`Switch model failed: ${(e as Error).message}`);
+            }
           }}
           onManageModels={() => setManageOpen(true)}
           releases={releases.data?.releases ?? []}
-          activeReleaseId={releases.data?.active_release_id ?? null}
+          activeReleaseId={activeReleaseId}
+          recentReleaseIds={recentReleaseIds}
           onSelectRelease={async (id) => {
             try {
               await api.post(`/releases/${id}/activate`);
@@ -293,6 +405,7 @@ export function Workspace({
               toast(`Switch release failed: ${(e as Error).message}`);
             }
           }}
+          onManageReleases={() => setReleaseMgrOpen(true)}
           canEdit={canEdit}
           width={sidebarWidth}
         />
@@ -308,12 +421,19 @@ export function Workspace({
             <div className="search">
               ⌕
               <input
+                ref={searchRef}
                 placeholder="Search ports…"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
               />
             </div>
-            <button className="scope-btn" onClick={() => toast("Filter: later slice")}>
+            <button
+              className={"scope-btn" + (filterMode !== "all" ? " active" : "")}
+              onClick={(e) => {
+                const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                setFilterMenu({ x: r.left, y: r.bottom + 4 });
+              }}
+            >
               Filter ▾
             </button>
             <button className="scope-btn" disabled={!canEdit} onClick={rematch}>
@@ -365,9 +485,19 @@ export function Workspace({
       <StatusBar
         status={status}
         modelName={activeModel?.name ?? null}
+        modelStatus={activeModel?.status ?? null}
         rowCount={allRows.length}
         reviewedCount={reviewedCount}
       />
+
+      {filterMenu && (
+        <Menu
+          x={filterMenu.x}
+          y={filterMenu.y}
+          items={filterMenuItems}
+          onClose={() => setFilterMenu(null)}
+        />
+      )}
 
       {rowMenu && (
         <Menu
@@ -382,6 +512,15 @@ export function Workspace({
         <ModelManager
           canEdit={canEdit}
           onClose={() => setManageOpen(false)}
+          onChanged={refreshAll}
+          toast={toast}
+        />
+      )}
+
+      {releaseMgrOpen && (
+        <ReleaseManager
+          canEdit={canEdit}
+          onClose={() => setReleaseMgrOpen(false)}
           onChanged={refreshAll}
           toast={toast}
         />

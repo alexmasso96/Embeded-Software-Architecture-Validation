@@ -12,8 +12,16 @@ export default defineConfig({
             "/api": {
                 target: WORKER,
                 changeOrigin: true,
-                // SSE: the EventSource stream must not be buffered.
+                // Don't pool upstream sockets. The worker is restarted often in dev; a
+                // kept-alive socket to a dead worker makes the proxy serve 500s (and
+                // hangs SSE) until vite restarts. A fresh socket per request is cheap
+                // locally and survives worker restarts. Production has no proxy.
+                agent: false,
                 configure: function (proxy) {
+                    proxy.on("proxyReq", function (proxyReq) {
+                        proxyReq.setHeader("Connection", "close");
+                    });
+                    // SSE: the EventSource stream must not be buffered.
                     proxy.on("proxyRes", function (proxyRes) {
                         var _a;
                         if ((_a = proxyRes.headers["content-type"]) === null || _a === void 0 ? void 0 : _a.includes("text/event-stream")) {

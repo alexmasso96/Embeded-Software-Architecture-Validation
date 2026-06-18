@@ -83,15 +83,19 @@ def parse_and_align_diff(diff_text: str):
     return old_aligned, new_aligned
 
 
-def run_release_diff(db_path, cur_rid, prev_rid):
+def run_release_diff(db_path, cur_rid, prev_rid, cipher=None):
     """Diff two releases' DB-stored source trees. Runs on a worker thread —
-    opens its own (WAL-independent) connection. Returns (diff_hash, diffs)."""
+    opens its own (WAL-independent) connection. Returns (diff_hash, diffs).
+
+    ``cipher`` is the session's per-block content cipher; it must be attached so
+    the worker decrypts the release source it reads."""
     from Application_Logic.Logic_Database import ProjectDatabase
     from Application_Logic.Logic_Source_Store import DbReleaseSourceProvider
     from Application_Logic.Logic_AI_Context import diff_source_folders, compute_diff_hash
     wdb = ProjectDatabase()
     try:
         wdb.open(db_path, create_schema=False, apply_journal=False)
+        wdb.set_block_cipher(cipher)
         cur_p = DbReleaseSourceProvider(wdb, cur_rid)
         prev_p = DbReleaseSourceProvider(wdb, prev_rid)
         diff_hash = compute_diff_hash(cur_p, prev_p)

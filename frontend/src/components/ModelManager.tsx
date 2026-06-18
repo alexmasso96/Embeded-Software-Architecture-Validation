@@ -1,8 +1,23 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import type { ModelInfo, ModelsResponse } from "../api/types";
+import { PropagationDialog, type AffectedPort } from "./PropagationDialog";
 
 const STATUSES = ["In Work", "Released", "Retired"];
+
+// Shape of POST /api/models/{id}/state/preview.
+interface StatePreview {
+  affected_ports: AffectedPort[];
+}
+
+// In-flight propagation: the model leaving "In Work" and the ports the user is
+// confirming before the cascade commits.
+interface PropState {
+  modelId: number;
+  modelName: string;
+  newStatus: string;
+  ports: AffectedPort[];
+}
 
 // macOS-style modal for the full model lifecycle: create, rename, duplicate,
 // set status, soft-delete and restore. Backed by POST/PATCH /api/models
@@ -25,6 +40,7 @@ export function ModelManager({
   const [busy, setBusy] = useState(false);
   const [renaming, setRenaming] = useState<number | null>(null);
   const [draftName, setDraftName] = useState("");
+  const [prop, setProp] = useState<PropState | null>(null);
   const renameRef = useRef<HTMLInputElement>(null);
 
   async function reload(keepSelection = true) {
@@ -49,11 +65,12 @@ export function ModelManager({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && renaming === null) onClose();
+      // Let the propagation dialog own Escape while it's open.
+      if (e.key === "Escape" && renaming === null && prop === null) onClose();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose, renaming]);
+  }, [onClose, renaming, prop]);
 
   useEffect(() => {
     if (renaming !== null) {
@@ -136,12 +153,63 @@ export function ModelManager({
 
   function setStatus(status: string) {
     if (!sel || status === sel.status) return;
+    const model = sel;
+
+    // Leaving "In Work" can cascade onto the model's still-"In Work" ports.
+    // Preview first; if any port is affected, let the user confirm/select which
+    // ones follow before committing. Otherwise fall through to a plain status
+    // change. (The <select> stays bound to model.status, so a cancel naturally
+    // snaps the control back to the previous value.)
+    if (model.status === "In Work" && status !== "In Work") {
+      run(async () => {
+        try {
+          const preview = await api.post<StatePreview>(
+            `/models/${model.id}/state/preview`,
+            { new_status: status },
+          );
+          if (preview.affected_ports.length > 0) {
+            setProp({
+              modelId: model.id,
+              modelName: model.name,
+              newStatus: status,
+              ports: preview.affected_ports,
+            });
+            return; // the dialog drives the commit
+          }
+          await api.patch(`/models/${model.id}`, { status });
+          await reload();
+        } catch (e) {
+          toast(`Status change failed: ${(e as Error).message}`);
+        }
+      });
+      return;
+    }
+
     run(async () => {
       try {
-        await api.patch(`/models/${sel.id}`, { status });
+        await api.patch(`/models/${model.id}`, { status });
         await reload();
       } catch (e) {
         toast(`Status change failed: ${(e as Error).message}`);
+      }
+    });
+  }
+
+  // Commit the previewed cascade with the user's chosen ports, then refresh.
+  function commitPropagation(selectedPortNames: string[]) {
+    if (!prop) return;
+    run(async () => {
+      try {
+        await api.post(`/models/${prop.modelId}/state`, {
+          new_status: prop.newStatus,
+          selected_ports: selectedPortNames,
+        });
+        await reload();
+        toast(`Status changed to ${prop.newStatus}`);
+      } catch (e) {
+        toast(`Status change failed: ${(e as Error).message}`);
+      } finally {
+        setProp(null);
       }
     });
   }
@@ -172,6 +240,7 @@ export function ModelManager({
   }
 
   return (
+    <>
     <div className="modal-overlay" onMouseDown={onClose}>
       <div className="modal modelmgr" onMouseDown={(e) => e.stopPropagation()}>
         <div className="modal-head">Manage Models</div>
@@ -292,5 +361,17 @@ export function ModelManager({
         </div>
       </div>
     </div>
+
+    {prop && (
+      <PropagationDialog
+        modelName={prop.modelName}
+        newStatus={prop.newStatus}
+        ports={prop.ports}
+        busy={busy}
+        onPropagate={commitPropagation}
+        onCancel={() => setProp(null)}
+      />
+    )}
+    </>
   );
 }

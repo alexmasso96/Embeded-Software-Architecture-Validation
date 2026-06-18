@@ -1,10 +1,21 @@
 import { useState } from "react";
 import { api, ApiError } from "../api/client";
-import type { ColumnSpec } from "../api/types";
+import type { ColumnSpec, ModelsResponse } from "../api/types";
 import { SEARCH_KEYS } from "../columns";
 import { FolderPicker } from "./FolderPicker";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Poll a started job until it terminates; throw on failure/cancel.
+async function waitForJob(jobId: string, failMsg: string): Promise<void> {
+  for (;;) {
+    await sleep(250);
+    const j = await api.get<{ status: string; error?: string }>(`/jobs/${jobId}`);
+    if (j.status === "done") return;
+    if (j.status === "failed" || j.status === "cancelled")
+      throw new Error(j.error || failMsg);
+  }
+}
 const DONT = "__ignore"; // sentinel: do not import this column
 const CREATE = "__create"; // sentinel: create a new column named after the source
 
@@ -117,15 +128,22 @@ export function ImportWizard({
         file_path: file,
         release_id: rel.id,
       });
-      for (;;) {
-        await sleep(250);
-        const j = await api.get<{ status: string; error?: string }>(`/jobs/${started.job_id}`);
-        if (j.status === "done") break;
-        if (j.status === "failed" || j.status === "cancelled")
-          throw new Error(j.error || "Import failed.");
+      await waitForJob(started.job_id, "Import failed.");
+
+      // Apply the freshly-imported symbols to every model's Match columns so the
+      // table is populated immediately — no manual Re-match needed.
+      setStep({ k: "running", msg: "Matching symbols…" });
+      const models = await api.get<ModelsResponse>("/models");
+      const modelIds = models.models.filter((m) => !m.is_deleted).map((m) => m.id);
+      if (modelIds.length) {
+        const rm = await api.post<{ job_id: string }>("/jobs/fuzzy_rematch", {
+          model_ids: modelIds,
+        });
+        await waitForJob(rm.job_id, "Matching failed.");
       }
+
       onChanged();
-      setStep({ k: "done", msg: `Release “${name}” imported. Re-match symbols to apply it.` });
+      setStep({ k: "done", msg: `Release “${name}” imported and symbols matched.` });
     } catch (e) {
       setErr(e instanceof ApiError ? e.detail : String(e));
       setStep({ k: "release", file, name });

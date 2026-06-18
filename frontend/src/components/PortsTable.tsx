@@ -49,6 +49,11 @@ export function PortsTable({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pill, setPill] = useState<PillTarget | null>(null);
 
+  // Look up the Port State / Review Status columns by role — they drive the
+  // per-row styling cascades (retired/deleted rows, reviewed match tinting).
+  const stateCol = columns.find((c) => c.role === "state");
+  const reviewCol = columns.find((c) => c.role === "review");
+
   // Per-column widths, seeded from the backend layout and adjusted by dragging
   // the header separators. Local-only (a feel-good UX nicety) — persisting back
   // via PUT /columns can come with the column customizer.
@@ -128,7 +133,7 @@ export function PortsTable({
     });
   }
 
-  function renderCell(row: PortRow, col: ResolvedColumn) {
+  function renderCell(row: PortRow, col: ResolvedColumn, reviewed: boolean) {
     const value = cellText(row.cells[col.name]);
 
     if (col.role === "state" || col.role === "review") {
@@ -149,21 +154,29 @@ export function PortsTable({
 
     if (col.role === "match") {
       const { name, score } = parseMatch(value);
-      
+
+      // B6: an empty cell renders the fallback em-dash and exposes no picker
+      // trigger, even when the table is editable.
+      if (!name) {
+        return <span className="dim">—</span>;
+      }
+
+      // B5: reviewed rows tint the match green and drop the % score.
+      const showScore = !reviewed && score !== null;
+      const matchClass = reviewed ? " reviewed-match" : "";
+
       if (!canEdit) {
-        return name ? (
-          <div className="matchcell-readonly">
+        return (
+          <div className={"matchcell-readonly" + matchClass}>
             <span className="mono match-name">{name}</span>
-            {score !== null && <span className={confClass(score)}>{score}%</span>}
+            {showScore && <span className={confClass(score)}>{score}%</span>}
           </div>
-        ) : (
-          <span className="dim">—</span>
         );
       }
 
       return (
         <button
-          className="matchcell"
+          className={"matchcell" + matchClass}
           title="Pick match candidate"
           onClick={(e) => {
             e.stopPropagation();
@@ -172,14 +185,8 @@ export function PortsTable({
             onOpenMatch(row.row_index, col, r.left, r.bottom + 4);
           }}
         >
-          {name ? (
-            <>
-              <span className="mono match-name">{name}</span>
-              {score !== null && <span className={confClass(score)}>{score}%</span>}
-            </>
-          ) : (
-            <span className="dim">Pick…</span>
-          )}
+          <span className="mono match-name">{name}</span>
+          {showScore && <span className={confClass(score)}>{score}%</span>}
         </button>
       );
     }
@@ -191,7 +198,8 @@ export function PortsTable({
     }
 
     if (col.role === "tcid" || col.role === "port") {
-      return <span className="mono">{value}</span>;
+      // B6: fallback em-dash for empty non-status cells.
+      return value ? <span className="mono">{value}</span> : <span className="dim">—</span>;
     }
 
     return value || <span className="dim">—</span>;
@@ -241,16 +249,30 @@ export function PortsTable({
           {items.map((vi) => {
             const row = rows[vi.index];
             const selected = row.row_index === selectedRowIndex;
+            const stateVal = stateCol ? cellText(row.cells[stateCol.name]) : "";
+            const reviewed =
+              !!reviewCol && cellText(row.cells[reviewCol.name]) === "Reviewed";
+            const rowCls =
+              "prow" +
+              (selected ? " selected" : "") +
+              (stateVal === "Retired" ? " retired" : "") +
+              (stateVal === "Deleted" ? " deleted" : "");
             return (
               <tr
                 key={row.row_index}
-                className={"prow" + (selected ? " selected" : "")}
+                className={rowCls}
                 style={{ height: ROW_H }}
                 onClick={() => onSelectRow(row.row_index)}
               >
                 {columns.map((c) => {
                   const conflict = c.role === "match" && isConflict(row.cells[c.name]);
-                  const tone = conflict ? "" : cellTone(row, c);
+                  // B5: reviewed match cells read green regardless of score.
+                  const tone =
+                    conflict
+                      ? ""
+                      : reviewed && c.role === "match"
+                        ? "ok"
+                        : cellTone(row, c);
                   const isPillCol = c.role === "state" || c.role === "review";
                   const cls = [
                     conflict ? "conflict" : tone ? `tone-${tone}` : "",
@@ -258,7 +280,7 @@ export function PortsTable({
                   ].filter(Boolean).join(" ");
                   return (
                     <td key={c.name} className={cls || undefined}>
-                      {renderCell(row, c)}
+                      {renderCell(row, c, reviewed)}
                     </td>
                   );
                 })}
