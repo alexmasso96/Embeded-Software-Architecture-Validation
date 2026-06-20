@@ -11,6 +11,7 @@ run_release_diff). Handlers therefore stay thin.
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from contextlib import contextmanager
@@ -92,13 +93,25 @@ def _demo_handler(params: dict, progress: Callable[..., None],
                   cancel: threading.Event):
     steps = int(params.get("steps", 3))
     delay = float(params.get("delay", 0.0))
+    # `burn` seconds of GIL-holding CPU work per step — used by the freeze probe
+    # (scripts/freeze_probe.py) to load the worker process and prove the UI
+    # process stays responsive across the process boundary.
+    burn = float(params.get("burn", 0.0))
     done = 0
     for i in range(steps):
         if cancel.is_set():
             break
         done = i + 1
         progress(f"step {done}/{steps}", percent=100.0 * done / steps)
-        if delay:
+        if burn:
+            end = time.monotonic() + burn
+            x = 0.0
+            while time.monotonic() < end:
+                for _ in range(20000):
+                    x += math.sqrt(123.456)  # CPU, holds the GIL
+                if cancel.is_set():
+                    break
+        elif delay:
             time.sleep(delay)
     return {"steps_completed": done, "echo": params.get("echo")}
 

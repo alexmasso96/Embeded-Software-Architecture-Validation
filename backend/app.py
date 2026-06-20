@@ -40,7 +40,11 @@ from .routers import testdesign as testdesign_router
 logger = logging.getLogger(__name__)
 
 
-def create_app(token: str | None = None, heartbeat_interval: float | None = None) -> FastAPI:
+def create_app(
+    token: str | None = None,
+    heartbeat_interval: float | None = None,
+    serve_frontend: bool = False,
+) -> FastAPI:
     bus = EventBus()
     state = AppState(bus, heartbeat_interval) if heartbeat_interval is not None else AppState(bus)
     jobs = JobManager(bus)
@@ -79,6 +83,12 @@ def create_app(token: str | None = None, heartbeat_interval: float | None = None
     @app.get("/api/health")
     def health() -> dict:
         return {"ok": True}
+
+    if serve_frontend:
+        from .static import mount_frontend
+
+        if not mount_frontend(app):
+            logger.warning("serve_frontend=True but no frontend/dist build was found.")
 
     return app
 

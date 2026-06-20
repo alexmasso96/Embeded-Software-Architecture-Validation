@@ -267,13 +267,23 @@ Exit criteria: feature-parity checklist (§7) fully ticked in the browser.
 
 **Goal:** the SPA in a native window, one packaged artifact.
 
-> **Carried in from earlier phases (deferred *to* here, not debt):** `desktop/main.py`
-> does not exist yet; the worker's `main()` (`backend/app.py`) already binds 127.0.0.1:0
-> and prints the URL+token but Phase 3 must hand the port back over a `multiprocessing`
-> Pipe instead. Still TODO for this phase: FastAPI serving `frontend/dist/` (no static
-> mount exists yet), native file dialogs via `js_api` (the `fs` router is the dev
-> stand-in), parent-PID watchdog so the worker can't outlive the UI, and
-> `scripts/freeze_probe.py` (the < 50 ms event-loop latency guarantee, run on an EDR box).
+> **Status (2026-06-18): Phase 3 core built; only on-machine packaging validation remains.**
+> Done: `backend/static.py` serves the SPA via `create_app(serve_frontend=True)` (frozen-aware
+> path; `/api/*` still wins; 7 tests). `desktop/worker.py` spawns the worker with
+> `multiprocessing` (spawn), hands the OS-assigned port back over a Pipe that doubles as a
+> **lifeline** — closing the parent end triggers a graceful uvicorn shutdown so the `.arch`
+> lock is released (no zombie-lock); 5 headless tests. `desktop/main.py` is the pywebview
+> shell; `JsApi` exposes `get_token` (token never crosses HTTP), `set_title`, and native file
+> dialogs. Frontend `native.ts` + `main.tsx` bootstrap the token through the bridge when the
+> SPA is loaded with `?desktop=1`. Window title (project · release · edit/view) and the
+> ⌘/Ctrl-S / ⌘/Ctrl-F shortcuts are wired in `App.tsx`. `scripts/freeze_probe.py` passes
+> (worst UI-loop latency ~2.5 ms under 4 CPU-bound worker jobs, threshold 50 ms).
+> **Decision (Alex):** keep the custom `/api/fs` Miller-columns picker — it already returns
+> real worker-side paths inside pywebview; the `js_api` dialog methods stay wired but unused.
+> **Remaining:** `ArchitectureValidatorDesktop.spec` (separate onedir spec, written but
+> unbuilt) needs a real build + smoke test on macOS and an EDR Windows box, including the
+> WebView2-runtime fallback. Native dialogs and a backend `dirty` flag for the title are
+> deferred (not blockers).
 
 - `desktop/main.py`: spawn worker → wait for port → `webview.create_window()`
   pointing at the worker's statically-served frontend build (FastAPI serves

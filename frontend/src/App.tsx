@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api/client";
 import type { JobPayload, ProjectStatus } from "./api/types";
 import { useSSE } from "./api/useSSE";
+import { nativeSetTitle } from "./native";
 import { JobProgressOverlay } from "./components/JobProgressOverlay";
 import { Preferences } from "./components/Preferences";
 import { StartScreen } from "./components/StartScreen";
@@ -103,6 +104,21 @@ export default function App() {
       Object.values(timers).forEach((t) => window.clearTimeout(t));
     };
   }, []);
+
+  // Window title: project + release + edit/view mode (drives the native window
+  // title in the desktop shell; just the tab title in a browser).
+  useEffect(() => {
+    const base = "Architecture Validator";
+    let title = base;
+    if (status?.open) {
+      const name = basename(status.path);
+      const rel = status.active_release ? ` — ${status.active_release}` : "";
+      const modeLabel = canEdit ? "Editing" : "View-Only";
+      title = `${name}${rel} — ${modeLabel} — ${base}`;
+    }
+    document.title = title;
+    nativeSetTitle(title);
+  }, [status?.open, status?.path, status?.active_release, canEdit]);
 
   // Global keyboard shortcuts. Mounted once; reads the latest save()/canEdit via
   // refs so it never re-subscribes. ⌘/Ctrl+S saves, ⌘/Ctrl+F focuses the search
