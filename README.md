@@ -98,8 +98,8 @@ A project is one portable `.arch` file (a SQLite database under the hood), keepi
 
 | Area | Library |
 | :--- | :--- |
-| Language | Python 🐍 |
-| GUI | PyQt6 |
+| Language | Python 🐍 + TypeScript |
+| GUI | React SPA in a native **pywebview** shell over a local **FastAPI** worker |
 | ELF / DWARF parsing | native **Rust** (`rust_elf_parser`, PyO3 via `maturin`) + `pyelftools` fallback |
 | Disassembly | `capstone` |
 | C++ demangling | `cpp_demangle` |
@@ -108,7 +108,7 @@ A project is one portable `.arch` file (a SQLite database under the hood), keepi
 | AI providers | Copilot / Anthropic / OpenAI / Gemini over `requests` |
 | Project storage | SQLite |
 | Security | `bcrypt` (master password), `cryptography` (encrypted AI credentials, history protection) |
-| Packaging | `PyInstaller` (Windows/macOS/Linux), Flatpak |
+| Packaging | `PyInstaller` onedir desktop bundle (Windows/macOS/Linux) |
 
 ---
 
@@ -118,14 +118,20 @@ A project is one portable `.arch` file (a SQLite database under the hood), keepi
 # 1. Install dependencies (a virtual environment is recommended)
 pip install -r requirements.txt
 
-# 2. Run it
-python src/main.py
+# 2. Build the React frontend (the worker serves it inside the desktop shell)
+( cd src/frontend && npm ci && npm run build )
+
+# 3. Launch the desktop app (pywebview shell over the FastAPI worker)
+PYTHONPATH=src python -m desktop.main
 ```
 
 ### Building a distributable
 
-- **Windows:** run `build_windows.bat`, or build directly from `ArchitectureValidatorPro.spec` with PyInstaller.
-- **Linux:** a Flatpak build is available via `flatpak-manifest.yml`.
+The desktop app is packaged as a PyInstaller onedir bundle from
+`ArchitectureValidatorDesktop.spec` (builds the SPA + Rust parser wheel first):
+
+- **macOS / Linux:** `scripts/build_desktop.sh`
+- **Windows:** `scripts/build_desktop.ps1`
 
 ---
 

@@ -1,8 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# Phase 3 desktop shell (pywebview + FastAPI worker). Separate from the legacy
-# PyQt spec (ArchitectureValidatorPro.spec) so both can ship side-by-side during
-# the Phase 4 cutover window. Entry = src/desktop/main.py.
+# Desktop shell (pywebview + FastAPI worker). Entry = src/desktop/main.py.
+# This is the only build spec now — the legacy PyQt spec was removed at the
+# Phase 4 cutover when the PyQt UI was deleted.
 #
 # Onedir (COLLECT) is deliberate: a onefile build re-extracts every launch,
 # which re-triggers the EDR small-file scanning penalty this whole migration

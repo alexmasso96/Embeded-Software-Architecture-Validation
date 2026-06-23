@@ -14,11 +14,11 @@ if TYPE_CHECKING:
     from .Logic_Symbol_Matcher import SymbolMatcher
     from .Logic_Architecture_Models import ArchitectureManager
     from .Logic_Release_Manager import ReleaseManager
-    from UI.column_types import TableColumn
 
-    # Widget types are deliberately untyped here (Phase 0 de-Qt): the logic
-    # layer must not depend on PyQt6, even for type checking. These attributes
-    # disappear from the protocol entirely once the table access layer lands.
+    # The legacy PyQt UI is gone (Phase 4): the logic layer must not depend on
+    # it even for type checking. The former table/column/widget types are now
+    # untyped placeholders — protocol attributes referencing them are vestigial.
+    TableColumn = Any
     QTableWidget = Any
     QListView = Any
     ArchitectureListModel = Any

@@ -156,25 +156,6 @@ def test_baseline_event_logged_to_both_scopes(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# BUG-02 — NewProjectController close guard is idempotent
-# ---------------------------------------------------------------------------
-def test_new_project_controller_close_is_idempotent(tmp_path):
-    try:
-        from PyQt6.QtWidgets import QApplication, QMainWindow
-        app = QApplication.instance() or QApplication(sys.argv)
-        from UI.new_project_window import NewProjectController
-    except Exception as e:  # pragma: no cover - environment without Qt
-        pytest.skip(f"Qt unavailable: {e}")
-    ctrl = NewProjectController(main_window=None, project_db=None)
-    assert ctrl._closing is False
-    ctrl._safe_close()
-    assert ctrl._closing is True
-    # second close (and a late handler call) must not raise
-    ctrl._safe_close()
-    ctrl.start_empty_handler()   # guarded: returns immediately when _closing
-
-
-# ---------------------------------------------------------------------------
 # Finding F — journal-mode selection (WAL local / DELETE on network)
 # ---------------------------------------------------------------------------
 def test_journal_mode_env_override(tmp_path, monkeypatch):
