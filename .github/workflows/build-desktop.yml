@@ -63,11 +63,11 @@ jobs:
   #       with:
   #         node-version: '22'
   #         cache: 'npm'
-  #         cache-dependency-path: frontend/package-lock.json
+  #         cache-dependency-path: src/frontend/package-lock.json
   #
   #     - name: Build React frontend
   #       run: |
-  #         cd frontend
+  #         cd src/frontend
   #         npm ci
   #         npm run build
   #
@@ -79,7 +79,7 @@ jobs:
   #     - name: Build and install Rust ELF Parser extension
   #       run: |
   #         python -m pip install maturin
-  #         maturin build --release --manifest-path native/parser_rust/Cargo.toml --out target/wheels
+  #         maturin build --release --manifest-path src/native/parser_rust/Cargo.toml --out target/wheels
   #         pip install --no-index --find-links target/wheels rust_elf_parser
   #
   #     - name: Install Dependencies
@@ -116,11 +116,11 @@ jobs:
   #       with:
   #         node-version: '22'
   #         cache: 'npm'
-  #         cache-dependency-path: frontend/package-lock.json
+  #         cache-dependency-path: src/frontend/package-lock.json
   #
   #     - name: Build React frontend
   #       run: |
-  #         cd frontend
+  #         cd src/frontend
   #         npm ci
   #         npm run build
   #
@@ -132,7 +132,7 @@ jobs:
   #     - name: Build and install Rust ELF Parser extension
   #       run: |
   #         python -m pip install maturin
-  #         maturin build --release --manifest-path native/parser_rust/Cargo.toml --out target/wheels
+  #         maturin build --release --manifest-path src/native/parser_rust/Cargo.toml --out target/wheels
   #         pip install --no-index --find-links target/wheels rust_elf_parser
   #
   #     - name: Install Dependencies
@@ -171,11 +171,11 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: src/frontend/package-lock.json
 
       - name: Build React frontend
         run: |
-          cd frontend
+          cd src/frontend
           npm ci
           npm run build
 
@@ -187,7 +187,7 @@ jobs:
       - name: Build and install Rust ELF Parser extension
         run: |
           python -m pip install maturin
-          maturin build --release --manifest-path native/parser_rust/Cargo.toml --out target/wheels --compatibility linux
+          maturin build --release --manifest-path src/native/parser_rust/Cargo.toml --out target/wheels --compatibility linux
           pip install --no-index --find-links target/wheels rust_elf_parser
 
       - name: Install WebKitGTK runtime (pywebview's Linux backend)

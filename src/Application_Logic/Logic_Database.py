@@ -1005,6 +1005,15 @@ class ProjectDatabase:
             )
             return cur.lastrowid
 
+    def delete_model(self, model_id: int):
+        """Permanently remove a model and (via ON DELETE CASCADE) all of its
+        rows, metadata, mind maps and release maps. Used for hard-deleting
+        empty models; soft delete just flips is_deleted via update_model."""
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM architecture_models WHERE id=?", (model_id,)
+            )
+
     def update_model(self, model_id: int, **kwargs):
         allowed = {"name", "status", "is_deleted", "sort_order"}
         fields = {k: v for k, v in kwargs.items() if k in allowed}

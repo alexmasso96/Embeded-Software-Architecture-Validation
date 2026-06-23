@@ -52,7 +52,7 @@ make_release:
     - python -m pip install --upgrade pip
     - pip install -r requirements.txt maturin
     # Build and install the Rust ELF parser PyO3 wheel locally on the runner
-    - maturin build --release --manifest-path native/parser_rust/Cargo.toml --out target/wheels --compatibility linux
+    - maturin build --release --manifest-path src/native/parser_rust/Cargo.toml --out target/wheels --compatibility linux
     - pip install --no-index --find-links target/wheels rust_elf_parser
   script:
     # Build the application using PyInstaller

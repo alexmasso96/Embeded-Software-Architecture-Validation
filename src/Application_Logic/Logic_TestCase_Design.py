@@ -552,11 +552,16 @@ def process_conditional_blocks(template_text, row_bind_data):
 
 
 def bind_data(template, data_dict):
-    """Replace every ``[Column Name]`` token with its bound value."""
+    """Replace every ``[Column Name]`` token with its bound value.
+
+    Matching is case-insensitive so a user-typed ``[model]`` binds the same as the
+    canonical ``[Model]`` token (the autocomplete inserts the canonical casing,
+    but hand-typed tokens shouldn't silently fail to substitute)."""
     result = template
     for col_name, val in data_dict.items():
-        token = f"[{col_name}]"
-        result = result.replace(token, str(val))
+        pattern = re.compile(r'\[' + re.escape(col_name) + r'\]', re.IGNORECASE)
+        # Use a replacement function so backslashes/groups in the value are literal.
+        result = pattern.sub(lambda _m, v=str(val): v, result)
     return result
 
 

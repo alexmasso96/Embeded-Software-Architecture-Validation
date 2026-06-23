@@ -98,11 +98,11 @@ def test_commit_propagates_to_all(client):
 def test_commit_propagates_only_selected(client):
     mid = _mid(client)
     r = client.post(f"/api/models/{mid}/state",
-                    json={"new_status": "Retired", "selected_ports": ["p_speed"]},
+                    json={"new_status": "Released", "selected_ports": ["p_speed"]},
                     headers=AUTH).json()
     assert r["ports_changed"] == 1
     # p_speed follows; p_torque stays In Work; p_locked untouched.
-    assert _port_states(client, mid) == ["Retired", "In Work", "Released"]
+    assert _port_states(client, mid) == ["Released", "In Work", "Released"]
 
 
 def test_commit_staying_in_work_changes_nothing(client):
@@ -111,6 +111,26 @@ def test_commit_staying_in_work_changes_nothing(client):
                     json={"new_status": "In Work"}, headers=AUTH).json()
     assert r["ports_changed"] == 0
     assert _port_states(client, mid) == ["In Work", "In Work", "Released"]
+
+
+def test_preview_retired_not_eligible_strict_forward(client):
+    # Strict forward: leaving In Work for a non-Released state does not cascade.
+    mid = _mid(client)
+    body = client.post(f"/api/models/{mid}/state/preview",
+                       json={"new_status": "Retired"}, headers=AUTH).json()
+    assert body["propagates"] is False
+    assert body["affected_ports"] == []
+
+
+def test_commit_in_work_to_retired_does_not_propagate(client):
+    # In Work → Retired moves the model but leaves every port untouched.
+    mid = _mid(client)
+    r = client.post(f"/api/models/{mid}/state",
+                    json={"new_status": "Retired"}, headers=AUTH).json()
+    assert r["ports_changed"] == 0
+    assert _port_states(client, mid) == ["In Work", "In Work", "Released"]
+    m = next(m for m in client.get("/api/models", headers=AUTH).json()["models"] if m["id"] == mid)
+    assert m["status"] == "Retired"   # model status still changes
 
 
 def test_view_only_cannot_commit_state(project_path):

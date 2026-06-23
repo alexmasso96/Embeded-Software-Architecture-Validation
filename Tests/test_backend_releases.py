@@ -88,6 +88,62 @@ def test_activate_release(client):
     assert _releases(client)["active_release_id"] == rid
 
 
+def _mid(client):
+    return next(m["id"] for m in client.get("/api/models", headers=AUTH).json()["models"])
+
+
+def _port_ids(client, mid):
+    rows = client.get(f"/api/models/{mid}/ports", headers=AUTH).json()["rows"]
+    return [r["cells"]["TC. ID"]["text"] for r in rows]
+
+
+def test_activate_swaps_table_rows(client):
+    # Bug fix: activating a release must move its snapshot into the table.
+    mid = _mid(client)
+    # R2 starts empty and active; the model's working rows are empty too.
+    client.post("/api/releases", json={"name": "R2"}, headers=AUTH)
+    assert _port_ids(client, mid) == []
+    # Activating R1 loads its 2-row snapshot into architecture_rows.
+    rid = _id_of(client, "R1")
+    client.post(f"/api/releases/{rid}/activate", headers=AUTH)
+    assert _port_ids(client, mid) == ["1", "2"]
+
+
+def test_activate_roundtrip_preserves_edits(client):
+    # Edits made under one release are flushed to its snapshot on switch and
+    # restored when it's reactivated; the other release is unaffected.
+    mid = _mid(client)
+    r2 = client.post("/api/releases", json={"name": "R2"}, headers=AUTH).json()
+    r1 = _id_of(client, "R1")
+    # Work under R1, edit row 0.
+    client.post(f"/api/releases/{r1}/activate", headers=AUTH)
+    client.patch(f"/api/models/{mid}/ports/0", json={"updates": {"TC. ID": "EDITED"}}, headers=AUTH)
+    # Switch to R2 (empty) and back to R1 — the edit survives.
+    client.post(f"/api/releases/{r2['id']}/activate", headers=AUTH)
+    assert _port_ids(client, mid) == []
+    client.post(f"/api/releases/{r1}/activate", headers=AUTH)
+    assert _port_ids(client, mid) == ["EDITED", "2"]
+
+
+def test_add_result_column(client):
+    rid = _id_of(client, "R1")
+    r = client.post(f"/api/releases/{rid}/result-column", headers=AUTH)
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "Release_R1_Result"
+    cols = client.get("/api/columns", headers=AUTH).json()
+    names = [c["name"] for c in cols["columns"]]
+    assert "Release_R1_Result" in names and "Last Result" in names
+    meta = {m["name"]: m for m in cols["result_columns"]}
+    assert meta["Release_R1_Result"]["release_id"] == rid
+    assert meta["Release_R1_Result"]["is_active"] is True  # R1 is the active release
+
+
+def test_add_result_column_once_per_release(client):
+    rid = _id_of(client, "R1")
+    client.post(f"/api/releases/{rid}/result-column", headers=AUTH)
+    assert client.post(f"/api/releases/{rid}/result-column", headers=AUTH).status_code == 409
+
+
 def test_rename_release(client):
     rid = _id_of(client, "R1")
     assert client.patch(f"/api/releases/{rid}", json={"name": "R1b"}, headers=AUTH).status_code == 200

@@ -148,7 +148,9 @@ class ReleaseManager:
         if self._db and getattr(self._db, "read_only", False):
             return
         active = self.get_active_release()
-        if active and active.data_cache:
+        # A frozen baseline can be the active release (read-only "load baseline"
+        # view); never flush to it — its rows are write-protected.
+        if active and not active.is_baseline and active.data_cache:
             self._save_data(active, active.data_cache)
 
     # ------------------------------------------------------------------
@@ -376,6 +378,23 @@ class ReleaseManager:
         self.releases.append(new_baseline)
         self.save_registry()
         return new_baseline
+
+    def unfreeze_baseline(self, index: int) -> ReleaseModel:
+        """Convert a frozen baseline back into an editable release (the inverse of
+        create_baseline / Freeze). Flips is_baseline off, logs the NC-4 event, and
+        persists. The release's snapshot rows become its live, editable rows."""
+        if not (0 <= index < len(self.releases)):
+            raise ValueError("Invalid release index.")
+        rel = self.releases[index]
+        if not rel.is_baseline:
+            raise ValueError("Release is not a baseline.")
+        rel.is_baseline = False
+        if self._db and rel.id is not None:
+            self._db.update_release(rel.id, is_baseline=0)
+            self.log_baseline_event(rel, frozen=False)  # NC-4
+            self._db.commit()
+        self.save_registry()
+        return rel
 
     def rename_release(self, index: int, new_name: str):
         if not (0 <= index < len(self.releases)):

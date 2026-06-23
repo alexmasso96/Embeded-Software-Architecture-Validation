@@ -2,7 +2,7 @@
 #
 # Phase 3 desktop shell (pywebview + FastAPI worker). Separate from the legacy
 # PyQt spec (ArchitectureValidatorPro.spec) so both can ship side-by-side during
-# the Phase 4 cutover window. Entry = desktop/main.py.
+# the Phase 4 cutover window. Entry = src/desktop/main.py.
 #
 # Onedir (COLLECT) is deliberate: a onefile build re-extracts every launch,
 # which re-triggers the EDR small-file scanning penalty this whole migration
@@ -27,9 +27,10 @@ ICON_PNG = os.path.join(ICON_DIR, 'icon_1024.png')
 exe_icon = ICON_ICO if sys.platform == 'win32' else (ICON_ICNS if sys.platform == 'darwin' else None)
 
 # Bundle the built SPA at <bundle>/frontend/dist so backend.static.frontend_dist()
-# finds it under sys._MEIPASS. Run `npm run build` in frontend/ BEFORE packaging.
+# finds it under sys._MEIPASS. Run `npm run build` in src/frontend/ BEFORE
+# packaging. Source path is src/frontend/dist; bundle dest stays frontend/dist.
 datas = [
-    ('frontend/dist', 'frontend/dist'),
+    ('src/frontend/dist', 'frontend/dist'),
     (ICON_PNG, ICON_DIR),
 ]
 # uvicorn/webview import their backends lazily — collect them so the frozen app
@@ -45,7 +46,7 @@ hiddenimports += collect_submodules('uvicorn')
 hiddenimports += collect_submodules('webview')
 
 a = Analysis(
-    ['desktop/main.py'],
+    ['src/desktop/main.py'],
     pathex=['.', 'src'],
     binaries=[],
     datas=datas,

@@ -15,12 +15,12 @@ cd "$REPO_ROOT"
 
 PYTHON="${PYTHON:-python3}"
 
-echo "==> 1/4 Building React frontend (frontend/dist)"
-( cd frontend && npm ci && npm run build )
+echo "==> 1/4 Building React frontend (src/frontend/dist)"
+( cd src/frontend && npm ci && npm run build )
 
 echo "==> 2/4 Building Rust ELF parser wheel"
 "$PYTHON" -m pip install --upgrade pip maturin
-MATURIN_ARGS=(build --release --manifest-path native/parser_rust/Cargo.toml --out target/wheels)
+MATURIN_ARGS=(build --release --manifest-path src/native/parser_rust/Cargo.toml --out target/wheels)
 if [ "$(uname -s)" = "Linux" ]; then
   # Skip the manylinux repair (needs patchelf); the wheel is only consumed
   # locally by PyInstaller, never published.

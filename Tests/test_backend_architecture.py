@@ -23,7 +23,7 @@ AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 LAYOUT = [
     ("TC. ID", "Static Text", True, 120),
-    ("Input Port", "Port Search Column", True, 200),
+    ("Input Port", "Port Search", True, 200),
     ("Review Status", "Review Status", True, 120),
 ]
 
@@ -123,6 +123,23 @@ def test_soft_delete_and_restore(client):
     assert "Arch_B" in {m["name"] for m in _models(client)["models"]}
 
 
+def test_hard_delete_empty_model(client):
+    # Arch_B is seeded with no rows → permanently removed (not soft-deleted).
+    mid = _id_of(client, "Arch_B")
+    r = client.delete(f"/api/models/{mid}", headers=AUTH)
+    assert r.status_code == 200
+    allm = client.get("/api/models?include_deleted=true", headers=AUTH).json()["models"]
+    assert "Arch_B" not in {m["name"] for m in allm}
+
+
+def test_hard_delete_nonempty_model_409(client):
+    # Arch_A has ports → hard delete is refused; soft delete must be used instead.
+    mid = _id_of(client, "Arch_A")
+    r = client.delete(f"/api/models/{mid}", headers=AUTH)
+    assert r.status_code == 409
+    assert "Arch_A" in {m["name"] for m in _models(client)["models"]}
+
+
 def test_activate_model(client):
     mid = _id_of(client, "Arch_B")
     r = client.post(f"/api/models/{mid}/activate", headers=AUTH)
@@ -140,7 +157,7 @@ def test_patch_unknown_model_409(client):
 def test_get_columns(client):
     cols = client.get("/api/columns", headers=AUTH).json()["columns"]
     assert [c["name"] for c in cols] == ["TC. ID", "Input Port", "Review Status"]
-    assert cols[1]["type"] == "Port Search Column"
+    assert cols[1]["type"] == "Port Search"
 
 
 def test_put_columns(client):
@@ -219,3 +236,58 @@ def test_view_only_blocks_writes(view_client):
     assert view_client.post("/api/models", json={"name": "X"}, headers=AUTH).status_code == 409
     assert view_client.patch(f"/api/models/{mid}/ports/0",
                              json={"updates": {"TC. ID": "y"}}, headers=AUTH).status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Change history (ASPICE log) — recorded on edits, read back model/port-scoped
+# ---------------------------------------------------------------------------
+def test_cell_edit_records_history(client):
+    mid = _id_of(client, "Arch_A")
+    # Empty log before any edit.
+    assert client.get("/api/history", headers=AUTH).json()["entries"] == []
+
+    client.patch(f"/api/models/{mid}/ports/0",
+                 json={"updates": {"Review Status": "Reviewed"}}, headers=AUTH)
+
+    entries = client.get("/api/history", headers=AUTH).json()["entries"]
+    assert len(entries) == 1
+    e = entries[0]
+    assert e["model"] == "Arch_A"
+    # PyQt log format: Row N -> <port> -> <col> -> <old> -> <new>
+    assert e["description"] == \
+        "Row 1 -> p_speed -> Review Status -> Not Reviewed -> Reviewed"
+    assert e["user"]
+
+
+def test_history_skips_unchanged_cell(client):
+    mid = _id_of(client, "Arch_A")
+    # Re-write the same value — no displayed-text change → no entry.
+    client.patch(f"/api/models/{mid}/ports/1",
+                 json={"updates": {"Review Status": "Reviewed"}}, headers=AUTH)
+    assert client.get("/api/history", headers=AUTH).json()["entries"] == []
+
+
+def test_history_port_filter(client):
+    mid = _id_of(client, "Arch_A")
+    client.patch(f"/api/models/{mid}/ports/0",
+                 json={"updates": {"Review Status": "Reviewed"}}, headers=AUTH)
+    client.patch(f"/api/models/{mid}/ports/1",
+                 json={"updates": {"Review Status": "Not Reviewed"}}, headers=AUTH)
+
+    # Model-wide: both edits.
+    assert len(client.get("/api/history", headers=AUTH).json()["entries"]) == 2
+    # Port-scoped: only the p_speed edit.
+    scoped = client.get("/api/history?port=p_speed", headers=AUTH).json()["entries"]
+    assert len(scoped) == 1
+    assert "p_speed" in scoped[0]["description"]
+
+
+def test_history_newest_first(client):
+    mid = _id_of(client, "Arch_A")
+    client.patch(f"/api/models/{mid}/ports/0",
+                 json={"updates": {"TC. ID": "TC_001a"}}, headers=AUTH)
+    client.patch(f"/api/models/{mid}/ports/0",
+                 json={"updates": {"TC. ID": "TC_001b"}}, headers=AUTH)
+    entries = client.get("/api/history", headers=AUTH).json()["entries"]
+    assert entries[0]["description"].endswith("TC_001a -> TC_001b")
+    assert entries[1]["description"].endswith("TC_001 -> TC_001a")

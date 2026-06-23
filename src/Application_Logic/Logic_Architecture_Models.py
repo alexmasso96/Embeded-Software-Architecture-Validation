@@ -271,6 +271,25 @@ class ArchitectureManager:
             return True
         return False
 
+    def hard_delete_model(self, index: int) -> bool:
+        """Permanently remove a model (and its DB rows) from the registry.
+        Caller is responsible for only doing this on empty models — see the
+        architecture router, which guards on row_count == 0."""
+        if not (0 <= index < len(self.models)):
+            return False
+        m = self.models[index]
+        if self._db and m.id is not None:
+            self._db.delete_model(m.id)
+            self._db.commit()
+        del self.models[index]
+        # Keep the active pointer valid after the list shrinks.
+        if index < self.active_model_index:
+            self.active_model_index -= 1
+        if self.active_model_index >= len(self.models):
+            self.active_model_index = max(0, len(self.models) - 1)
+        self.save_registry()
+        return True
+
     def restore_model(self, index: int) -> bool:
         if 0 <= index < len(self.models):
             self.models[index].is_deleted = False

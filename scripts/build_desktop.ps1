@@ -16,15 +16,15 @@ Set-Location $RepoRoot
 
 $Python = if ($env:PYTHON) { $env:PYTHON } else { 'python' }
 
-Write-Host '==> 1/4 Building React frontend (frontend/dist)'
-Push-Location frontend
+Write-Host '==> 1/4 Building React frontend (src/frontend/dist)'
+Push-Location src/frontend
 npm ci
 npm run build
 Pop-Location
 
 Write-Host '==> 2/4 Building Rust ELF parser wheel'
 & $Python -m pip install --upgrade pip maturin
-& $Python -m maturin build --release --manifest-path native/parser_rust/Cargo.toml --out target/wheels
+& $Python -m maturin build --release --manifest-path src/native/parser_rust/Cargo.toml --out target/wheels
 & $Python -m pip install --no-index --find-links target/wheels rust_elf_parser
 
 Write-Host '==> 3/4 Installing Python dependencies'

@@ -67,7 +67,7 @@ jobs:
           # active virtualenv (absent on setup-python), so it fails in CI on
           # every platform; building a wheel and installing it does not.
           # `--find-links <dir> <name>` avoids shell glob issues (Windows pwsh).
-          maturin build --release --manifest-path native/parser_rust/Cargo.toml --out target/wheels
+          maturin build --release --manifest-path src/native/parser_rust/Cargo.toml --out target/wheels
           pip install --no-index --find-links target/wheels rust_elf_parser
 
       - name: Install Dependencies
@@ -117,7 +117,7 @@ jobs:
           # active virtualenv (absent on setup-python), so it fails in CI on
           # every platform; building a wheel and installing it does not.
           # `--find-links <dir> <name>` avoids shell glob issues (Windows pwsh).
-          maturin build --release --manifest-path native/parser_rust/Cargo.toml --out target/wheels
+          maturin build --release --manifest-path src/native/parser_rust/Cargo.toml --out target/wheels
           pip install --no-index --find-links target/wheels rust_elf_parser
 
       - name: Install Dependencies
@@ -172,7 +172,7 @@ jobs:
           # patchelf, absent on ubuntu-latest). This wheel is only consumed on
           # the runner by PyInstaller, never published, so manylinux compliance
           # is irrelevant — without this maturin build exits 1 on Linux.
-          maturin build --release --manifest-path native/parser_rust/Cargo.toml --out target/wheels --compatibility linux
+          maturin build --release --manifest-path src/native/parser_rust/Cargo.toml --out target/wheels --compatibility linux
           pip install --no-index --find-links target/wheels rust_elf_parser
 
       - name: Install System Packaging Tools
