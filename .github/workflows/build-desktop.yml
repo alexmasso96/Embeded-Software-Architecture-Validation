@@ -199,17 +199,48 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller ArchitectureValidatorDesktop.spec --noconfirm
 
-      - name: Compress Directory (tar.gz)
+      # --- Distro packaging (.deb / .rpm / .flatpak) -------------------------
+      # Only on a release (tag or manual dispatch): the flatpak runtime download
+      # + 3-format packaging is heavy, and branch pushes only need to prove the
+      # PyInstaller bundle compiles. create-release is gated the same way.
+      - name: Gate packaging to releases
+        id: gate
         run: |
-          cd dist
-          tar -czf ../architecture-validator-desktop-linux.tar.gz ArchitectureValidator
-          cd ..
+          if [[ "$GITHUB_REF" == refs/tags/desktop-v* || "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Upload Linux Artifact
+      - name: Derive package version from tag
+        if: steps.gate.outputs.is_release == 'true'
+        id: ver
+        run: |
+          VER="${GITHUB_REF_NAME#desktop-v}"
+          [[ "$VER" =~ ^[0-9]+(\.[0-9]+)*$ ]] || VER="0.0.0"   # manual dispatch / odd ref
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Install packaging toolchains (fpm + flatpak)
+        if: steps.gate.outputs.is_release == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev build-essential rpm flatpak flatpak-builder
+          sudo gem install --no-document fpm
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+
+      - name: Build .deb / .rpm / .flatpak
+        if: steps.gate.outputs.is_release == 'true'
+        run: VERSION="${{ steps.ver.outputs.version }}" ./scripts/package_linux.sh
+
+      - name: Upload Linux Artifacts
+        if: steps.gate.outputs.is_release == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: desktop-linux-artifact
-          path: architecture-validator-desktop-linux.tar.gz
+          path: |
+            architecture-validator-desktop-linux.deb
+            architecture-validator-desktop-linux.rpm
+            architecture-validator-desktop-linux.flatpak
 
   create-release:
     runs-on: ubuntu-latest
@@ -236,6 +267,8 @@ jobs:
           prerelease: ${{ github.event.inputs.prerelease == 'true' }}
           generate_release_notes: true
           files: |
-            architecture-validator-desktop-linux.tar.gz
+            architecture-validator-desktop-linux.deb
+            architecture-validator-desktop-linux.rpm
+            architecture-validator-desktop-linux.flatpak
             architecture-validator-desktop-windows.zip
             architecture-validator-desktop-macos.zip

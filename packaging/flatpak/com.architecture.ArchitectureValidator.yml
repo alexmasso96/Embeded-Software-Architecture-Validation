@@ -1,0 +1,54 @@
+# Flatpak manifest for the desktop app. Strategy (per the packaging decision):
+# bundle the existing PyInstaller onedir as an opaque /app payload rather than
+# rebuilding from source in the sandbox. The GNOME runtime is chosen over the
+# bare freedesktop one because pywebview's Linux backend needs GTK3 +
+# WebKit2GTK (the `gi.repository.WebKit2` 4.1 API), which the freedesktop
+# runtime does not carry.
+#
+# ⚠️ VALIDATE ON FIRST BUILD: WebKit2GTK (GTK3, the 4.1 API) availability is the
+# single biggest risk here — newer GNOME runtimes have been migrating to
+# webkitgtk 6.0 (GTK4), which pywebview's GTK backend does NOT use. 46 is pinned
+# because it still ships webkit2gtk-4.1. If the window comes up blank, the fix is
+# either an older runtime that still has webkit2gtk-4.1, or adding a webkit2gtk
+# baseapp module. This is the same WebKitGTK dependency the .deb/.rpm declare,
+# except here it must come from the runtime.
+app-id: com.architecture.ArchitectureValidator
+runtime: org.gnome.Platform
+runtime-version: '46'
+sdk: org.gnome.Sdk
+command: architecture-validator
+
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # The worker binds 127.0.0.1 (loopback needs network), and AI providers make
+  # outbound HTTPS calls.
+  - --share=network
+  # Open .arch projects, ELF binaries and source folders from the user's disk.
+  - --filesystem=home
+
+modules:
+  - name: architecture-validator
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /app/lib/architecture-validator
+      - cp -r ArchitectureValidator/. /app/lib/architecture-validator/
+      - |
+        cat > /app/bin/architecture-validator <<'LAUNCH'
+        #!/bin/sh
+        exec /app/lib/architecture-validator/ArchitectureValidator "$@"
+        LAUNCH
+      - chmod +x /app/bin/architecture-validator
+      - install -Dm644 com.architecture.ArchitectureValidator.desktop
+          /app/share/applications/com.architecture.ArchitectureValidator.desktop
+      - install -Dm644 icon_1024.png
+          /app/share/icons/hicolor/1024x1024/apps/com.architecture.ArchitectureValidator.png
+      - install -Dm644 com.architecture.ArchitectureValidator.metainfo.xml
+          /app/share/metainfo/com.architecture.ArchitectureValidator.metainfo.xml
+    sources:
+      # The packaging script stages the onedir + assets next to this manifest and
+      # builds from there, so the whole staging dir is the source root.
+      - type: dir
+        path: .
