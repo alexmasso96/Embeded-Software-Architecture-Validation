@@ -1,0 +1,41 @@
+stages:
+  - test
+  - coverage
+
+# Default docker image to run the jobs
+image: python:3.14
+
+test_build:
+  stage: test
+  before_script:
+    - apt-get update -qy
+    - apt-get install -y -qq nodejs npm
+    - python -m pip install --upgrade pip
+    - pip install -r requirements.txt pytest
+    - (cd src/frontend && npm ci && npm run build)
+  script:
+    - pytest Tests/ -q
+  artifacts:
+    paths:
+      - src/frontend/dist/
+    expire_in: 1 hour
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+
+test_coverage:
+  stage: coverage
+  dependencies:
+    - test_build
+  before_script:
+    - python -m pip install --upgrade pip
+    - pip install -r requirements.txt pytest coverage
+  script:
+    - coverage run -m pytest Tests/
+    - coverage report
+  coverage: '/TOTAL.*\s+(\d+)\%/'
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule"

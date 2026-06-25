@@ -1,8 +1,7 @@
 """
 Tests for #2E Phase 1 — release-keyed source store + source providers.
 
-Covers the DB CRUD (save/list/read/has/size/delete, gzip round-trip), the digest
-exclusion (adding/removing source must not change compute_content_digest), and the
+Covers the DB CRUD (save/list/read/has/size/delete, gzip round-trip) and the
 FilesystemSourceProvider / DbReleaseSourceProvider parity.
 """
 import os
@@ -73,19 +72,6 @@ def test_unload_drops_only_source():
         assert db.list_release_source_files(rid) == []
         # map untouched
         assert db.get_model_code_map(mid) == {"functions": {}}
-        db.close()
-
-
-def test_source_blobs_excluded_from_integrity_digest():
-    with tempfile.TemporaryDirectory() as tmp:
-        db, rid = _db_with_release(tmp)
-        before = db.compute_content_digest()
-        db.save_release_source_files(rid, _sample_files())
-        after_add = db.compute_content_digest()
-        db.delete_release_source(rid)
-        after_del = db.compute_content_digest()
-        # Source blobs must not shift the integrity digest (excluded table).
-        assert before == after_add == after_del
         db.close()
 
 

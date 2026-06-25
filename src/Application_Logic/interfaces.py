@@ -11,11 +11,17 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, Optional, List, Dict, Tuple, Any
 
 if TYPE_CHECKING:
-    from PyQt6.QtWidgets import QTableWidget, QListView
     from .Logic_Symbol_Matcher import SymbolMatcher
-    from .Logic_Architecture_Models import ArchitectureManager, ArchitectureListModel
+    from .Logic_Architecture_Models import ArchitectureManager
     from .Logic_Release_Manager import ReleaseManager
-    from .Logic_Column_Types import TableColumn
+
+    # The legacy PyQt UI is gone (Phase 4): the logic layer must not depend on
+    # it even for type checking. The former table/column/widget types are now
+    # untyped placeholders — protocol attributes referencing them are vestigial.
+    TableColumn = Any
+    QTableWidget = Any
+    QListView = Any
+    ArchitectureListModel = Any
 
 
 class IArchitectureController(Protocol):

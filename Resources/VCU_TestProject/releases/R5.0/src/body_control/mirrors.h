@@ -1,0 +1,56 @@
+#ifndef VCU_BCM_MIRRORS_H
+#define VCU_BCM_MIRRORS_H
+
+#include <stdint.h>
+
+/* BodyControl :: mirrors module (release R5.0)
+ * Body Control Module: exterior/interior lighting, doors, wipers, windows and mirrors. */
+
+typedef enum {
+    BCM_MIRRORS_P_OFF = 0,
+    BCM_MIRRORS_P_INIT,
+    BCM_MIRRORS_P_RUN,
+    BCM_MIRRORS_P_FAULT,
+    BCM_MIRRORS_P_LIMP
+} Bcm_Mirrors_Phase_t;
+
+/* REQ-BCM-MIR0: mirrors configuration shall be calibratable. */
+typedef struct {
+    uint16_t fold_angle;
+    uint16_t heat_pwm;
+    uint16_t trim_offset;
+    uint16_t limp_factor;
+} Bcm_Mirrors_Config_t;
+
+/* REQ-BCM-MIR1: mirrors runtime state shall be observable. */
+typedef struct {
+    uint8_t   phase;         /* current mirrors phase */
+    uint16_t  value;         /* primary processed value */
+    uint16_t  raw;           /* last raw sample */
+    uint8_t   valid;         /* 1 = signal path healthy */
+    uint16_t  fault_count;   /* accumulated fault counter (added R2.0) */
+    uint32_t  uptime_ticks;  /* ticks since init (added R4.0) */
+    int16_t   trim;          /* applied trim offset (added R4.0) */
+} Bcm_Mirrors_State_t;
+
+void Bcm_Mirrors_Init(const Bcm_Mirrors_Config_t *cfg);
+uint16_t Bcm_Mirrors_GetFoldAngle(void);
+void Bcm_Mirrors_SetFoldAngle(uint16_t v, uint8_t ramp);
+uint16_t Bcm_Mirrors_GetHeatPwm(void);
+void Bcm_Mirrors_SetHeatPwm(uint16_t v);
+uint16_t Bcm_Mirrors_GetTrimOffset(void);
+void Bcm_Mirrors_SetTrimOffset(uint16_t v);
+uint16_t Bcm_Mirrors_GetLimpFactor(void);
+void Bcm_Mirrors_SetLimpFactor(uint16_t v);
+uint16_t Bcm_Mirrors_ReadFoldSwitch(void);
+uint16_t Bcm_Mirrors_ReadTiltPot(void);
+uint16_t Bcm_Mirrors_ReadAux01(void);
+uint16_t Bcm_Mirrors_ReadAux02(void);
+uint16_t Bcm_Mirrors_ReadAux03(void);
+uint16_t Bcm_Mirrors_ReadAux04(void);
+uint16_t Bcm_Mirrors_Compute(void);
+uint8_t Bcm_Mirrors_SelfTest(void);
+void Bcm_Mirrors_Step(void);
+const Bcm_Mirrors_State_t *Bcm_Mirrors_GetState(void);
+
+#endif /* VCU_BCM_MIRRORS_H */

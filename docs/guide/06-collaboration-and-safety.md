@@ -1,6 +1,6 @@
 # 6. Collaboration & Safety
 
-[← Test Case Design](05-test-case-design.md) · **Collaboration & Safety** · [Next: AI Test Case Generation →](07-ai-test-generation.md)
+[← Test Design](05-test-case-design.md) · **Collaboration & Safety** · [Next: AI Test Generation →](07-ai-test-generation.md)
 
 ---
 
@@ -8,36 +8,32 @@ Architecture data is often shared across a team and used for sign-off, so the to
 
 ## Edit modes & file locking
 
-As covered in [Getting Started](01-getting-started.md), a project is opened either **View Only** or in **Exclusive Edit**:
+As covered in [Getting Started](01-getting-started.md), a project is opened either **view-only** or **for editing (exclusive)**:
 
-- Entering **Exclusive Edit** acquires a lock on the project file.
-- Anyone else who opens it sees that it's locked and **who holds the lock**, and can still open it View Only to browse safely.
-- Releasing the lock (or closing) hands editing back to the team.
+- Opening **for editing** acquires a lock on the project file.
+- Anyone else who opens it sees that it's locked and **who holds the lock**, and can still open it view-only to browse safely.
+- A banner appears if the lock is lost (e.g. taken by another user) — the session drops to view-only so you can't clobber their work.
 
-You can switch modes mid-session from the **Edit** menu (*Open in Exclusive Edit* / *Release Lock & Switch to View Only*), and there's a built-in *Help: Edit Modes* entry explaining the rules.
+View-only isn't just a disabled toolbar: it's enforced **server-side** (the worker opens the database read-only), so a browsing session physically cannot write.
 
-## Test Mode
+## Saving
 
-**Test Mode** is a password-protected state for running through a project without risking accidental edits to your validated data. It requires a project **master password** to enter, and shows a clear red `TEST MODE` indicator in the status bar while active. Toggle it from **Options → Enter / Exit Test Mode**.
+Edits are kept in the open project and written to disk when you click **Save** in the title bar (enabled only in an editable session). Because the `.arch` is a single SQLite file with per-block content encryption, saves are fast — there's no decrypt-to-temp / re-encrypt-the-whole-file step.
 
-## Auto-save
+## Master password & encryption
 
-So a crash or a forgotten *Save* never costs you work, auto-save runs on an interval you choose from the **Auto Save** menu:
-
-- **Immediate**
-- **1 / 5 / 15 minutes**
-- **Do Not Auto Save**
+A project can be protected with a **master password**. The `.arch` is a plaintext SQLite container in which only sensitive content is encrypted, each category under its own key. The master password is required to open an encrypted project and to **unfreeze a baseline**. Legacy whole-file-encrypted projects are migrated to the current format automatically on first open.
 
 ## Change history (ASPICE-friendly)
 
-Every modification to the architecture is recorded in a read-only **change log** — what changed, when, who did it, and in which model. Open it from the **History** menu:
+Every modification to the architecture is recorded in a read-only **change log** — what changed, when, who did it, and in which model and release. Open it from the Workspace inspector with **Port history…** (for the selected port) or **Model history…** (for the whole model):
 
-![Change history log](../../Media/images/history.png)
+![Change history](../../Media/images/history.png)
 
-Because the log is permanent and read-only, it gives you the traceability that process standards like ASPICE expect, without any extra bookkeeping on your part.
+The log is **release-scoped**, obfuscated at rest, and protected by an **append-only HMAC hash-chain**, so edits, deletions, or reordering are detectable. That gives you the traceability process standards like ASPICE expect, without any extra bookkeeping on your part.
 
 ---
 
-That's the full tour. 🎉
+That's the core tour. The next chapters cover the AI, Code Map, Change Log, and Test Injection views. 🎉
 
-[← Test Case Design](05-test-case-design.md) · [Next: AI Test Case Generation →](07-ai-test-generation.md)
+[← Test Design](05-test-case-design.md) · [Next: AI Test Generation →](07-ai-test-generation.md)

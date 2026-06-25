@@ -1,0 +1,225 @@
+ID,Description
+REQ-VCU-040,The 10 ms task shall service every active component each cycle.
+REQ-VCU-001,Every software component shall expose an Init and a cyclic Step entry point.
+REQ-BCM-LIG0,BodyControl lighting configuration shall be calibratable.
+REQ-BCM-LIG1,BodyControl lighting runtime state shall be observable.
+REQ-BCM-LIG4,BodyControl lighting input signals shall be scaled before use.
+REQ-BCM-LIG5,"BodyControl lighting shall compute a filtered, clamped output."
+REQ-BCM-LIG7,BodyControl lighting Step shall update phase and latch faults.
+REQ-BCM-LIG6,BodyControl lighting shall provide a self-test returning health.
+REQ-BCM-DOO0,BodyControl doors configuration shall be calibratable.
+REQ-BCM-DOO1,BodyControl doors runtime state shall be observable.
+REQ-BCM-DOO4,BodyControl doors input signals shall be scaled before use.
+REQ-BCM-DOO5,"BodyControl doors shall compute a filtered, clamped output."
+REQ-BCM-DOO7,BodyControl doors Step shall update phase and latch faults.
+REQ-BCM-DOO6,BodyControl doors shall provide a self-test returning health.
+REQ-BCM-WIP0,BodyControl wipers configuration shall be calibratable.
+REQ-BCM-WIP1,BodyControl wipers runtime state shall be observable.
+REQ-BCM-WIP4,BodyControl wipers input signals shall be scaled before use.
+REQ-BCM-WIP5,"BodyControl wipers shall compute a filtered, clamped output."
+REQ-BCM-WIP7,BodyControl wipers Step shall update phase and latch faults.
+REQ-BCM-WIP6,BodyControl wipers shall provide a self-test returning health.
+REQ-BCM-WIN0,BodyControl windows configuration shall be calibratable.
+REQ-BCM-WIN1,BodyControl windows runtime state shall be observable.
+REQ-BCM-WIN4,BodyControl windows input signals shall be scaled before use.
+REQ-BCM-WIN5,"BodyControl windows shall compute a filtered, clamped output."
+REQ-BCM-WIN7,BodyControl windows Step shall update phase and latch faults.
+REQ-BCM-WIN6,BodyControl windows shall provide a self-test returning health.
+REQ-BCM-MIR0,BodyControl mirrors configuration shall be calibratable.
+REQ-BCM-MIR1,BodyControl mirrors runtime state shall be observable.
+REQ-BCM-MIR4,BodyControl mirrors input signals shall be scaled before use.
+REQ-BCM-MIR5,"BodyControl mirrors shall compute a filtered, clamped output."
+REQ-BCM-MIR7,BodyControl mirrors Step shall update phase and latch faults.
+REQ-BCM-MIR6,BodyControl mirrors shall provide a self-test returning health.
+REQ-BCM-AMB0,BodyControl ambient configuration shall be calibratable.
+REQ-BCM-AMB1,BodyControl ambient runtime state shall be observable.
+REQ-BCM-AMB4,BodyControl ambient input signals shall be scaled before use.
+REQ-BCM-AMB5,"BodyControl ambient shall compute a filtered, clamped output."
+REQ-BCM-AMB7,BodyControl ambient Step shall update phase and latch faults.
+REQ-BCM-AMB6,BodyControl ambient shall provide a self-test returning health.
+REQ-PWT-TOR0,Powertrain torque configuration shall be calibratable.
+REQ-PWT-TOR1,Powertrain torque runtime state shall be observable.
+REQ-PWT-TOR4,Powertrain torque input signals shall be scaled before use.
+REQ-PWT-TOR5,"Powertrain torque shall compute a filtered, clamped output."
+REQ-PWT-TOR7,Powertrain torque Step shall update phase and latch faults.
+REQ-PWT-TOR6,Powertrain torque shall provide a self-test returning health.
+REQ-PWT-THR0,Powertrain throttle configuration shall be calibratable.
+REQ-PWT-THR1,Powertrain throttle runtime state shall be observable.
+REQ-PWT-THR4,Powertrain throttle input signals shall be scaled before use.
+REQ-PWT-THR5,"Powertrain throttle shall compute a filtered, clamped output."
+REQ-PWT-THR7,Powertrain throttle Step shall update phase and latch faults.
+REQ-PWT-THR6,Powertrain throttle shall provide a self-test returning health.
+REQ-PWT-GEA0,Powertrain gearbox configuration shall be calibratable.
+REQ-PWT-GEA1,Powertrain gearbox runtime state shall be observable.
+REQ-PWT-GEA4,Powertrain gearbox input signals shall be scaled before use.
+REQ-PWT-GEA5,"Powertrain gearbox shall compute a filtered, clamped output."
+REQ-PWT-GEA7,Powertrain gearbox Step shall update phase and latch faults.
+REQ-PWT-GEA6,Powertrain gearbox shall provide a self-test returning health.
+REQ-PWT-CRU0,Powertrain cruise configuration shall be calibratable.
+REQ-PWT-CRU1,Powertrain cruise runtime state shall be observable.
+REQ-PWT-CRU4,Powertrain cruise input signals shall be scaled before use.
+REQ-PWT-CRU5,"Powertrain cruise shall compute a filtered, clamped output."
+REQ-PWT-CRU7,Powertrain cruise Step shall update phase and latch faults.
+REQ-PWT-CRU6,Powertrain cruise shall provide a self-test returning health.
+REQ-PWT-LAU0,Powertrain launch configuration shall be calibratable.
+REQ-PWT-LAU1,Powertrain launch runtime state shall be observable.
+REQ-PWT-LAU4,Powertrain launch input signals shall be scaled before use.
+REQ-PWT-LAU5,"Powertrain launch shall compute a filtered, clamped output."
+REQ-PWT-LAU7,Powertrain launch Step shall update phase and latch faults.
+REQ-PWT-LAU6,Powertrain launch shall provide a self-test returning health.
+REQ-BMS-CEL0,BatteryMgmt cellmon configuration shall be calibratable.
+REQ-BMS-CEL1,BatteryMgmt cellmon runtime state shall be observable.
+REQ-BMS-CEL4,BatteryMgmt cellmon input signals shall be scaled before use.
+REQ-BMS-CEL5,"BatteryMgmt cellmon shall compute a filtered, clamped output."
+REQ-BMS-CEL7,BatteryMgmt cellmon Step shall update phase and latch faults.
+REQ-BMS-CEL6,BatteryMgmt cellmon shall provide a self-test returning health.
+REQ-BMS-SOC0,BatteryMgmt soc configuration shall be calibratable.
+REQ-BMS-SOC1,BatteryMgmt soc runtime state shall be observable.
+REQ-BMS-SOC4,BatteryMgmt soc input signals shall be scaled before use.
+REQ-BMS-SOC5,"BatteryMgmt soc shall compute a filtered, clamped output."
+REQ-BMS-SOC7,BatteryMgmt soc Step shall update phase and latch faults.
+REQ-BMS-SOC6,BatteryMgmt soc shall provide a self-test returning health.
+REQ-BMS-BAL0,BatteryMgmt balancing configuration shall be calibratable.
+REQ-BMS-BAL1,BatteryMgmt balancing runtime state shall be observable.
+REQ-BMS-BAL4,BatteryMgmt balancing input signals shall be scaled before use.
+REQ-BMS-BAL5,"BatteryMgmt balancing shall compute a filtered, clamped output."
+REQ-BMS-BAL7,BatteryMgmt balancing Step shall update phase and latch faults.
+REQ-BMS-BAL6,BatteryMgmt balancing shall provide a self-test returning health.
+REQ-BMS-CON0,BatteryMgmt contactor configuration shall be calibratable.
+REQ-BMS-CON1,BatteryMgmt contactor runtime state shall be observable.
+REQ-BMS-CON4,BatteryMgmt contactor input signals shall be scaled before use.
+REQ-BMS-CON5,"BatteryMgmt contactor shall compute a filtered, clamped output."
+REQ-BMS-CON7,BatteryMgmt contactor Step shall update phase and latch faults.
+REQ-BMS-CON6,BatteryMgmt contactor shall provide a self-test returning health.
+REQ-BMS-THE0,BatteryMgmt thermrunaway configuration shall be calibratable.
+REQ-BMS-THE1,BatteryMgmt thermrunaway runtime state shall be observable.
+REQ-BMS-THE4,BatteryMgmt thermrunaway input signals shall be scaled before use.
+REQ-BMS-THE5,"BatteryMgmt thermrunaway shall compute a filtered, clamped output."
+REQ-BMS-THE7,BatteryMgmt thermrunaway Step shall update phase and latch faults.
+REQ-BMS-THE6,BatteryMgmt thermrunaway shall provide a self-test returning health.
+REQ-THM-COO0,ThermalMgmt coolant configuration shall be calibratable.
+REQ-THM-COO1,ThermalMgmt coolant runtime state shall be observable.
+REQ-THM-COO4,ThermalMgmt coolant input signals shall be scaled before use.
+REQ-THM-COO5,"ThermalMgmt coolant shall compute a filtered, clamped output."
+REQ-THM-COO7,ThermalMgmt coolant Step shall update phase and latch faults.
+REQ-THM-COO6,ThermalMgmt coolant shall provide a self-test returning health.
+REQ-THM-HVA0,ThermalMgmt hvac configuration shall be calibratable.
+REQ-THM-HVA1,ThermalMgmt hvac runtime state shall be observable.
+REQ-THM-HVA4,ThermalMgmt hvac input signals shall be scaled before use.
+REQ-THM-HVA5,"ThermalMgmt hvac shall compute a filtered, clamped output."
+REQ-THM-HVA7,ThermalMgmt hvac Step shall update phase and latch faults.
+REQ-THM-HVA6,ThermalMgmt hvac shall provide a self-test returning health.
+REQ-THM-PUM0,ThermalMgmt pump configuration shall be calibratable.
+REQ-THM-PUM1,ThermalMgmt pump runtime state shall be observable.
+REQ-THM-PUM4,ThermalMgmt pump input signals shall be scaled before use.
+REQ-THM-PUM5,"ThermalMgmt pump shall compute a filtered, clamped output."
+REQ-THM-PUM7,ThermalMgmt pump Step shall update phase and latch faults.
+REQ-THM-PUM6,ThermalMgmt pump shall provide a self-test returning health.
+REQ-THM-FAN0,ThermalMgmt fan configuration shall be calibratable.
+REQ-THM-FAN1,ThermalMgmt fan runtime state shall be observable.
+REQ-THM-FAN4,ThermalMgmt fan input signals shall be scaled before use.
+REQ-THM-FAN5,"ThermalMgmt fan shall compute a filtered, clamped output."
+REQ-THM-FAN7,ThermalMgmt fan Step shall update phase and latch faults.
+REQ-THM-FAN6,ThermalMgmt fan shall provide a self-test returning health.
+REQ-CHS-ABS0,ChassisControl abs configuration shall be calibratable.
+REQ-CHS-ABS1,ChassisControl abs runtime state shall be observable.
+REQ-CHS-ABS4,ChassisControl abs input signals shall be scaled before use.
+REQ-CHS-ABS5,"ChassisControl abs shall compute a filtered, clamped output."
+REQ-CHS-ABS7,ChassisControl abs Step shall update phase and latch faults.
+REQ-CHS-ABS6,ChassisControl abs shall provide a self-test returning health.
+REQ-CHS-TRA0,ChassisControl traction configuration shall be calibratable.
+REQ-CHS-TRA1,ChassisControl traction runtime state shall be observable.
+REQ-CHS-TRA4,ChassisControl traction input signals shall be scaled before use.
+REQ-CHS-TRA5,"ChassisControl traction shall compute a filtered, clamped output."
+REQ-CHS-TRA7,ChassisControl traction Step shall update phase and latch faults.
+REQ-CHS-TRA6,ChassisControl traction shall provide a self-test returning health.
+REQ-CHS-STE0,ChassisControl steering configuration shall be calibratable.
+REQ-CHS-STE1,ChassisControl steering runtime state shall be observable.
+REQ-CHS-STE4,ChassisControl steering input signals shall be scaled before use.
+REQ-CHS-STE5,"ChassisControl steering shall compute a filtered, clamped output."
+REQ-CHS-STE7,ChassisControl steering Step shall update phase and latch faults.
+REQ-CHS-STE6,ChassisControl steering shall provide a self-test returning health.
+REQ-CHS-SUS0,ChassisControl suspension configuration shall be calibratable.
+REQ-CHS-SUS1,ChassisControl suspension runtime state shall be observable.
+REQ-CHS-SUS4,ChassisControl suspension input signals shall be scaled before use.
+REQ-CHS-SUS5,"ChassisControl suspension shall compute a filtered, clamped output."
+REQ-CHS-SUS7,ChassisControl suspension Step shall update phase and latch faults.
+REQ-CHS-SUS6,ChassisControl suspension shall provide a self-test returning health.
+REQ-DIAG-DTC0,Diagnostics dtc configuration shall be calibratable.
+REQ-DIAG-DTC1,Diagnostics dtc runtime state shall be observable.
+REQ-DIAG-DTC4,Diagnostics dtc input signals shall be scaled before use.
+REQ-DIAG-DTC5,"Diagnostics dtc shall compute a filtered, clamped output."
+REQ-DIAG-DTC7,Diagnostics dtc Step shall update phase and latch faults.
+REQ-DIAG-DTC6,Diagnostics dtc shall provide a self-test returning health.
+REQ-DIAG-FRE0,Diagnostics freezeframe configuration shall be calibratable.
+REQ-DIAG-FRE1,Diagnostics freezeframe runtime state shall be observable.
+REQ-DIAG-FRE4,Diagnostics freezeframe input signals shall be scaled before use.
+REQ-DIAG-FRE5,"Diagnostics freezeframe shall compute a filtered, clamped output."
+REQ-DIAG-FRE7,Diagnostics freezeframe Step shall update phase and latch faults.
+REQ-DIAG-FRE6,Diagnostics freezeframe shall provide a self-test returning health.
+REQ-DIAG-UDS0,Diagnostics uds configuration shall be calibratable.
+REQ-DIAG-UDS1,Diagnostics uds runtime state shall be observable.
+REQ-DIAG-UDS4,Diagnostics uds input signals shall be scaled before use.
+REQ-DIAG-UDS5,"Diagnostics uds shall compute a filtered, clamped output."
+REQ-DIAG-UDS7,Diagnostics uds Step shall update phase and latch faults.
+REQ-DIAG-UDS6,Diagnostics uds shall provide a self-test returning health.
+REQ-DIAG-MON0,Diagnostics monitor configuration shall be calibratable.
+REQ-DIAG-MON1,Diagnostics monitor runtime state shall be observable.
+REQ-DIAG-MON4,Diagnostics monitor input signals shall be scaled before use.
+REQ-DIAG-MON5,"Diagnostics monitor shall compute a filtered, clamped output."
+REQ-DIAG-MON7,Diagnostics monitor Step shall update phase and latch faults.
+REQ-DIAG-MON6,Diagnostics monitor shall provide a self-test returning health.
+REQ-DIAG-SEC0,Diagnostics security configuration shall be calibratable.
+REQ-DIAG-SEC1,Diagnostics security runtime state shall be observable.
+REQ-DIAG-SEC4,Diagnostics security input signals shall be scaled before use.
+REQ-DIAG-SEC5,"Diagnostics security shall compute a filtered, clamped output."
+REQ-DIAG-SEC7,Diagnostics security Step shall update phase and latch faults.
+REQ-DIAG-SEC6,Diagnostics security shall provide a self-test returning health.
+REQ-COM-CAN0,CommGateway canrouter configuration shall be calibratable.
+REQ-COM-CAN1,CommGateway canrouter runtime state shall be observable.
+REQ-COM-CAN4,CommGateway canrouter input signals shall be scaled before use.
+REQ-COM-CAN5,"CommGateway canrouter shall compute a filtered, clamped output."
+REQ-COM-CAN7,CommGateway canrouter Step shall update phase and latch faults.
+REQ-COM-CAN6,CommGateway canrouter shall provide a self-test returning health.
+REQ-COM-LIN0,CommGateway linmaster configuration shall be calibratable.
+REQ-COM-LIN1,CommGateway linmaster runtime state shall be observable.
+REQ-COM-LIN4,CommGateway linmaster input signals shall be scaled before use.
+REQ-COM-LIN5,"CommGateway linmaster shall compute a filtered, clamped output."
+REQ-COM-LIN7,CommGateway linmaster Step shall update phase and latch faults.
+REQ-COM-LIN6,CommGateway linmaster shall provide a self-test returning health.
+REQ-COM-SIG0,CommGateway signaldb configuration shall be calibratable.
+REQ-COM-SIG1,CommGateway signaldb runtime state shall be observable.
+REQ-COM-SIG4,CommGateway signaldb input signals shall be scaled before use.
+REQ-COM-SIG5,"CommGateway signaldb shall compute a filtered, clamped output."
+REQ-COM-SIG7,CommGateway signaldb Step shall update phase and latch faults.
+REQ-COM-SIG6,CommGateway signaldb shall provide a self-test returning health.
+REQ-COM-NET0,CommGateway netmon configuration shall be calibratable.
+REQ-COM-NET1,CommGateway netmon runtime state shall be observable.
+REQ-COM-NET4,CommGateway netmon input signals shall be scaled before use.
+REQ-COM-NET5,"CommGateway netmon shall compute a filtered, clamped output."
+REQ-COM-NET7,CommGateway netmon Step shall update phase and latch faults.
+REQ-COM-NET6,CommGateway netmon shall provide a self-test returning health.
+REQ-CHG-ACD0,ChargingCtrl acdc configuration shall be calibratable.
+REQ-CHG-ACD1,ChargingCtrl acdc runtime state shall be observable.
+REQ-CHG-ACD4,ChargingCtrl acdc input signals shall be scaled before use.
+REQ-CHG-ACD5,"ChargingCtrl acdc shall compute a filtered, clamped output."
+REQ-CHG-ACD7,ChargingCtrl acdc Step shall update phase and latch faults.
+REQ-CHG-ACD6,ChargingCtrl acdc shall provide a self-test returning health.
+REQ-CHG-SEQ0,ChargingCtrl sequencer configuration shall be calibratable.
+REQ-CHG-SEQ1,ChargingCtrl sequencer runtime state shall be observable.
+REQ-CHG-SEQ4,ChargingCtrl sequencer input signals shall be scaled before use.
+REQ-CHG-SEQ5,"ChargingCtrl sequencer shall compute a filtered, clamped output."
+REQ-CHG-SEQ7,ChargingCtrl sequencer Step shall update phase and latch faults.
+REQ-CHG-SEQ6,ChargingCtrl sequencer shall provide a self-test returning health.
+REQ-CHG-PIL0,ChargingCtrl pilot configuration shall be calibratable.
+REQ-CHG-PIL1,ChargingCtrl pilot runtime state shall be observable.
+REQ-CHG-PIL4,ChargingCtrl pilot input signals shall be scaled before use.
+REQ-CHG-PIL5,"ChargingCtrl pilot shall compute a filtered, clamped output."
+REQ-CHG-PIL7,ChargingCtrl pilot Step shall update phase and latch faults.
+REQ-CHG-PIL6,ChargingCtrl pilot shall provide a self-test returning health.
+REQ-CHG-MET0,ChargingCtrl metering configuration shall be calibratable.
+REQ-CHG-MET1,ChargingCtrl metering runtime state shall be observable.
+REQ-CHG-MET4,ChargingCtrl metering input signals shall be scaled before use.
+REQ-CHG-MET5,"ChargingCtrl metering shall compute a filtered, clamped output."
+REQ-CHG-MET7,ChargingCtrl metering Step shall update phase and latch faults.
+REQ-CHG-MET6,ChargingCtrl metering shall provide a self-test returning health.

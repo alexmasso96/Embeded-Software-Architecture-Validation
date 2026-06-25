@@ -4,7 +4,7 @@ A cross-platform desktop tool for validating embedded software architecture agai
 
 Point it at an `.elf` file and an architecture export, and it parses the binary's debug info, fuzzy-matches your architecture ports to the real symbols in the firmware, and gives you an editable table to review, track, and sign off on everything. From there you can detect changes between software releases, keep a reviewable history, and generate low-level test case designs straight from your architecture data.
 
-Built with Python and PyQt6.
+Built as a React single-page app in a native **pywebview** desktop shell over a local **FastAPI** worker, with a Qt-free Python logic core and a native Rust ELF parser.
 
 ![Architecture Validator Pro — the validation workspace](/Media/images/hero_screenshot.png "The validation workspace: architecture ports matched to real ELF symbols, with review status and per-release port state")
 
@@ -32,6 +32,9 @@ For a full, screenshot-by-screenshot walkthrough of every feature, see the **[Us
 - [Advanced AI Chat](docs/guide/08-advanced-ai-chat.md)
 - [Code Map](docs/guide/09-code-map.md)
 - [Change Log](docs/guide/10-change-log.md)
+- [Test Injection](docs/guide/11-test-injection.md)
+
+> 💡 Every feature also has an **interactive in-app walkthrough** — open **Preferences → Tutorials** for a click-through demo of each view.
 
 ---
 
@@ -56,6 +59,9 @@ A visual **call-graph + source explorer** that joins the ELF/DWARF facts (addres
 A **git-style side-by-side diff** between releases (file browser, old/new with synchronized scrolling and add/delete highlighting), plus an optional AI-generated change-log summary.
 
 ![Change Log — side-by-side release diff](/Media/images/change_log.png "Change Log — git-style side-by-side diff between releases with synchronized scrolling and add/delete highlighting")
+
+### 💉 Source-level test injection
+Splice extra C code — instrumentation, stubs, a test harness — into your firmware **without ever editing the real source files**. Edits are saved as *hooks* in the project (anchored to the surrounding lines, not brittle line numbers) and applied only to generated copies. Import helper `.c/.h` files alongside, then **export** build-ready code — *Modified files only* or a full *Reconstructed* tree — with your originals left untouched.
 
 ### 📥 Flexible architecture import
 Bring your architecture in from **Excel or CSV**. Rhapsody path-based exports are detected automatically and routed through a dedicated import flow, and the classic sheet-per-model spreadsheet format is supported too.
@@ -87,7 +93,7 @@ Author low-level test case templates and generate them across your architecture:
 A built-in history view tracks changes over the life of the project — each entry records the user, timestamp and release. The change log is **release-scoped**, obfuscated at rest, and protected by an **append-only HMAC hash-chain** so edits/deletions/reordering are detectable.
 
 ### 🔒 Collaboration-safe editing
-Projects use file locking with an **Exclusive Edit / View-Only** model, so a teammate opening a project that's already being edited sees who holds the lock instead of clobbering each other's work. A password-protected **Test Mode** and configurable **auto-save** (immediate up to 15-minute intervals) round out day-to-day safety.
+Projects use file locking with an **Exclusive Edit / View-Only** model, so a teammate opening a project that's already being edited sees who holds the lock instead of clobbering each other's work. View-only is enforced server-side (the worker opens the database read-only), and if the lock is lost the session drops to view-only automatically so you can't overwrite someone else's edits.
 
 ### 💾 Single-file projects
 A project is one portable `.arch` file (a SQLite database under the hood), keeping ELF data, releases, baselines, and history together in one place.
@@ -98,8 +104,8 @@ A project is one portable `.arch` file (a SQLite database under the hood), keepi
 
 | Area | Library |
 | :--- | :--- |
-| Language | Python 🐍 |
-| GUI | PyQt6 |
+| Language | Python 🐍 + TypeScript |
+| GUI | React SPA in a native **pywebview** shell over a local **FastAPI** worker |
 | ELF / DWARF parsing | native **Rust** (`rust_elf_parser`, PyO3 via `maturin`) + `pyelftools` fallback |
 | Disassembly | `capstone` |
 | C++ demangling | `cpp_demangle` |
@@ -108,7 +114,7 @@ A project is one portable `.arch` file (a SQLite database under the hood), keepi
 | AI providers | Copilot / Anthropic / OpenAI / Gemini over `requests` |
 | Project storage | SQLite |
 | Security | `bcrypt` (master password), `cryptography` (encrypted AI credentials, history protection) |
-| Packaging | `PyInstaller` (Windows/macOS/Linux), Flatpak |
+| Packaging | `PyInstaller` onedir desktop bundle (Windows/macOS/Linux) |
 
 ---
 
@@ -118,14 +124,20 @@ A project is one portable `.arch` file (a SQLite database under the hood), keepi
 # 1. Install dependencies (a virtual environment is recommended)
 pip install -r requirements.txt
 
-# 2. Run it
-python src/main.py
+# 2. Build the React frontend (the worker serves it inside the desktop shell)
+( cd src/frontend && npm ci && npm run build )
+
+# 3. Launch the desktop app (pywebview shell over the FastAPI worker)
+PYTHONPATH=src python -m desktop.main
 ```
 
 ### Building a distributable
 
-- **Windows:** run `build_windows.bat`, or build directly from `ArchitectureValidatorPro.spec` with PyInstaller.
-- **Linux:** a Flatpak build is available via `flatpak-manifest.yml`.
+The desktop app is packaged as a PyInstaller onedir bundle from
+`ArchitectureValidatorDesktop.spec` (builds the SPA + Rust parser wheel first):
+
+- **macOS / Linux:** `scripts/build_desktop.sh`
+- **Windows:** `scripts/build_desktop.ps1`
 
 ---
 

@@ -1,3 +1,54 @@
+# v3.0.0 — Desktop Rewrite: React + pywebview, Test Injection & Single-File Projects
+
+The biggest release yet: the entire desktop app has been **rewritten**. The PyQt6
+UI is gone, replaced by a **React single-page app running in a native pywebview
+window** over a **local FastAPI worker**. The Qt-free Python logic core and the
+native Rust ELF parser carry straight over, so every validation, release, AI, and
+code-map capability is intact — now behind a faster, more responsive interface
+that physically cannot freeze (the heavy work runs in a separate process and
+streams progress over Server-Sent Events).
+
+## 🏗 New architecture (no behaviour you relied on was dropped)
+- **React SPA + pywebview shell + FastAPI worker.** The UI talks to the worker
+  over `127.0.0.1` with a per-session bearer token; the worker owns all project
+  state and drives the existing `Application_Logic` layer directly.
+- **Every heavy operation is a cancellable background job** with uniform progress,
+  cancellation, and error reporting streamed over a single `/api/events` SSE.
+- **View-only is enforced server-side** (`PRAGMA query_only=ON`) — read-only
+  sessions physically cannot write, not just a greyed-out button.
+
+## 💉 New: Source-level Test Injection
+A new view to **splice test code into production C source without editing the
+originals**. Hooks anchor to the *text* of the surrounding lines (not brittle line
+numbers), so they re-find their spot when upstream source shifts. Import helper
+`.c/.h` files alongside, then export build-ready code — *Modified files only* or a
+full *Reconstructed* tree — leaving your originals untouched.
+
+## 🎓 New: Interactive in-app tutorials
+Every view now has a **click-through interactive walkthrough** on a simulated
+screen (nothing in your real projects is touched). Open **Preferences → Tutorials**
+for Workspace, Code Map, Change Log, Test Design, AI Generation, AI Chat, and Test
+Injection.
+
+## 💾 Single-file projects + per-block encryption
+- A project is now **one portable `.arch` SQLite file** — no per-project folder
+  required.
+- Encryption moved from whole-file to **per-block (per-category) content
+  encryption**: the `.arch` is a plaintext SQLite container and only sensitive
+  content columns are encrypted, each under its own key. Open and save are fast
+  (no decrypt-to-temp / re-encrypt-the-whole-file). **Legacy whole-file
+  (`ARCHENC1`) projects auto-migrate on first open.**
+
+## ⚙️ Packaging
+- Packaged as a **PyInstaller onedir desktop bundle** (Windows/macOS/Linux) from
+  `ArchitectureValidatorDesktop.spec`, which builds the React SPA and the Rust
+  parser wheel first. CI gained the Node.js setup + frontend build steps.
+
+> **Upgrade note:** opening a project from v2.x re-stamps it into the v3 storage
+> format on first open. Keep a backup of important projects before upgrading.
+
+---
+
 # v2.1.1 — Release-Keyed Source, Code Map IDE Features & a Major Bug-Fix Pass
 
 Source code now lives **inside the project database, keyed by release** — no more

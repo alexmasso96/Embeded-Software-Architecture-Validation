@@ -1,13 +1,11 @@
-from .Logic_New_Project import NewProjectController
+"""
+Application_Logic package — the Qt-free logic layer (Phase 0 of the pywebview
+migration complete: no module in this package imports PyQt6). Qt controllers,
+widgets, and dialogs live in the UI package, which is legacy and retires with
+the PyQt app in Phase 4.
+"""
+
 from .Logging_Handler import Signaller
-from .Logic_Loading_Window import LoadingDialog
-from .Logic_Architecture_Table import ArchitectureTabController
 from .Logic_Symbol_Matcher import SymbolMatcher
-from .Logic_Column_Customizer import ColumnCustomizer
-from .Logic_TestCase_Design import TestCaseDesignController
-from .Logic_AI_Generation import AIGenerationController
-from .Logic_AI_Chat import AIChatController
-from .Logic_Security import SecurityManager, MasterPasswordSetupDialog, MasterPasswordPromptDialog
+from .Logic_Security import SecurityManager
 from .Logic_History import HistoryManager
-from .Logic_Code_Map_Tab import AICodeMapController
-from .Logic_Change_Log_Tab import AIChangeLogController

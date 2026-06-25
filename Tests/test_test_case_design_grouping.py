@@ -1,84 +1,51 @@
 """
-Logic-layer tests for Test Case Design operation grouping and preview navigation.
+Logic-layer tests for Test Case Design operation grouping and column resolution.
 
-These exercise the pure logic of TestCaseDesignController without standing up the
-Qt UI: the grouping methods only need access to ``active_columns`` and a small DB
-meta lookup, so we bind the unbound methods onto a lightweight stand-in object.
+These exercise the pure functions in ``Logic_TestCase_Design`` (``resolve_ops_column``,
+``resolve_port_column``, ``_build_grouped_rows``, ``process_conditional_blocks``) the
+same way the backend ``/api/testdesign`` router does: from the stored column layout
+(list of ``(name, type, visible, width)`` tuples) + DB meta strings — no Qt.
 
 Regression covered: a project may store the *operations* in a Port-Search column
 (so they get fuzzy-matched against ELF symbols) while the actual *port* lives in a
 plain Static-Text column. Grouping must key on the port, never on the operations
 column — otherwise every operation renders as its own test case.
+
+(The former Qt preview-paging tests — ``_advance_preview_index`` — were dropped with
+the PyQt UI; preview navigation is now handled by the React frontend.)
 """
-import sys
 import os
-import types
+import sys
 
 sys.path.append(os.path.abspath("src"))
 
-from Application_Logic.Logic_TestCase_Design import TestCaseDesignController as TC
-from Application_Logic.Logic_Column_Types import (
-    PortSearchColumn, FunctionSearchColumn, VariableSearchColumn,
+from Application_Logic.Logic_TestCase_Design import (
+    resolve_ops_column,
+    resolve_port_column,
+    _build_grouped_rows,
+    process_conditional_blocks,
 )
 
-# Methods that make up the pure logic surface under test.
-_BIND = [
-    "_build_grouped_rows", "_get_port_col_name", "_get_ops_col_name",
-    "get_row_bind_data", "strip_percentage_suffix", "process_conditional_blocks",
-    "evaluate_condition", "evaluate_boolean_list", "evaluate_single_condition",
-    "_get_ops_count", "_compare_count", "_is_int", "normalize_value",
-    "_advance_preview_index",
-]
 
-
-class _StaticCol:
-    """Stand-in for a non-search column (Static Text, Port State, etc.)."""
-    def __init__(self, name):
-        self.name = name
-
-
-class _DB:
-    is_open = True
-
-    def __init__(self, meta=None):
-        self._meta = meta or {}
-
-    def get_meta(self, key):
-        return self._meta.get(key)
-
-
-def _make(active_cols, meta=None, grouping="grouped"):
-    """Build a stand-in controller with the logic methods bound to it."""
-    obj = types.SimpleNamespace()
-    obj._operation_grouping = grouping
-    obj.preview_row_index = -1
-    obj._effective_row_count = 0
-    obj.main_window = types.SimpleNamespace(
-        arch_controller=types.SimpleNamespace(active_columns=active_cols),
-        project_db=_DB(meta),
-    )
-    for name in _BIND:
-        attr = getattr(TC, name)
-        # staticmethods come back as plain functions — bind only real methods.
-        if isinstance(TC.__dict__.get(name), staticmethod):
-            setattr(obj, name, attr)
-        else:
-            setattr(obj, name, types.MethodType(attr, obj))
-    return obj
+def _resolve(layout, meta_ops=None, meta_port=None):
+    """Mirror the backend's two-step resolution (ops first, then port)."""
+    ops_col = resolve_ops_column(layout, meta_ops)
+    port_col = resolve_port_column(layout, meta_port, ops_col)
+    return ops_col, port_col
 
 
 # --- the user's real layout: ops in "Input Port" (search), port in "Port Name" --
-def _rhapsody_cols():
+def _rhapsody_layout():
     return [
-        _StaticCol("TC. ID"),
-        PortSearchColumn("Input Port"),
-        _StaticCol("Input Port (Match)"),
-        FunctionSearchColumn("Mapped Func"),
-        _StaticCol("Mapped Func (Match)"),
-        VariableSearchColumn("Mapped Parameter"),
-        _StaticCol("Port State"),
-        _StaticCol("Port Name"),
-        _StaticCol("Required Interface"),
+        ("TC. ID", "Static Text", True, 100),
+        ("Input Port", "Port Search", True, 100),
+        ("Input Port (Match)", "Static Text", True, 100),
+        ("Mapped Func", "Function Search", True, 100),
+        ("Mapped Func (Match)", "Static Text", True, 100),
+        ("Mapped Parameter", "Variable Search", True, 100),
+        ("Port State", "Static Text", True, 100),
+        ("Port Name", "Static Text", True, 100),
+        ("Required Interface", "Static Text", True, 100),
     ]
 
 
@@ -101,32 +68,37 @@ def _rhapsody_rows():
 
 def test_port_col_avoids_operations_column():
     """The grouping key must be the Static-Text port, not the ops search column."""
-    tc = _make(_rhapsody_cols(), meta={"operations_column_name": "Input Port"})
-    assert tc._get_ops_col_name() == "Input Port"
-    assert tc._get_port_col_name() == "Port Name"
+    ops_col, port_col = _resolve(_rhapsody_layout(), meta_ops="Input Port")
+    assert ops_col == "Input Port"
+    assert port_col == "Port Name"
 
 
 def test_port_col_legacy_excel_no_regression():
     """When the port itself is a Port-Search column and there are no operations,
     resolution still returns that search column (legacy Excel imports)."""
-    cols = [PortSearchColumn("Input Port"), _StaticCol("Input Port (Match)"),
-            _StaticCol("Notes")]
-    tc = _make(cols, meta={})  # no operations_column_name
-    assert tc._get_ops_col_name() == ""
-    assert tc._get_port_col_name() == "Input Port"
+    layout = [
+        ("Input Port", "Port Search", True, 100),
+        ("Input Port (Match)", "Static Text", True, 100),
+        ("Notes", "Static Text", True, 100),
+    ]
+    ops_col, port_col = _resolve(layout)  # no operations meta
+    assert ops_col == ""
+    assert port_col == "Input Port"
 
 
 def test_port_col_skips_helper_columns():
-    """Match/Init/Cyclic/State columns are never chosen as the port key."""
-    cols = [_StaticCol("Input Port (Match)"), _StaticCol("Port State"),
-            _StaticCol("Port Name")]
-    tc = _make(cols, meta={})
-    assert tc._get_port_col_name() == "Port Name"
+    """Match/State columns are never chosen as the port key."""
+    layout = [
+        ("Input Port (Match)", "Static Text", True, 100),
+        ("Port State", "Static Text", True, 100),
+        ("Port Name", "Static Text", True, 100),
+    ]
+    _ops, port_col = _resolve(layout)
+    assert port_col == "Port Name"
 
 
 def test_build_grouped_rows_collapses_by_port():
-    tc = _make(_rhapsody_cols(), meta={"operations_column_name": "Input Port"})
-    merged = tc._build_grouped_rows(_rhapsody_rows())
+    merged = _build_grouped_rows(_rhapsody_rows(), port_col="Port Name", ops_col="Input Port")
     # PortA (3 ops) + PortB (1 op) -> 2 grouped entries
     assert len(merged) == 2
     by_port = {m["Port Name"]: m for m in merged}
@@ -141,81 +113,62 @@ def test_build_grouped_rows_collapses_by_port():
 
 def test_build_grouped_rows_empty_ports_stay_separate():
     """Rows without a port value must not all collapse into one bogus group."""
-    tc = _make(_rhapsody_cols(), meta={"operations_column_name": "Input Port"})
     rows = [
         {"Input Port": {"text": "op1"}, "Port Name": {"text": ""}},
         {"Input Port": {"text": "op2"}, "Port Name": {"text": ""}},
     ]
-    merged = tc._build_grouped_rows(rows)
+    merged = _build_grouped_rows(rows, port_col="Port Name", ops_col="Input Port")
     assert len(merged) == 2
     assert all(m["__ops_count__"] == 1 for m in merged)
 
 
 def test_multiple_predicate_true_for_grouped_port():
-    tc = _make(_rhapsody_cols(), meta={"operations_column_name": "Input Port"})
-    merged = tc._build_grouped_rows(_rhapsody_rows())
+    merged = _build_grouped_rows(_rhapsody_rows(), port_col="Port Name", ops_col="Input Port")
     by_port = {m["Port Name"]: m for m in merged}
     template = "Start #if [Port Name] multiple {MANY} End"
-    multi = tc.process_conditional_blocks(template, by_port["PortA"])
-    single = tc.process_conditional_blocks(template, by_port["PortB"])
+    multi = process_conditional_blocks(template, by_port["PortA"])
+    single = process_conditional_blocks(template, by_port["PortB"])
     assert "MANY" in multi
     assert "MANY" not in single
 
 
 def test_multiple_predicate_with_threshold():
-    tc = _make(_rhapsody_cols(), meta={"operations_column_name": "Input Port"})
-    merged = tc._build_grouped_rows(_rhapsody_rows())
+    merged = _build_grouped_rows(_rhapsody_rows(), port_col="Port Name", ops_col="Input Port")
     by_port = {m["Port Name"]: m for m in merged}
     template = "#if [Port Name] multiple > 2 {BIG}"
-    assert "BIG" in tc.process_conditional_blocks(template, by_port["PortA"])  # 3 > 2
+    assert "BIG" in process_conditional_blocks(template, by_port["PortA"])  # 3 > 2
     template2 = "#if [Port Name] multiple > 5 {BIG}"
-    assert "BIG" not in tc.process_conditional_blocks(template2, by_port["PortA"])  # 3 > 5 false
-
-
-def test_advance_preview_index_bounds():
-    tc = _make(_rhapsody_cols())
-    tc._effective_row_count = 2  # two groups
-    tc.preview_row_index = 0
-    assert tc._advance_preview_index(1) is True
-    assert tc.preview_row_index == 1
-    # At the last group, Next must not advance past it (the old bug paged to raw rows).
-    assert tc._advance_preview_index(1) is False
-    assert tc.preview_row_index == 1
-    # Previous works back to 0 and clamps there.
-    assert tc._advance_preview_index(-1) is True
-    assert tc.preview_row_index == 0
-    assert tc._advance_preview_index(-1) is False
-    assert tc.preview_row_index == 0
-
-
-def test_advance_preview_index_empty():
-    tc = _make(_rhapsody_cols())
-    tc._effective_row_count = 0
-    tc.preview_row_index = 0
-    assert tc._advance_preview_index(1) is False
-    assert tc.preview_row_index == 0
+    assert "BIG" not in process_conditional_blocks(template2, by_port["PortA"])  # 3 > 5 false
 
 
 def test_ops_col_name_falls_back_to_named_column():
     """With no DB meta, the operations column is detected by name ('operation'),
     and the name-based port fallback must skip that detected operations column."""
-    cols = [_StaticCol("Port Name"), _StaticCol("Operation")]
-    tc = _make(cols, meta={})
-    assert tc._get_ops_col_name() == "Operation"
-    assert tc._get_port_col_name() == "Port Name"
+    layout = [("Port Name", "Static Text", True, 100), ("Operation", "Static Text", True, 100)]
+    ops_col, port_col = _resolve(layout)
+    assert ops_col == "Operation"
+    assert port_col == "Port Name"
 
 
 def test_non_ops_port_search_column_takes_precedence():
     """A Port-Search column that is NOT the operations column is chosen as the
     port key ahead of a same-named static column (legacy Excel precedence)."""
-    cols = [PortSearchColumn("Sig"), _StaticCol("Operation"), _StaticCol("Port Name")]
-    tc = _make(cols, meta={})
-    assert tc._get_ops_col_name() == "Operation"
-    assert tc._get_port_col_name() == "Sig"
+    layout = [
+        ("Sig", "Port Search", True, 100),
+        ("Operation", "Static Text", True, 100),
+        ("Port Name", "Static Text", True, 100),
+    ]
+    ops_col, port_col = _resolve(layout)
+    assert ops_col == "Operation"
+    assert port_col == "Sig"
 
 
 def test_ops_col_meta_takes_precedence_over_name():
-    cols = [_StaticCol("Operation"), PortSearchColumn("Input Port"), _StaticCol("Port Name")]
+    layout = [
+        ("Operation", "Static Text", True, 100),
+        ("Input Port", "Port Search", True, 100),
+        ("Port Name", "Static Text", True, 100),
+    ]
     # meta points ops at the search column even though a column is *named* Operation
-    tc = _make(cols, meta={"operations_column_name": "Input Port"})
-    assert tc._get_ops_col_name() == "Input Port"
+    ops_col, _port = _resolve(layout, meta_ops="Input Port")
+    assert ops_col == "Input Port"

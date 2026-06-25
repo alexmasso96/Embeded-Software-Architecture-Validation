@@ -1,0 +1,184 @@
+#include "vcu_all.h"
+
+/* ============================================================
+ * CommGateway :: netmon   (release R4.0)
+ * Communication Gateway: CAN/LIN routing, signal mapping and bus monitoring.
+ * ============================================================ */
+
+static Com_Netmon_Config_t g_com_netmon_cfg;
+static Com_Netmon_State_t g_com_netmon_state;
+static uint16_t g_com_netmon_inputs[8];
+
+static uint16_t com_netmon_clamp_u16(uint16_t v, uint16_t hi);
+static uint16_t com_netmon_scale(uint16_t raw);
+static uint16_t com_netmon_lpf(uint16_t x, uint16_t prev);
+static uint8_t com_netmon_crc8(const uint8_t *p, uint8_t n);
+static void com_netmon_reset(void);
+
+static uint16_t com_netmon_clamp_u16(uint16_t v, uint16_t hi)
+{
+    return (v > hi) ? hi : v;
+}
+
+static uint16_t com_netmon_scale(uint16_t raw)
+{
+    uint32_t s = ((uint32_t)raw * 1000u) >> 10;
+    return (uint16_t)(s & 0xFFFFu);
+}
+
+static uint16_t com_netmon_lpf(uint16_t x, uint16_t prev)
+{
+    /* first-order IIR low-pass: y = (3*prev + x) / 4 */
+    return (uint16_t)(((uint32_t)prev * 3u + x) >> 2);
+}
+
+static uint8_t com_netmon_crc8(const uint8_t *p, uint8_t n)
+{
+    uint8_t crc = 0xFFu;
+    uint8_t i;
+    for (i = 0u; i < n; i++) {
+        crc = (uint8_t)(crc ^ p[i]);
+        crc = (uint8_t)((crc << 1) ^ ((crc & 0x80u) ? 0x1Du : 0u));
+    }
+    return crc;
+}
+
+static void com_netmon_reset(void)
+{
+    g_com_netmon_state.value = 0u;
+    g_com_netmon_state.raw = 0u;
+}
+
+/* REQ-COM-NET2 */
+void Com_Netmon_Init(const Com_Netmon_Config_t *cfg)
+{
+    if (cfg != 0) {
+        g_com_netmon_cfg = *cfg;
+    }
+    g_com_netmon_state.phase = COM_NETMON_P_INIT;
+    g_com_netmon_state.valid = 1u;
+    g_com_netmon_state.fault_count = 0u;
+    com_netmon_reset();
+}
+
+/* REQ-COM-NET3 */
+uint16_t Com_Netmon_GetWakeTimeoutMs(void)
+{
+    return g_com_netmon_cfg.wake_timeout_ms;
+}
+
+/* REQ-COM-NET3 */
+void Com_Netmon_SetWakeTimeoutMs(uint16_t v, uint8_t ramp)
+{
+    uint16_t lim = com_netmon_clamp_u16(v, g_com_netmon_cfg.wake_timeout_ms);
+    (void)ramp; /* ramp profile reserved */
+    g_com_netmon_cfg.wake_timeout_ms = lim;
+}
+
+/* REQ-COM-NET3 */
+uint16_t Com_Netmon_GetSleepDelayMs(void)
+{
+    return g_com_netmon_cfg.sleep_delay_ms;
+}
+
+/* REQ-COM-NET3 */
+void Com_Netmon_SetSleepDelayMs(uint16_t v)
+{
+    g_com_netmon_cfg.sleep_delay_ms = com_netmon_clamp_u16(v, 0xFFFFu);
+}
+
+/* REQ-COM-NET3 */
+uint16_t Com_Netmon_GetTrimOffset(void)
+{
+    return g_com_netmon_cfg.trim_offset;
+}
+
+/* REQ-COM-NET3 */
+void Com_Netmon_SetTrimOffset(uint16_t v)
+{
+    g_com_netmon_cfg.trim_offset = com_netmon_clamp_u16(v, 0xFFFFu);
+}
+
+/* REQ-COM-NET4 */
+uint16_t Com_Netmon_ReadBusActivity(void)
+{
+    uint16_t raw = g_com_netmon_inputs[0];
+    uint16_t out = com_netmon_scale(raw);
+    g_com_netmon_state.raw = raw;
+    return out;
+}
+
+/* REQ-COM-NET4 */
+uint16_t Com_Netmon_ReadWakeLine(void)
+{
+    uint16_t raw = g_com_netmon_inputs[1];
+    uint16_t out = com_netmon_scale(raw);
+    g_com_netmon_state.raw = raw;
+    return out;
+}
+
+/* REQ-COM-NET4 */
+uint16_t Com_Netmon_ReadAux01(void)
+{
+    uint16_t raw = g_com_netmon_inputs[2];
+    uint16_t out = com_netmon_scale(raw);
+    g_com_netmon_state.raw = raw;
+    return out;
+}
+
+/* REQ-COM-NET4 */
+uint16_t Com_Netmon_ReadAux02(void)
+{
+    uint16_t raw = g_com_netmon_inputs[3];
+    uint16_t out = com_netmon_scale(raw);
+    g_com_netmon_state.raw = raw;
+    return out;
+}
+
+/* REQ-COM-NET4 */
+uint16_t Com_Netmon_ReadAux03(void)
+{
+    uint16_t raw = g_com_netmon_inputs[4];
+    uint16_t out = com_netmon_scale(raw);
+    g_com_netmon_state.raw = raw;
+    return out;
+}
+
+/* REQ-COM-NET5 */
+uint16_t Com_Netmon_Compute(void)
+{
+    uint16_t a = Com_Netmon_ReadBusActivity();
+    uint16_t b = com_netmon_lpf(a, g_com_netmon_state.value);
+    uint16_t c = com_netmon_clamp_u16(b, g_com_netmon_cfg.wake_timeout_ms);
+    g_com_netmon_state.value = c;
+    return c;
+}
+
+/* REQ-COM-NET6 */
+uint8_t Com_Netmon_SelfTest(void)
+{
+    uint8_t crc = com_netmon_crc8((const uint8_t *)&g_com_netmon_cfg, (uint8_t)sizeof(Com_Netmon_Config_t));
+    g_com_netmon_state.valid = (crc != 0u) ? 1u : 0u;
+    return g_com_netmon_state.valid;
+}
+
+/* REQ-COM-NET7 */
+void Com_Netmon_Step(void)
+{
+    g_com_netmon_state.phase = COM_NETMON_P_RUN;
+    (void)Com_Netmon_Compute();
+    if (g_com_netmon_state.value > g_com_netmon_cfg.wake_timeout_ms) {
+        g_com_netmon_state.fault_count++;
+        g_com_netmon_state.phase = COM_NETMON_P_FAULT;
+    }
+    if (Com_Netmon_SelfTest() == 0u) {
+        g_com_netmon_state.phase = COM_NETMON_P_LIMP;
+    }
+    g_com_netmon_state.uptime_ticks++;
+}
+
+/* REQ-COM-NET1 */
+const Com_Netmon_State_t *Com_Netmon_GetState(void)
+{
+    return &g_com_netmon_state;
+}

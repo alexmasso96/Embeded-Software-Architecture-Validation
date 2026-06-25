@@ -2,8 +2,11 @@
 
 Tracked issues that are **intentionally deferred** (not yet fixed in this repo), with enough
 detail to be fixed later — several are earmarked for the enterprise-licensed Copilot on the work
-machine (the only environment approved to parse real ECU source/binaries). See
-[ASPICE_AUDIT_REPORT.md](ASPICE_AUDIT_REPORT.md) for the full audit.
+machine (the only environment approved to parse real ECU source/binaries).
+
+> Updated for **v3.0.0** (React + pywebview rewrite). The v2.x PyQt6 UI-layer issues below have
+> been superseded by the rewrite; the items that persist are in the native Rust parser and the
+> data model, which carried straight over.
 
 ---
 
@@ -51,44 +54,27 @@ There is no user-facing indication of which ELF parser backend produced the load
 debugging. Add alongside the KI-01 fix: surface `parser_backend` in the UI/statistics and honour an
 `ARCH_PARSER_BACKEND` env/setting in `ELFParser.extract_all`.
 
-## KI-03 — `TC. ID` column is user-editable in edit mode (NC-2)
+## KI-03 — `TC. ID` column is user-editable (NC-2)
 **Severity:** Medium (future) · **Owner:** deferred until DOORS Next Gen (DNG) import exists
 
-`Logic_Architecture_Table` re-applies `ItemIsEditable` to display columns in edit mode
-(`:501-506`), so the test-case identifier `TC. ID` is user-editable. **Test Case IDs are intended to
-be populated from DOORS Next Gen exports**, and the DNG import is not built yet. Until then, leave as
-is; when DNG import lands, make `TC. ID` tool-populated and read-only (drive editability from a
-per-column capability rather than a blanket flag).
+The test-case identifier `TC. ID` is editable like any other free-text column. **Test Case IDs are
+intended to be populated from DOORS Next Gen exports**, and the DNG import is not built yet. Until
+then, leave as is; when DNG import lands, make `TC. ID` tool-populated and read-only (drive
+editability from a per-column capability rather than a blanket "editable in edit mode" flag).
 
 ---
 
-## UI-layer fixes — RESOLVED (verified live 2026-06-07)
+## Resolved in / superseded by v3.0.0
 
-### KI-04 — Architecture table loses columns for a model with no saved schema (Inc-04) — ✅ FIXED
-`Logic_Architecture_Table._rebuild_column_objects` now falls back to `default_column_config()` when
-the sanitized config is empty, so a schema-less model still renders the full column set. (A normally
-created project already showed columns; the no-column state was tied to the BUG-02-corrupted project.)
+A batch of v2.x issues were tied to the **PyQt6 UI layer**, which was removed in the v3 rewrite. They
+no longer apply to the React/pywebview client and are listed here only for history:
 
-### KI-05 — New-project ELF flow did not return to the table (Inc-03) — ✅ FIXED
-`Logic_New_Project` now drops the blocking success popup and proceeds straight to the workspace via
-`_safe_close()` (which also quits the modal `exec()` loop). Verified live: Load New ELF + release name
-now lands directly on the architecture table ("Project created successfully").
-
-### KI-06 — Match columns accepted arbitrary unvalidated free text (NC-1) — ✅ FIXED + feature
-`_wire_live_match_search` (`Logic_Column_Types.py`) makes the `(Match)` combo **re-query the symbol
-pool live as the user types** (so the real function behind a port can be found even when names differ,
-e.g. `UART_LMM` → `UART_TX123_LMM`), each candidate carrying the real symbol (traceability kept). A
-committed value that is not a real symbol is flagged dark red instead of shown as a valid match.
-Verified live (typing `Current` → `WLC_ReadCurrent`; `NOTAREALSYMBOL` flagged red).
-
----
-
-## Newly found
-
-### KI-07 — `StyledMessageBox` rendered empty / unresponsive on macOS — ✅ FIXED
-The unsaved-changes confirmation (and any `StyledMessageBox`) rendered as an empty thin sliver on
-macOS. Root cause: the `setWindowFlags(... & ~Qt.Sheet)` hack left the dialog as a collapsed
-window-modal sheet attached to the parent. Fix (`src/UI/StyledMessageBox.py`): make it
-**application-modal** (`setWindowModality(ApplicationModal)` + `setWindowFlags(Qt.Dialog)`) and force
-content sizing (`adjustSize()` + `setMinimumHeight(sizeHint)`). Verified live: the 3-button
-Unsaved-Changes prompt now renders fully (text, `?` icon, Cancel/No/Yes).
+- **Architecture table lost columns for a schema-less model** (Inc-04) — the React Workspace derives
+  its column set from the project-global `column_layout`, so a model with no per-model schema renders
+  the full set.
+- **New-project ELF flow did not return to the table** (Inc-03) — project creation now completes as a
+  background job and lands directly on the Workspace.
+- **Match columns accepted unvalidated free text** (NC-1) — the match picker re-queries the real
+  symbol pool live; a value that is not a real symbol is flagged rather than shown as a valid match.
+- **`StyledMessageBox` rendered empty on macOS** (KI-07) — the Qt styled-dialog is gone; the SPA uses
+  HTML modals.

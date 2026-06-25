@@ -32,8 +32,8 @@ def _tables(d):
 # ---------------------------------------------------------------------------
 
 def test_new_db_has_v2_tables_and_version(db):
-    assert DB_SCHEMA_VERSION == 3
-    assert db.get_meta("schema_version") == "3"
+    assert DB_SCHEMA_VERSION == 4
+    assert db.get_meta("schema_version") == "4"
     t = _tables(db)
     assert "ai_model_mindmaps" in t
     assert "ai_code_diffs" in t
@@ -48,7 +48,7 @@ def test_v1_project_upgrades_on_reopen(tmp_path):
     d.close()
     # Reopen → _create_schema runs the in-block upgrade (no set_meta re-entrancy).
     d2 = ProjectDatabase(); d2.open(p)
-    assert d2.get_meta("schema_version") == "3"
+    assert d2.get_meta("schema_version") == "4"
     assert d2.get_meta("ai_prompt") == "keep me"
     assert "ai_model_mindmaps" in _tables(d2)
     d2.close()
@@ -127,28 +127,6 @@ def test_delete_model_mindmap_purges_diffs(db):
     db.delete_model_mindmap(mid)
     assert db.has_model_mindmap(mid) is False
     assert db.has_code_diff(mid, "dh") is False  # explicit sibling cleanup
-
-
-# ---------------------------------------------------------------------------
-# Integrity digest exclusions
-# ---------------------------------------------------------------------------
-
-def test_digest_excludes_ai_caches_and_paths(db):
-    mid = db.create_model("M", "In Work")
-    base = db.compute_content_digest()
-    # Writing derived caches / volatile paths must NOT change the digest.
-    db.save_model_mindmap(mid, json.dumps({"a": 1}), source_hash="h")
-    db.save_code_diffs(mid, "dh", [{"file_path": "a.c", "status": "modified", "unified_diff": "d"}])
-    db.set_meta("ai_source_path", "/Users/somebody/src")
-    db.set_meta("ai_previous_source_path", "/Users/somebody/old")
-    db.set_meta("ai_requirements_context", json.dumps([{"id": "R1", "text": "x"}]))
-    assert db.compute_content_digest() == base
-
-
-def test_digest_includes_protected_prompt_rules(db):
-    base = db.compute_content_digest()
-    db.set_meta("chat_rules", "new chat rules")
-    assert db.compute_content_digest() != base   # user-authored content IS protected
 
 
 # ---------------------------------------------------------------------------

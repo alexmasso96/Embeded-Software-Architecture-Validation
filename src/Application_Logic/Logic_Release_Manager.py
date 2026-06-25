@@ -3,8 +3,6 @@ import datetime
 import copy
 from typing import List, Optional
 from .Logic_File_Locking import FileLockManager
-from PyQt6.QtCore import QAbstractListModel, Qt, QModelIndex, QMimeData, QByteArray, QDataStream, QIODevice
-from PyQt6.QtGui import QColor, QFont
 
 
 @dataclass
@@ -147,8 +145,12 @@ class ReleaseManager:
             self._db.commit()
 
     def flush_active_release_data(self):
+        if self._db and getattr(self._db, "read_only", False):
+            return
         active = self.get_active_release()
-        if active and active.data_cache:
+        # A frozen baseline can be the active release (read-only "load baseline"
+        # view); never flush to it — its rows are write-protected.
+        if active and not active.is_baseline and active.data_cache:
             self._save_data(active, active.data_cache)
 
     # ------------------------------------------------------------------
@@ -211,6 +213,74 @@ class ReleaseManager:
             self._db.commit()
 
         # Shift existing sort orders
+        for r in self.releases:
+            r.sort_order += 1
+        new_release.sort_order = 0
+
+        self.releases.insert(0, new_release)
+        self.active_release_index = 0
+        self.save_registry()
+        return new_release
+
+    def branch_release(self, src_index: int, name: str,
+                       description: str = "") -> ReleaseModel:
+        """Fork a new software release off an existing one (Release & Baseline
+        Manager). Clones the source release's rows + validation state (column
+        metadata, release results, linked-column) as the new branch's starting
+        point and chains it to the source via ``parent_release_name``. The new
+        branch is inserted at the front and made active (mirrors create_release).
+        """
+        if not (0 <= src_index < len(self.releases)):
+            raise ValueError("Invalid source release index.")
+        name = name.strip()
+        if not name:
+            raise ValueError("Branch name cannot be empty.")
+        if any(r.name == name for r in self.releases):
+            raise ValueError(f"Release '{name}' already exists.")
+
+        src = self.releases[src_index]
+        ts = datetime.datetime.now().isoformat()
+
+        # Snapshot the source's data (rows + validation state). deepcopy so later
+        # edits on the branch never bleed back into the parent's cache.
+        data = copy.deepcopy(self._load_data(src))
+        data.pop("database", None)  # strip legacy ELF blob if present
+
+        new_release = ReleaseModel(
+            name=name,
+            is_baseline=False,
+            parent_release_name=src.name,
+            description=description,
+            timestamp=ts,
+            elf_path=src.elf_path,
+            elf_hash=src.elf_hash,
+            sort_order=0,
+        )
+        new_release.data_cache = data
+
+        if self._db:
+            new_release.id = self._db.create_release(
+                name=name, is_baseline=0,
+                parent_release_name=src.name,
+                description=description, timestamp=ts,
+                elf_path=src.elf_path, elf_hash=src.elf_hash,
+                sort_order=0,
+            )
+            self._db.save_release_rows(new_release.id, data.get("rows", []))
+            col_meta = data.get("column_metadata", {})
+            if col_meta:
+                self._db.save_release_column_metadata(new_release.id, col_meta)
+            results = data.get("release_results", {})
+            if results:
+                self._db.save_release_results(new_release.id, results)
+            linked = data.get("linked_release_column")
+            if linked:
+                self._db.save_release_linked_column(new_release.id, linked)
+            if src.id is not None:
+                self._db.copy_release_history(src.id, new_release.id)
+            self._db.commit()
+
+        # Shift existing sort orders so the new branch sits at the front.
         for r in self.releases:
             r.sort_order += 1
         new_release.sort_order = 0
@@ -309,6 +379,23 @@ class ReleaseManager:
         self.save_registry()
         return new_baseline
 
+    def unfreeze_baseline(self, index: int) -> ReleaseModel:
+        """Convert a frozen baseline back into an editable release (the inverse of
+        create_baseline / Freeze). Flips is_baseline off, logs the NC-4 event, and
+        persists. The release's snapshot rows become its live, editable rows."""
+        if not (0 <= index < len(self.releases)):
+            raise ValueError("Invalid release index.")
+        rel = self.releases[index]
+        if not rel.is_baseline:
+            raise ValueError("Release is not a baseline.")
+        rel.is_baseline = False
+        if self._db and rel.id is not None:
+            self._db.update_release(rel.id, is_baseline=0)
+            self.log_baseline_event(rel, frozen=False)  # NC-4
+            self._db.commit()
+        self.save_registry()
+        return rel
+
     def rename_release(self, index: int, new_name: str):
         if not (0 <= index < len(self.releases)):
             return False, "Invalid index"
@@ -349,6 +436,23 @@ class ReleaseManager:
             self.active_release_index -= 1
         self.save_registry()
         return True, "Deleted"
+
+    def restore_release(self, index: int):
+        """Un-delete a soft-deleted baseline (Release Manager "Restore"). Only
+        baselines soft-delete, so this is the inverse of that path; refuses if a
+        live release/baseline already claims the name."""
+        if not (0 <= index < len(self.releases)):
+            return False, "Invalid index"
+        model = self.releases[index]
+        if not model.is_deleted:
+            return True, "Not deleted"
+        if any(r.name == model.name and not r.is_deleted and r is not model
+               for r in self.releases):
+            return False, "Name already exists"
+        model.is_deleted = False
+        model.deletion_comment = ""
+        self.save_registry()
+        return True, "Restored"
 
     def selectable_releases(self) -> List[ReleaseModel]:
         """#2E: the releases offered in every source/release picker — real software
@@ -400,86 +504,3 @@ class ReleaseManager:
         pass
 
 
-class ReleaseListModel(QAbstractListModel):
-    """Qt Model to bridge ReleaseManager data to QListView."""
-
-    ModelRole = Qt.ItemDataRole.UserRole + 1
-
-    def __init__(self, manager: ReleaseManager):
-        super().__init__()
-        self.manager = manager
-
-    def rowCount(self, parent=QModelIndex()):
-        return len(self.manager.releases)
-
-    def data(self, index, role):
-        if not index.isValid() or index.row() >= len(self.manager.releases):
-            return None
-        release = self.manager.releases[index.row()]
-        if role == Qt.ItemDataRole.DisplayRole:
-            name = release.name
-            if release.is_baseline:
-                name += " [BASELINE]"
-            return name
-        elif role == Qt.ItemDataRole.BackgroundRole:
-            if release.is_baseline:
-                return QColor("#d3d3d3")
-        elif role == Qt.ItemDataRole.ForegroundRole:
-            if index.row() == self.manager.active_release_index:
-                return QColor("white")
-        elif role == Qt.ItemDataRole.FontRole:
-            if index.row() == self.manager.active_release_index:
-                font = QFont()
-                font.setBold(True)
-                return font
-        elif role == self.ModelRole:
-            return release
-        return None
-
-    def refresh(self):
-        self.beginResetModel()
-        self.endResetModel()
-
-    def supportedDropActions(self):
-        return Qt.DropAction.MoveAction
-
-    def flags(self, index):
-        default_flags = super().flags(index)
-        if index.isValid():
-            return (default_flags | Qt.ItemFlag.ItemIsDragEnabled |
-                    Qt.ItemFlag.ItemIsDropEnabled |
-                    Qt.ItemFlag.ItemIsSelectable |
-                    Qt.ItemFlag.ItemIsEnabled)
-        return default_flags | Qt.ItemFlag.ItemIsDropEnabled
-
-    def mimeTypes(self):
-        return ['application/vnd.text.list']
-
-    def mimeData(self, indexes):
-        mime = QMimeData()
-        encoded_data = QByteArray()
-        stream = QDataStream(encoded_data, QIODevice.OpenModeFlag.WriteOnly)
-        for index in indexes:
-            if index.isValid():
-                stream.writeInt32(index.row())
-        mime.setData('application/vnd.text.list', encoded_data)
-        return mime
-
-    def dropMimeData(self, data, action, row, column, parent):
-        if action == Qt.DropAction.IgnoreAction:
-            return True
-        if not data.hasFormat('application/vnd.text.list'):
-            return False
-        if column > 0:
-            return False
-        encoded_data = data.data('application/vnd.text.list')
-        stream = QDataStream(encoded_data, QIODevice.OpenModeFlag.ReadOnly)
-        src_row = stream.readInt32()
-        if row == -1:
-            row = parent.row() if parent.isValid() else self.rowCount()
-        if row > src_row:
-            row -= 1
-        if self.manager.move_release(src_row, row):
-            self.refresh()
-            return True
-        return False

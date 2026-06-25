@@ -6,12 +6,13 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Virtual environments
+# Virtual environments. The glob (.venv*) catches per-OS variants too —
+# .venv-win and e.g. .venv-broken-windows. Never share one venv across OSes via
+# the synced folder: the Windows VM rewrites a mac .venv (and vice versa).
 venv/
 env/
 ENV/
-.venv/
-.venv-win/
+.venv*/
 .ENV/
 
 # OS files
@@ -24,6 +25,9 @@ Thumbs.db
 # Others
 *.swp
 
+# Runtime edit-lock sidecars (written when a .arch project is opened; never commit)
+*.arch.lock
+
 # Agent and IDE/Workspace configurations
 .claude/
 .agent/
@@ -34,7 +38,7 @@ build_*/
 dist/
 
 # Rust native parser build artifacts (commit the source, not the 200M+ target tree)
-native/parser_rust/target/
+src/native/parser_rust/target/
 # Wheel output dir used by the release build (maturin build --out target/wheels)
 /target/
 

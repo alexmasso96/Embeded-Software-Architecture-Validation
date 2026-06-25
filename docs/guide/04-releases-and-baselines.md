@@ -1,6 +1,6 @@
 # 4. Releases & Baselines
 
-[← Importing Architecture](03-importing-architecture.md) · **Releases & Baselines** · [Next: Test Case Design →](05-test-case-design.md)
+[← Importing Architecture](03-importing-architecture.md) · **Releases & Baselines** · [Next: Test Design →](05-test-case-design.md)
 
 ---
 
@@ -8,33 +8,33 @@ Firmware evolves, and so does the architecture that maps onto it. Releases and b
 
 ## Software releases
 
-A **release** represents one software build, and carries its own ELF binary data. A project can hold many releases at once. Open the release dialog from **Select Software Release** in the workspace:
+A **release** represents one software build, and carries its own ELF binary data and (optionally) its C source. A project can hold many releases at once. Open the **release picker** in the Workspace sidebar, or the full **Release Manager** from the gear next to it:
 
-![Release selection dialog](../../Media/images/release_selection.png)
+![Release Manager](../../Media/images/release_selection.png)
 
 From here you can:
 
 | Action | What it does |
 |--------|--------------|
-| **Select / Load** | Make a release active — the table re-matches against that build's symbols |
-| **Add New Release** | Bring in another ELF as a new release |
+| **Activate** | Make a release active — the matrix re-matches against that build's symbols |
+| **Add release** | Bring in another ELF as a new release |
 | **Rename / Delete** | Manage the release list |
-| **Create Result Column** | Add a per-release validation-result column to the table |
-| **Link Last Result** | Track the most recent result across releases in one column |
-| **Create Baseline** | Snapshot the current release (see below) |
+| **Map / Import Source** | Attach a C source folder to the release (stored in the project, keyed by release) |
+| **Branch** | Create a new editable release from an existing one |
+| **Result column** | Add a per-release validation-result column to the matrix |
 
-Only the active release is held in memory, so projects with many large ELF builds stay responsive.
+Only the active release is held in memory, so projects with many large ELF builds stay responsive. Source is imported **once** and stored inside the `.arch` keyed by release — everywhere that used to need a folder picker (Code Map, Change Log, AI) now just reads from a release dropdown.
 
 ## Baselines
 
-A **baseline** is an immutable snapshot of a release at a point in time — your reference of record. Once created, it can't be edited, which is exactly what you want for a signed-off state. You can keep several baselines and browse them all from **Options → View All Baselines**.
+A **baseline** is an immutable snapshot of a release at a point in time — your reference of record. Creating a new release **auto-baselines** the previous one. A baseline is read-only and **write-protected at the database layer** (not just in the UI); **unfreezing** it requires the project master password, and every freeze/unfreeze is recorded in history. When you're viewing a baseline, a banner makes the read-only state clear and offers a one-click way out.
 
 ## Change detection
 
-This is the payoff. Ask the tool to compare the current data against a baseline, and it highlights what's changed with **colour-coded cells**. You then **approve or reject** each difference, so a new software release can't quietly drift away from your reviewed architecture without someone signing off on the change.
+This is the payoff. **Compare** the active data against a baseline, and changed rows are flagged so a new software release can't quietly drift away from your reviewed architecture without someone signing off.
 
-The per-release result columns build on this: each release gets its own column recording whether that port validated, and the *Last Result* column rolls the latest outcome up so you can see the current status without hunting through history.
+The per-release **result** columns build on this: each release gets its own column recording whether each port validated — *Pass*, *Block*, *No Result*, or *Not Run* — and the *Last Result* column rolls the latest outcome up so you can see current status without hunting through history. It's an ASPICE-style, single-column verdict an auditor can scan.
 
 ---
 
-[← Importing Architecture](03-importing-architecture.md) · [Guide home](README.md) · [Next: Test Case Design →](05-test-case-design.md)
+[← Importing Architecture](03-importing-architecture.md) · [Guide home](README.md) · [Next: Test Design →](05-test-case-design.md)
