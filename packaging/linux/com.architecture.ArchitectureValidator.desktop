@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Architecture Validator
+GenericName=Embedded Software Architecture Validation
+Comment=Validate embedded software architecture against ELF binaries and Rhapsody models
+Exec=architecture-validator %f
+Icon=com.architecture.ArchitectureValidator
+Terminal=false
+Categories=Development;
+StartupWMClass=ArchitectureValidator

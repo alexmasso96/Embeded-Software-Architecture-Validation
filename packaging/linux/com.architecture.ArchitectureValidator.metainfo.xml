@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.architecture.ArchitectureValidator</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Architecture Validator</name>
+  <summary>Validate embedded software architecture against ELF binaries and Rhapsody models</summary>
+  <description>
+    <p>
+      Architecture Validator checks embedded software architecture models against
+      compiled ELF binaries and IBM Rhapsody exports. It provides release
+      management, code mapping, change logs, and AI-assisted test design in a
+      native desktop window (pywebview) over a FastAPI worker and a React UI.
+    </p>
+  </description>
+  <launchable type="desktop-id">com.architecture.ArchitectureValidator.desktop</launchable>
+  <provides>
+    <binary>architecture-validator</binary>
+  </provides>
+  <releases>
+    <release version="0.0.0" date="2026-06-25"/>
+  </releases>
+  <content_rating type="oars-1.1"/>
+</component>
