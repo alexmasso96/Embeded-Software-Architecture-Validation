@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { TutorialShell, type TutorialStep } from "./tutorial/TutorialShell";
 
 // Self-contained, click-through tutorial for the Test Injection workflow.
 // Nothing here touches real data or the backend — it renders a simplified mock
@@ -13,16 +13,9 @@ type Highlight =
   | "modeswitch"
   | "snippet"
   | "testfiles"
-  | "export"
-  | null;
+  | "export";
 
-interface Step {
-  title: string;
-  body: ReactNode;
-  highlight: Highlight;
-}
-
-const STEPS: Step[] = [
+const STEPS: TutorialStep<Highlight>[] = [
   {
     title: "What Test Injection does",
     highlight: "stage",
@@ -131,227 +124,188 @@ const SRC_LINES = [
 const SRC_TAIL = ["    return Adc_GetResult();", "}"];
 
 export function TestInjectionDemo({ onClose }: { onClose: () => void }) {
-  const [step, setStep] = useState(0);
-  const last = STEPS.length - 1;
-  const cur = STEPS[step];
-
-  // Cumulative state derived from the step index.
-  const projectCreated = step >= 1;
-  const fileOpen = step >= 2;
-  const hookAdded = step >= 3;
-  const snippetWritten = step >= 4;
-  const helpersImported = step >= 5;
-  const showExport = step >= 6;
-  const isRecap = step === last;
-
-  const hl = (id: Highlight) => (cur.highlight === id ? " hl" : "");
   const snippet = 'test_log("ADC read: %d", Adc_GetResult());';
 
   return (
-    <div className="demo-overlay" onMouseDown={onClose}>
-      <div className="demo-modal" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="demo-header">
-          <span className="demo-header-title">
-            <span className="demo-badge">Tutorial</span>
-            Test Injection — interactive walkthrough
-          </span>
-          <button className="prefs-close" title="Close" onClick={onClose}>
-            ✕
-          </button>
-        </div>
+    <TutorialShell
+      title="Test Injection — interactive walkthrough"
+      steps={STEPS}
+      onClose={onClose}
+    >
+      {({ step, isRecap, hl }) => {
+        // Cumulative state derived from the step index.
+        const projectCreated = step >= 1;
+        const fileOpen = step >= 2;
+        const hookAdded = step >= 3;
+        const snippetWritten = step >= 4;
+        const helpersImported = step >= 5;
+        const showExport = step >= 6;
 
-        {/* Simulated Test Injection screen */}
-        <div className={"demo-stage" + (cur.highlight ? " spotlight" : "")}>
-          <div className="demo-sidebar">
-            {/* Test Projects */}
-            <div className={"demo-pane" + hl("projects")} data-demo="projects">
-              <div className="demo-sect-head">
-                <span>Test Projects</span>
-                <span className="demo-iconbtn pulse-if-hl">＋</span>
+        return (
+          <>
+            <div className="demo-sidebar">
+              {/* Test Projects */}
+              <div className={"demo-pane" + hl("projects")} data-demo="projects">
+                <div className="demo-sect-head">
+                  <span>Test Projects</span>
+                  <span className="demo-iconbtn pulse-if-hl">＋</span>
+                </div>
+                <div className="demo-pane-body">
+                  {projectCreated ? (
+                    <div className="demo-proj sel">
+                      <span>Demo Test Project</span>
+                      <span className="demo-proj-meta">
+                        {helpersImported
+                          ? "1f · 1h"
+                          : "0f · " + (hookAdded ? "1h" : "0h")}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="demo-muted">No test projects yet.</div>
+                  )}
+                </div>
               </div>
-              <div className="demo-pane-body">
-                {projectCreated ? (
-                  <div className="demo-proj sel">
-                    <span>Demo Test Project</span>
-                    <span className="demo-proj-meta">
-                      {helpersImported ? "1f · 1h" : "0f · " + (hookAdded ? "1h" : "0h")}
-                    </span>
-                  </div>
-                ) : (
-                  <div className="demo-muted">No test projects yet.</div>
-                )}
+
+              {/* Production Source */}
+              <div className={"demo-pane" + hl("source")} data-demo="source">
+                <div className="demo-sect-head">
+                  <span>Production Source</span>
+                </div>
+                <div className="demo-pane-body">
+                  {["adc.c", "pwm.c", "main.c"].map((f) => (
+                    <div
+                      key={f}
+                      className={
+                        "demo-file" + (fileOpen && f === "adc.c" ? " sel" : "")
+                      }
+                    >
+                      <span className="demo-file-ico src" />
+                      {f}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Test Files */}
+              <div className={"demo-pane" + hl("testfiles")} data-demo="testfiles">
+                <div className="demo-sect-head">
+                  <span>Test Files</span>
+                  <span className="demo-iconbtn pulse-if-hl">⤓</span>
+                </div>
+                <div className="demo-pane-body">
+                  {helpersImported ? (
+                    <div className="demo-file">
+                      <span className="demo-file-ico test" />
+                      test_helpers.c
+                    </div>
+                  ) : (
+                    <div className="demo-muted">No helper files imported.</div>
+                  )}
+                </div>
               </div>
             </div>
 
-            {/* Production Source */}
-            <div className={"demo-pane" + hl("source")} data-demo="source">
-              <div className="demo-sect-head">
-                <span>Production Source</span>
-              </div>
-              <div className="demo-pane-body">
-                {["adc.c", "pwm.c", "main.c"].map((f) => (
+            {/* Center: tabs + editor */}
+            <div className="demo-center">
+              <div className="demo-tabbar">
+                {fileOpen && (
+                  <div className="demo-tab active">
+                    <span className="demo-tab-dot src" />
+                    adc.c
+                  </div>
+                )}
+                <div className="demo-spacer" />
+                {fileOpen && (
                   <div
-                    key={f}
-                    className={"demo-file" + (fileOpen && f === "adc.c" ? " sel" : "")}
+                    className={"demo-modeswitch" + hl("modeswitch")}
+                    data-demo="modeswitch"
                   >
-                    <span className="demo-file-ico src" />
-                    {f}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Test Files */}
-            <div className={"demo-pane" + hl("testfiles")} data-demo="testfiles">
-              <div className="demo-sect-head">
-                <span>Test Files</span>
-                <span className="demo-iconbtn pulse-if-hl">⤓</span>
-              </div>
-              <div className="demo-pane-body">
-                {helpersImported ? (
-                  <div className="demo-file">
-                    <span className="demo-file-ico test" />
-                    test_helpers.c
-                  </div>
-                ) : (
-                  <div className="demo-muted">No helper files imported.</div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Center: tabs + editor */}
-          <div className="demo-center">
-            <div className="demo-tabbar">
-              {fileOpen && (
-                <div className="demo-tab active">
-                  <span className="demo-tab-dot src" />
-                  adc.c
-                </div>
-              )}
-              <div className="demo-spacer" />
-              {fileOpen && (
-                <div className={"demo-modeswitch" + hl("modeswitch")} data-demo="modeswitch">
-                  <span className={hookAdded ? "" : "active"}>Inject</span>
-                  <span className={hookAdded ? "active" : ""}>Edit</span>
-                  {hookAdded && <span className="demo-hookbtn">＋ Hook at cursor</span>}
-                </div>
-              )}
-            </div>
-
-            <div className="demo-editorrow">
-              <div className="demo-editor">
-                {!fileOpen ? (
-                  <div className="demo-editor-empty">
-                    Select a source or test file to begin.
-                  </div>
-                ) : (
-                  <div className="demo-code">
-                    {SRC_LINES.map((l, i) => (
-                      <div className="demo-codeline" key={i}>
-                        <span className="demo-gutter">{i + 1}</span>
-                        <span className="demo-codetext">{l}</span>
-                      </div>
-                    ))}
+                    <span className={hookAdded ? "" : "active"}>Inject</span>
+                    <span className={hookAdded ? "active" : ""}>Edit</span>
                     {hookAdded && (
-                      <div className="demo-codeline injected">
-                        <span className="demo-gutter">+</span>
-                        <span className="demo-codetext">
-                          {"    "}
-                          {snippetWritten ? snippet : "/* test code */"}
-                        </span>
-                      </div>
+                      <span className="demo-hookbtn">＋ Hook at cursor</span>
                     )}
-                    {SRC_TAIL.map((l, i) => (
-                      <div className="demo-codeline" key={"t" + i}>
-                        <span className="demo-gutter">{SRC_LINES.length + i + 1}</span>
-                        <span className="demo-codetext">{l}</span>
-                      </div>
-                    ))}
                   </div>
                 )}
               </div>
 
-              {/* Right: snippet editor for the selected hook */}
-              {hookAdded && (
-                <div className={"demo-snippet" + hl("snippet")} data-demo="snippet">
-                  <div className="demo-snippet-head">Hook snippet</div>
-                  <div className="demo-snippet-box">
-                    {snippetWritten ? snippet : "/* test code */"}
-                    {!snippetWritten && <span className="demo-caret" />}
-                  </div>
-                  <button className="demo-save">Save</button>
+              <div className="demo-editorrow">
+                <div className="demo-editor">
+                  {!fileOpen ? (
+                    <div className="demo-editor-empty">
+                      Select a source or test file to begin.
+                    </div>
+                  ) : (
+                    <div className="demo-code">
+                      {SRC_LINES.map((l, i) => (
+                        <div className="demo-codeline" key={i}>
+                          <span className="demo-gutter">{i + 1}</span>
+                          <span className="demo-codetext">{l}</span>
+                        </div>
+                      ))}
+                      {hookAdded && (
+                        <div className="demo-codeline injected">
+                          <span className="demo-gutter">+</span>
+                          <span className="demo-codetext">
+                            {"    "}
+                            {snippetWritten ? snippet : "/* test code */"}
+                          </span>
+                        </div>
+                      )}
+                      {SRC_TAIL.map((l, i) => (
+                        <div className="demo-codeline" key={"t" + i}>
+                          <span className="demo-gutter">
+                            {SRC_LINES.length + i + 1}
+                          </span>
+                          <span className="demo-codetext">{l}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              )}
+
+                {/* Right: snippet editor for the selected hook */}
+                {hookAdded && (
+                  <div className={"demo-snippet" + hl("snippet")} data-demo="snippet">
+                    <div className="demo-snippet-head">Hook snippet</div>
+                    <div className="demo-snippet-box">
+                      {snippetWritten ? snippet : "/* test code */"}
+                      {!snippetWritten && <span className="demo-caret" />}
+                    </div>
+                    <button className="demo-save">Save</button>
+                  </div>
+                )}
+              </div>
+
+              <div className={"demo-buildbar" + hl("export")} data-demo="export">
+                <span className="demo-build-label">Build Console</span>
+                <div className="demo-spacer" />
+                <span className="demo-btn">Build</span>
+                <span className="demo-btn primary">Export</span>
+              </div>
             </div>
 
-            <div className={"demo-buildbar" + hl("export")} data-demo="export">
-              <span className="demo-build-label">Build Console</span>
-              <div className="demo-spacer" />
-              <span className="demo-btn">Build</span>
-              <span className="demo-btn primary">Export</span>
-            </div>
-          </div>
-
-          {/* Export sheet overlay */}
-          {showExport && !isRecap && (
-            <div className="demo-modalcard">
-              <div className="demo-modalcard-head">Export test code</div>
-              <label className="demo-radio">
-                <span className="demo-radio-dot on" /> Modified files only
-              </label>
-              <label className="demo-radio">
-                <span className="demo-radio-dot" /> Reconstruct full tree
-              </label>
-              <div className="demo-field">Output folder: <code>~/build/instrumented</code></div>
-              <div className="demo-export-ok">✓ Exported 1 file (adc.c) — originals untouched</div>
-            </div>
-          )}
-        </div>
-
-        {/* Callout / controls */}
-        <div className="demo-callout">
-          <div className="demo-step-meta">
-            Step {step + 1} of {STEPS.length}
-          </div>
-          <div className="demo-step-title">{cur.title}</div>
-          <div className="demo-step-body">{cur.body}</div>
-
-          <div className="demo-controls">
-            <div className="demo-dots">
-              {STEPS.map((_, i) => (
-                <span
-                  key={i}
-                  className={"demo-dot" + (i === step ? " on" : i < step ? " done" : "")}
-                  onClick={() => setStep(i)}
-                />
-              ))}
-            </div>
-            <div className="demo-spacer" />
-            <button
-              className="scope-btn"
-              disabled={step === 0}
-              onClick={() => setStep((s) => Math.max(0, s - 1))}
-            >
-              Back
-            </button>
-            {isRecap ? (
-              <>
-                <button className="scope-btn" onClick={() => setStep(0)}>
-                  Replay
-                </button>
-                <button className="save-btn" onClick={onClose}>
-                  Done
-                </button>
-              </>
-            ) : (
-              <button className="save-btn" onClick={() => setStep((s) => s + 1)}>
-                Next
-              </button>
+            {/* Export sheet overlay */}
+            {showExport && !isRecap && (
+              <div className="demo-modalcard">
+                <div className="demo-modalcard-head">Export test code</div>
+                <label className="demo-radio">
+                  <span className="demo-radio-dot on" /> Modified files only
+                </label>
+                <label className="demo-radio">
+                  <span className="demo-radio-dot" /> Reconstruct full tree
+                </label>
+                <div className="demo-field">
+                  Output folder: <code>~/build/instrumented</code>
+                </div>
+                <div className="demo-export-ok">
+                  ✓ Exported 1 file (adc.c) — originals untouched
+                </div>
+              </div>
             )}
-          </div>
-        </div>
-      </div>
-    </div>
+          </>
+        );
+      }}
+    </TutorialShell>
   );
 }

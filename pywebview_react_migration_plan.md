@@ -1,3 +1,10 @@
+> ## ✅ RETIRED — migration complete (v3.0.0)
+> This plan has been **fully executed**. The app now ships as a React SPA in a pywebview shell over
+> a FastAPI worker, exactly as scoped below. This document is kept for historical reference only —
+> for the current system design see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**. Safe to delete.
+
+---
+
 # Migration Plan: PyQt6 → pywebview + React + FastAPI (Path B)
 
 > **Supersedes** `tauri_react_migration_plan.md`. Tauri was dropped after analysis: every

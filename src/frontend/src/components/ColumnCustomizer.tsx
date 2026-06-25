@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 
 const SEARCH_TYPES = ["Port Search", "Function Search", "Variable Search"];
@@ -83,8 +83,13 @@ export function ColumnCustomizer({
   const [draft, setDraft] = useState("");
   const [dragIdx, setDragIdx] = useState<number | null>(null); // group being dragged
   const [dropIdx, setDropIdx] = useState<number | null>(null); // hovered drop target
+  const [justMovedId, setJustMovedId] = useState<string | null>(null); // brief flash
   const newId = useRef(0);
   const renameRef = useRef<HTMLInputElement>(null);
+  // FLIP animation: remember each group row's screen position before a reorder
+  // so we can slide rows smoothly to their new spots after React re-renders.
+  const groupRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const prevTops = useRef<Map<string, number>>(new Map());
 
   useEffect(() => {
     (async () => {
@@ -118,6 +123,33 @@ export function ColumnCustomizer({
     }
   }, [renaming]);
 
+  // FLIP: after the column order changes, play each moved row from its old
+  // position to its new one. We captured the old tops just before setCols().
+  useLayoutEffect(() => {
+    const prev = prevTops.current;
+    if (prev.size === 0) return;
+    groupRefs.current.forEach((el, id) => {
+      const oldTop = prev.get(id);
+      if (oldTop == null) return;
+      const delta = oldTop - el.getBoundingClientRect().top;
+      if (Math.abs(delta) < 1) return;
+      el.style.transition = "none";
+      el.style.transform = `translateY(${delta}px)`;
+      requestAnimationFrame(() => {
+        el.style.transition = "transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1)";
+        el.style.transform = "";
+      });
+    });
+    prevTops.current = new Map();
+  }, [cols]);
+
+  // Clear the "just moved" highlight once its flash animation has finished.
+  useEffect(() => {
+    if (justMovedId === null) return;
+    const t = setTimeout(() => setJustMovedId(null), 520);
+    return () => clearTimeout(t);
+  }, [justMovedId]);
+
   const groups = group(cols);
   const nameTaken = (name: string, exceptId?: string) =>
     cols.some((c) => c.name === name && c.id !== exceptId);
@@ -143,13 +175,35 @@ export function ColumnCustomizer({
     );
   }
 
+  // Snapshot every group row's screen position so the FLIP effect can animate
+  // the reorder. Call this immediately before changing the column order.
+  function capturePositions() {
+    const m = new Map<string, number>();
+    groupRefs.current.forEach((el, id) => m.set(id, el.getBoundingClientRect().top));
+    prevTops.current = m;
+  }
+
   // Drag-and-drop reorder of whole groups (TC. ID stays pinned at index 0).
   function moveGroupTo(from: number, to: number) {
     if (from <= 0 || to <= 0 || from === to) return;
+    capturePositions();
     const g = [...groups];
     const [moved] = g.splice(from, 1);
     const insertAt = Math.max(1, Math.min(from < to ? to - 1 : to, g.length));
     g.splice(insertAt, 0, moved);
+    setJustMovedId(moved.leader.id);
+    setCols(flatten(g));
+  }
+
+  // Step a group one position up (-1) or down (+1) via the arrow buttons.
+  function moveGroup(from: number, dir: -1 | 1) {
+    const to = from + dir;
+    if (from <= 0 || to <= 0 || to >= groups.length) return;
+    capturePositions();
+    const g = [...groups];
+    const [moved] = g.splice(from, 1);
+    g.splice(to, 0, moved);
+    setJustMovedId(moved.leader.id);
     setCols(flatten(g));
   }
 
@@ -235,14 +289,43 @@ export function ColumnCustomizer({
     }
   }
 
-  function renderCol(c: Col, isLeader: boolean, g: Group | null) {
+  // Suppress a row drag when the gesture starts on an interactive control
+  // (rename / delete buttons) so clicking them never picks up the column.
+  const stopDrag = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  function renderCol(c: Col, isLeader: boolean, g: Group | null, gi = -1) {
     const dep = isDepName(c.name);
     const isLocked = locked.has(c.name);
     const isTcid = c.name === "TC. ID";
     const canRename = canEdit && isLeader && !dep && !isLocked && !isTcid && c.type !== "Review Status";
     const triState = isInitCyclic(c.type);
+    // The whole leader row is the drag handle (TC. ID stays pinned at the top).
+    const draghandle = isLeader && canEdit && !isTcid && gi > 0 && renaming !== c.id;
     return (
-      <div className={"cc-col" + (dep ? " dep" : "")} key={c.id}>
+      <div
+        className={"cc-col" + (dep ? " dep" : "") + (draghandle ? " cc-draghandle" : "")}
+        key={c.id}
+        draggable={draghandle || undefined}
+        onDragStart={
+          draghandle
+            ? (e) => {
+                setDragIdx(gi);
+                e.dataTransfer.effectAllowed = "move";
+              }
+            : undefined
+        }
+        onDragEnd={
+          draghandle
+            ? () => {
+                setDragIdx(null);
+                setDropIdx(null);
+              }
+            : undefined
+        }
+      >
         {triState ? (
           <button
             className={
@@ -287,12 +370,24 @@ export function ColumnCustomizer({
         {isLeader && g && !isTcid && (
           <span className="cc-actions">
             {canRename && (
-              <button className="cc-act" title="Rename" onClick={() => (setRenaming(c.id), setDraft(c.name))}>
+              <button
+                className="cc-act"
+                title="Rename"
+                draggable={false}
+                onDragStart={stopDrag}
+                onClick={() => (setRenaming(c.id), setDraft(c.name))}
+              >
                 ✎
               </button>
             )}
             {canEdit && (
-              <button className="cc-act danger" title="Delete column" onClick={() => deleteGroup(g)}>
+              <button
+                className="cc-act danger"
+                title="Delete column"
+                draggable={false}
+                onDragStart={stopDrag}
+                onClick={() => deleteGroup(g)}
+              >
                 ✕
               </button>
             )}
@@ -321,9 +416,14 @@ export function ColumnCustomizer({
                   className={
                     "cc-group" +
                     (dragIdx === gi ? " dragging" : "") +
-                    (dropIdx === gi && dragIdx !== null && dragIdx !== gi ? " dropbefore" : "")
+                    (dropIdx === gi && dragIdx !== null && dragIdx !== gi ? " dropbefore" : "") +
+                    (justMovedId === g.leader.id ? " moved" : "")
                   }
                   key={g.leader.id}
+                  ref={(el) => {
+                    if (el) groupRefs.current.set(g.leader.id, el);
+                    else groupRefs.current.delete(g.leader.id);
+                  }}
                   onDragOver={(e) => {
                     if (dragIdx === null || pinned) return;
                     e.preventDefault();
@@ -338,25 +438,28 @@ export function ColumnCustomizer({
                 >
                   <div className="cc-move">
                     {!pinned && canEdit && (
-                      <span
-                        className="cc-grip"
-                        title="Drag to reorder"
-                        draggable
-                        onDragStart={(e) => {
-                          setDragIdx(gi);
-                          e.dataTransfer.effectAllowed = "move";
-                        }}
-                        onDragEnd={() => {
-                          setDragIdx(null);
-                          setDropIdx(null);
-                        }}
-                      >
-                        ⠿
-                      </span>
+                      <>
+                        <button
+                          className="cc-move-btn"
+                          title="Move up"
+                          disabled={gi <= 1}
+                          onClick={() => moveGroup(gi, -1)}
+                        >
+                          ▲
+                        </button>
+                        <button
+                          className="cc-move-btn"
+                          title="Move down"
+                          disabled={gi >= groups.length - 1}
+                          onClick={() => moveGroup(gi, 1)}
+                        >
+                          ▼
+                        </button>
+                      </>
                     )}
                   </div>
                   <div className="cc-cols">
-                    {renderCol(g.leader, true, g)}
+                    {renderCol(g.leader, true, g, gi)}
                     {g.deps.map((d) => renderCol(d, false, null))}
                   </div>
                 </div>

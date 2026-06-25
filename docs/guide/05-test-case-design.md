@@ -1,16 +1,18 @@
-# 5. Test Case Design
+# 5. Test Design
 
-[← Releases & Baselines](04-releases-and-baselines.md) · **Test Case Design** · [Next: Collaboration & Safety →](06-collaboration-and-safety.md)
+[← Releases & Baselines](04-releases-and-baselines.md) · **Test Design** · [Next: Collaboration & Safety →](06-collaboration-and-safety.md)
 
 ---
 
-Writing low-level test cases by hand, one port at a time, is exactly the kind of repetitive work this tool exists to remove. The **Test Case Design** tab lets you author a template once and generate consistent test cases across every port in your architecture.
+Writing test cases by hand, one port at a time, is exactly the kind of repetitive work this tool exists to remove. The **Test Design** view lets you author a template once and generate consistent test-case documents across every port in your architecture.
 
-![Test Case Design tab with live preview](../../Media/images/testcase_design_tab.png)
+![Test Design with live preview](../../Media/images/testcase_design_tab.png)
 
-The screen is split in two: you write your template on the left, and a **live preview** on the right shows exactly how it renders for a real row from your table — updating as you type.
+> 💡 **Preferences → Tutorials → Test Design templates** walks through this interactively.
 
-## The scripting language
+The screen is split in two: you write your **Design Template** on the left (with a **Project Title** field above it), and a **live preview** on the right shows exactly how it renders for a real row from your matrix — paged row by row, updating as you type.
+
+## The template language
 
 Templates are plain **Markdown** with two small additions, so there's almost nothing new to learn. Everything you already know — headings, bold/italic, lists, checkboxes, blockquotes, code spans — just works.
 
@@ -39,29 +41,23 @@ Supported operators are `contains`, `does not contain`, `is equal`, and `is not 
 
 Autocomplete helps here too — after a column token, a space offers operators; after an operator, a space offers values seen in that column.
 
-### Built-in help
-
-A **Help** button in the editor opens a full syntax reference with examples, so the rules are always one click away:
-
-![Test Case Design help](../../Media/images/testcase_help.png)
-
 ## Operation grouping
 
-The grouping selector controls how rows become test cases:
+The **Operation grouping** selector controls how rows become test cases:
 
-- **Grouped** — one test case per port, with that port's operations collapsed together (the default).
-- **Independent** — one test case per operation.
+- **Per port** — one test case per port, with that port's operations collapsed together.
+- **Per operation** — one test case per operation.
 
-The live preview respects whichever mode you pick, so what you see is what you'll get.
+The live preview respects whichever mode you pick, so what you see is what you'll get, and the pager count updates to match.
 
 ## Generating & exporting
 
-When you're happy, the **Generate** button produces the test case files. You can export:
+When you're happy, export the result:
 
-- **Individually** — just the current architecture model, or
-- **In bulk** — every model in the project at once.
+- **Export Test Cases** — just the current architecture model, or
+- **Export All Models** — every model in the project at once.
 
-Output is written as Markdown (`.md`) into a *Test Case Design* folder next to your project, ready to drop into your documentation or version control. Retired and Deleted ports are skipped automatically, so generated output only ever covers live ports.
+Output is written as Markdown (`.md`), ready to drop into your documentation or version control. Retired and Deleted ports are skipped automatically, so generated output only ever covers live ports. These high-level design files are also what the [AI Generation](07-ai-test-generation.md) view reads to produce low-level tests.
 
 ---
 
