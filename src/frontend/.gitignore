@@ -2,3 +2,9 @@ node_modules
 dist
 *.local
 .DS_Store
+
+# Generated config build outputs — vite.config.ts is the source; tsc emits the
+# .js/.d.ts and the incremental build caches. Don't track the generated copies.
+vite.config.js
+vite.config.d.ts
+*.tsbuildinfo
