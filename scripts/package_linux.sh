@@ -23,6 +23,7 @@ PKG_NAME="architecture-validator"
 VERSION="${VERSION:-${1:-0.0.0}}"
 ONEDIR="dist/ArchitectureValidator"
 ICON_SRC="Media/icon/icon_1024.png"
+ICON_SVG="Media/icon/icon.svg"
 OUT_DEB="architecture-validator-desktop-linux.deb"
 OUT_RPM="architecture-validator-desktop-linux.rpm"
 OUT_FLATPAK="architecture-validator-desktop-linux.flatpak"
@@ -102,6 +103,10 @@ else
   cp "packaging/linux/$APP_ID.desktop"      "$FP_STAGE/"
   cp "packaging/linux/$APP_ID.metainfo.xml" "$FP_STAGE/"
   cp "$ICON_SRC"                            "$FP_STAGE/icon_1024.png"
+  # Scalable icon for AppStream: `appstreamcli compose` (run by flatpak-builder
+  # when a metainfo file is present) rejects the 1024px-only raster as
+  # "icon-not-found"; a hicolor scalable SVG renders to the sizes it wants.
+  cp "$ICON_SVG"                            "$FP_STAGE/icon.svg"
   cp "packaging/flatpak/$APP_ID.yml"        "$FP_STAGE/manifest.yml"
 
   # --disable-rofiles-fuse: CI runners often lack FUSE. --install-deps-from pulls

@@ -46,6 +46,10 @@ modules:
           /app/share/applications/com.architecture.ArchitectureValidator.desktop
       - install -Dm644 icon_1024.png
           /app/share/icons/hicolor/1024x1024/apps/com.architecture.ArchitectureValidator.png
+      # Scalable icon so `appstreamcli compose` finds a usable icon (the 1024px
+      # raster alone fails with "icon-not-found"); the GNOME SDK renders the SVG.
+      - install -Dm644 icon.svg
+          /app/share/icons/hicolor/scalable/apps/com.architecture.ArchitectureValidator.svg
       - install -Dm644 com.architecture.ArchitectureValidator.metainfo.xml
           /app/share/metainfo/com.architecture.ArchitectureValidator.metainfo.xml
     sources:
