@@ -1,3 +1,20 @@
+# v3.0.2 — Hotfix: Windows blank/white window
+
+A follow-up Windows fix. On some machines the app opened to a **blank white
+window** (and only worked when "Run as administrator" was used). macOS and Linux
+are unaffected.
+
+## 🐛 Fixed
+- **No more blank white window on Windows.** The embedded WebView2 control stores
+  its browser profile in a "user data folder"; left unset it lands next to the
+  `.exe`, which fails to initialise when the app runs from a read-only or
+  permission-restricted location (Program Files, a VM shared folder, a locked-down
+  extract) — leaving the window white unless launched as administrator. The app
+  now puts that folder in a guaranteed per-user-writable location
+  (`%LOCALAPPDATA%\ArchitectureValidator\WebView2`), so it works as a normal user.
+
+---
+
 # v3.0.1 — Hotfix: Windows launch crash
 
 A maintenance release that fixes the Windows desktop build failing to start. No

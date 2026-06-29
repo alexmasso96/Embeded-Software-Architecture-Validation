@@ -249,6 +249,17 @@ def main() -> None:
     if not _windows_prereqs_ok():
         raise SystemExit(2)
 
+    # Pin WebView2's user-data folder to a guaranteed per-user writable location.
+    # Unset, WebView2 creates its profile next to the .exe; when the app lives on
+    # a read-only/restricted path (Program Files, a VM shared folder, a locked-down
+    # extract) the non-admin user can't write there, so the browser process never
+    # starts and the window stays blank white — while running as admin "fixes" it.
+    # setdefault honours a user-provided WEBVIEW2_USER_DATA_FOLDER if one is set.
+    if sys.platform == "win32":
+        os.environ.setdefault(
+            "WEBVIEW2_USER_DATA_FOLDER", str(_log_dir() / "WebView2")
+        )
+
     token = generate_token()
 
     proc, port, lifeline = spawn_worker(token)
