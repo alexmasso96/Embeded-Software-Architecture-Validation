@@ -141,6 +141,29 @@ The desktop app is packaged as a PyInstaller onedir bundle from
 
 ---
 
+## Windows runtime requirements
+
+The native window on Windows is rendered by pywebview's WinForms backend, which
+depends on two Microsoft system components that cannot be bundled into the app.
+On most Windows 10 (1903+) and Windows 11 machines they're already present; on
+older or locked-down/VM images you may need to install them:
+
+| Component | Why | Download |
+| --- | --- | --- |
+| **Microsoft Edge WebView2 Runtime** | Renders the React UI. Missing or wrong-architecture → a blank **white window** (install the **ARM64** runtime on Windows-on-ARM). | [Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) |
+| **.NET Framework 4.7.2+** | pythonnet / `clr_loader` bootstrap the WebView2 backend through .NET. Missing → `Failed to resolve Python.Runtime.Loader.Initialize`. | [.NET Framework](https://dotnet.microsoft.com/download/dotnet-framework) |
+
+The app **checks for both at launch** and, if either is missing, shows a dialog
+linking straight to the download page instead of failing silently. If startup
+still fails, a full traceback is written to
+`%LOCALAPPDATA%\ArchitectureValidator\crash.log`.
+
+> **Note:** the app stores its WebView2 profile under
+> `%LOCALAPPDATA%\ArchitectureValidator\WebView2`, so it runs as a normal user —
+> no need to "Run as administrator" even when launched from a read-only location.
+
+---
+
 ## License
 
 Released under the MIT License. See [LICENSE](LICENSE) for details.
