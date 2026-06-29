@@ -1,13 +1,16 @@
 name: Build Desktop App (pywebview)
 
-# Phase 3 desktop shell (ArchitectureValidatorDesktop.spec): React SPA +
-# FastAPI worker inside a native pywebview window. Separate from build.yml
-# (the legacy PyQt build) so both can ship side-by-side during Phase 4.
+# Single pipeline for the Phase 3 desktop shell (ArchitectureValidatorDesktop.spec):
+# React SPA + FastAPI worker inside a native pywebview window.
 #
-# PyInstaller is not a cross-compiler — each OS builds its own artifact, so we
-# fan out to windows/macos/linux runners. Every job builds the React frontend
-# first (the spec bundles frontend/dist), then the Rust ELF parser wheel, then
-# packages with PyInstaller.
+#   test      → logic-layer pytest suite (Ubuntu).
+#   build     → matrix over windows/macos/linux. PyInstaller is not a
+#               cross-compiler, so each OS builds its own artifact; the matrix
+#               keeps the three legs in ONE job definition (no copy-paste) while
+#               still running them in parallel.
+#   create-release → on a release (tag or manual dispatch) only: gather the
+#               artifacts and publish the GitHub release. Gated on `test` so a
+#               red suite never ships.
 
 on:
   push:
@@ -20,12 +23,15 @@ on:
       - 'desktop-v*'
     branches:
       - '**'
+  pull_request:
+  schedule:
+    - cron: '0 19 * * *'
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release Tag Name (e.g. desktop-v1.0.0)'
+        description: 'Release Tag Name (e.g. V1.0.0)'
         required: true
-        default: 'desktop-v1.0.0'
+        default: 'V1.0.0'
       release_title:
         description: 'Release Title'
         required: true
@@ -45,115 +51,7 @@ permissions:
   contents: write
 
 jobs:
-  build-windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.14'
-          cache: 'pip'
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: src/frontend/package-lock.json
-
-      - name: Build React frontend
-        run: |
-          cd src/frontend
-          npm ci
-          npm run build
-
-      - name: Set up Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          rustflags: ''
-
-      - name: Build and install Rust ELF Parser extension
-        run: |
-          python -m pip install maturin
-          maturin build --release --manifest-path src/native/parser_rust/Cargo.toml --out target/wheels
-          pip install --no-index --find-links target/wheels rust_elf_parser
-
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Build with PyInstaller
-        run: pyinstaller ArchitectureValidatorDesktop.spec --noconfirm
-
-      - name: Compress Directory (ZIP)
-        shell: pwsh
-        run: Compress-Archive -Path dist/ArchitectureValidator -DestinationPath architecture-validator-desktop-windows.zip
-
-      - name: Upload Windows Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-windows-artifact
-          path: architecture-validator-desktop-windows.zip
-
-  build-macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.14'
-          cache: 'pip'
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: src/frontend/package-lock.json
-
-      - name: Build React frontend
-        run: |
-          cd src/frontend
-          npm ci
-          npm run build
-
-      - name: Set up Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          rustflags: ''
-
-      - name: Build and install Rust ELF Parser extension
-        run: |
-          python -m pip install maturin
-          maturin build --release --manifest-path src/native/parser_rust/Cargo.toml --out target/wheels
-          pip install --no-index --find-links target/wheels rust_elf_parser
-
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Build with PyInstaller
-        run: pyinstaller ArchitectureValidatorDesktop.spec --noconfirm
-
-      - name: Compress macOS Bundle (ZIP)
-        run: |
-          cd dist
-          zip -r ../architecture-validator-desktop-macos.zip ArchitectureValidator.app
-          cd ..
-
-      - name: Upload macOS Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-macos-artifact
-          path: architecture-validator-desktop-macos.zip
-
-  build-linux:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -177,18 +75,62 @@ jobs:
           npm ci
           npm run build
 
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run test suite
+        run: pytest Tests/ -q
+
+  build:
+    # Skip the heavy 3-OS build on the nightly cron — that run only needs `test`.
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: 'pip'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: src/frontend/package-lock.json
+
+      - name: Build React frontend
+        run: |
+          cd src/frontend
+          npm ci
+          npm run build
+
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           rustflags: ''
 
       - name: Build and install Rust ELF Parser extension
+        shell: bash
         run: |
           python -m pip install maturin
-          maturin build --release --manifest-path src/native/parser_rust/Cargo.toml --out target/wheels --compatibility linux
+          # Linux needs --compatibility linux (no patchelf on the runner image).
+          EXTRA=""
+          if [ "$RUNNER_OS" = "Linux" ]; then EXTRA="--compatibility linux"; fi
+          maturin build --release --manifest-path src/native/parser_rust/Cargo.toml --out target/wheels $EXTRA
           pip install --no-index --find-links target/wheels rust_elf_parser
 
-      - name: Install WebKitGTK runtime (pywebview's Linux backend)
+      - name: Install WebKitGTK runtime (Linux pywebview backend)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           # pywebview uses PyGObject + WebKit2GTK on Linux. These are system
@@ -204,11 +146,39 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller ArchitectureValidatorDesktop.spec --noconfirm
 
-      # --- Distro packaging (.deb / .rpm / .flatpak) -------------------------
+      # --- Package: Windows -------------------------------------------------
+      - name: Package Windows (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/ArchitectureValidator -DestinationPath architecture-validator-desktop-windows.zip
+
+      - name: Upload Windows artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows-artifact
+          path: architecture-validator-desktop-windows.zip
+
+      # --- Package: macOS ---------------------------------------------------
+      - name: Package macOS (zip)
+        if: runner.os == 'macOS'
+        run: |
+          cd dist
+          zip -r ../architecture-validator-desktop-macos.zip ArchitectureValidator.app
+
+      - name: Upload macOS artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos-artifact
+          path: architecture-validator-desktop-macos.zip
+
+      # --- Package: Linux (.deb / .rpm / .flatpak) --------------------------
       # Only on a release (tag or manual dispatch): the flatpak runtime download
       # + 3-format packaging is heavy, and branch pushes only need to prove the
-      # PyInstaller bundle compiles. create-release is gated the same way.
+      # PyInstaller bundle compiles.
       - name: Gate packaging to releases
+        if: runner.os == 'Linux'
         id: gate
         run: |
           case "$GITHUB_REF" in
@@ -221,7 +191,7 @@ jobs:
           esac
 
       - name: Derive package version
-        if: steps.gate.outputs.is_release == 'true'
+        if: runner.os == 'Linux' && steps.gate.outputs.is_release == 'true'
         id: ver
         run: |
           # On a manual dispatch GITHUB_REF_NAME is the *branch* (e.g. "main"), so
@@ -235,7 +205,7 @@ jobs:
           echo "version=$VER" >> "$GITHUB_OUTPUT"
 
       - name: Install packaging toolchains (fpm + flatpak)
-        if: steps.gate.outputs.is_release == 'true'
+        if: runner.os == 'Linux' && steps.gate.outputs.is_release == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y ruby ruby-dev build-essential rpm flatpak flatpak-builder
@@ -243,11 +213,11 @@ jobs:
           flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 
       - name: Build .deb / .rpm / .flatpak
-        if: steps.gate.outputs.is_release == 'true'
+        if: runner.os == 'Linux' && steps.gate.outputs.is_release == 'true'
         run: VERSION="${{ steps.ver.outputs.version }}" ./scripts/package_linux.sh
 
-      - name: Upload Linux Artifacts
-        if: steps.gate.outputs.is_release == 'true'
+      - name: Upload Linux artifacts
+        if: runner.os == 'Linux' && steps.gate.outputs.is_release == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: desktop-linux-artifact
@@ -258,7 +228,7 @@ jobs:
 
   create-release:
     runs-on: ubuntu-latest
-    needs: [build-windows, build-macos, build-linux]
+    needs: [test, build]
     if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V') || startsWith(github.ref, 'refs/tags/desktop-v') || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
