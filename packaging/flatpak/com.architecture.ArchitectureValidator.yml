@@ -36,6 +36,7 @@ modules:
       - mkdir -p /app/lib/architecture-validator
       - cp -r ArchitectureValidator/. /app/lib/architecture-validator/
       - |
+        mkdir -p /app/bin
         cat > /app/bin/architecture-validator <<'LAUNCH'
         #!/bin/sh
         exec /app/lib/architecture-validator/ArchitectureValidator "$@"
