@@ -1,3 +1,37 @@
+# v3.0.1 — Hotfix: Windows launch crash
+
+A maintenance release that fixes the Windows desktop build failing to start. No
+functional changes to the app itself — **macOS and Linux behave exactly as in
+3.0.0**; if 3.0.0 already runs for you, 3.0.1 only adds the Windows fix and better
+diagnostics.
+
+## 🐛 Fixed
+- **Windows app no longer crashes on launch.** The native window backend
+  (pywebview → winforms → pythonnet/.NET) failed to initialise on several
+  machines — symptoms ranged from a silent exit, to a blank white window, to
+  `Failed to resolve Python.Runtime.Loader.Initialize`. The build now ships
+  pythonnet and its `clr_loader` .NET bootstrap shims with a pinned, matched
+  version so the runtime loads correctly.
+- **Crashes are no longer silent.** If the app fails to start, a full traceback is
+  now written to `%LOCALAPPDATA%\ArchitectureValidator\crash.log`.
+- **Missing-prerequisite check.** On Windows the app now verifies the WebView2
+  Runtime and .NET Framework are present at launch, and — if either is missing —
+  shows a dialog linking straight to Microsoft's download page instead of
+  failing cryptically.
+
+## 📦 Linux packaging
+- Linux now ships proper distribution packages — **`.deb`, `.rpm`, and
+  `.flatpak`** — instead of a portable `.tar.gz` archive.
+
+## ℹ️ Windows prerequisites
+The native window needs two Microsoft runtimes on the target machine:
+- **Microsoft Edge WebView2 Evergreen Runtime** (match the CPU architecture — a
+  missing/wrong-arch runtime shows a blank white window; install the ARM64
+  runtime on Windows-on-ARM devices).
+- **.NET Framework 4.7.2 or newer.**
+
+---
+
 # v3.0.0 — Desktop Rewrite: React + pywebview, Test Injection & Single-File Projects
 
 The biggest release yet: the entire desktop app has been **rewritten**. The PyQt6

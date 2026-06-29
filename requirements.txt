@@ -17,3 +17,12 @@ httpx>=0.27
 # Phase 3 — pywebview desktop shell (native window + file dialogs). On macOS this
 # pulls pyobjc (WKWebView); on Windows it uses the system WebView2 runtime.
 pywebview>=5.0
+# Windows-only: pywebview's winforms backend loads .NET through pythonnet +
+# clr_loader, and the two MUST be a compatible pair. Left unpinned, pip can mix
+# an older pythonnet with clr_loader>=0.2.6, which crashes at startup with
+#   RuntimeError: Failed to resolve Python.Runtime.Loader.Initialize
+#       from ...\pythonnet\runtime\Python.Runtime.dll
+# Pinning pythonnet (whose metadata then constrains clr_loader to a matching
+# release) keeps the bundled Python.Runtime.dll and the native clr_loader shim in
+# lockstep. The marker keeps it off macOS/Linux, which use WKWebView/GTK.
+pythonnet==3.0.5; sys_platform == "win32"

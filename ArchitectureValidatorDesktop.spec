@@ -15,7 +15,7 @@
 import os
 import sys
 
-from PyInstaller.utils.hooks import collect_submodules, collect_data_files
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files, collect_all
 
 block_cipher = None
 console_build = bool(os.environ.get('ARCH_BUILD_CONSOLE'))
@@ -37,6 +37,8 @@ datas = [
 # can find the event loop, HTTP/WS protocols, and the platform webview backend.
 datas += collect_data_files('webview')
 
+binaries = []
+
 hiddenimports = [
     'elftools', 'elftools.elf.elffile',
     'pandas', 'openpyxl', 'rapidfuzz', 'capstone', 'bcrypt',
@@ -45,10 +47,29 @@ hiddenimports = [
 hiddenimports += collect_submodules('uvicorn')
 hiddenimports += collect_submodules('webview')
 
+# Windows: pywebview's default backend is winforms, which imports `clr`
+# (pythonnet) and bootstraps the .NET runtime through `clr_loader`. PyInstaller's
+# automatic analysis does NOT reliably bundle pythonnet's managed assembly
+# (pythonnet/runtime/Python.Runtime.dll) together with clr_loader's native
+# bootstrap shims (clr_loader/ffi/dlls/{x86,x64,arm64}/*.dll). When the shim and
+# the managed assembly are mismatched or the shim is missing, clr_loader raises
+#   "Failed to resolve Python.Runtime.Loader.Initialize from ...Python.Runtime.dll"
+# and the app crashes before the window appears. collect_all() pulls the data
+# files, native DLLs, and submodules for both so they ship with the correct
+# layout. Guarded to win32 because pythonnet/clr_loader are not installed on the
+# macOS/Linux build hosts (those use the WKWebView / GTK backends instead).
+if sys.platform == 'win32':
+    for _pkg in ('pythonnet', 'clr_loader'):
+        _d, _b, _h = collect_all(_pkg)
+        datas += _d
+        binaries += _b
+        hiddenimports += _h
+    hiddenimports += ['clr']
+
 a = Analysis(
     ['src/desktop/main.py'],
     pathex=['.', 'src'],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

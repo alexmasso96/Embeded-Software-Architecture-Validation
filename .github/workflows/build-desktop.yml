@@ -12,7 +12,12 @@ name: Build Desktop App (pywebview)
 on:
   push:
     tags:
-      - 'desktop-v*.*.*'
+      # Release tags. Accept the repo's historical convention (v3.0.0 / V3.0.0)
+      # as well as the namespaced desktop-v* form. The gate/version steps below
+      # normalise all of these.
+      - 'v*'
+      - 'V*'
+      - 'desktop-v*'
     branches:
       - '**'
   workflow_dispatch:
@@ -206,18 +211,27 @@ jobs:
       - name: Gate packaging to releases
         id: gate
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/desktop-v* || "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            echo "is_release=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_release=false" >> "$GITHUB_OUTPUT"
-          fi
+          case "$GITHUB_REF" in
+            refs/tags/v*|refs/tags/V*|refs/tags/desktop-v*) echo "is_release=true" >> "$GITHUB_OUTPUT" ;;
+            *) if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+                 echo "is_release=true" >> "$GITHUB_OUTPUT"
+               else
+                 echo "is_release=false" >> "$GITHUB_OUTPUT"
+               fi ;;
+          esac
 
-      - name: Derive package version from tag
+      - name: Derive package version
         if: steps.gate.outputs.is_release == 'true'
         id: ver
         run: |
-          VER="${GITHUB_REF_NAME#desktop-v}"
-          [[ "$VER" =~ ^[0-9]+(\.[0-9]+)*$ ]] || VER="0.0.0"   # manual dispatch / odd ref
+          # On a manual dispatch GITHUB_REF_NAME is the *branch* (e.g. "main"), so
+          # prefer the tag_name the user typed. Strip an optional "desktop-" prefix
+          # and a leading v/V so "V3.0.0", "v3.0.0" and "desktop-v3.0.0" all yield
+          # "3.0.0". fpm rejects a non-numeric version, hence the 0.0.0 fallback.
+          RAW="${{ github.event.inputs.tag_name || github.ref_name }}"
+          VER="${RAW#desktop-}"
+          VER="${VER#[vV]}"
+          [[ "$VER" =~ ^[0-9]+(\.[0-9]+)*$ ]] || VER="0.0.0"
           echo "version=$VER" >> "$GITHUB_OUTPUT"
 
       - name: Install packaging toolchains (fpm + flatpak)
@@ -245,7 +259,7 @@ jobs:
   create-release:
     runs-on: ubuntu-latest
     needs: [build-windows, build-macos, build-linux]
-    if: startsWith(github.ref, 'refs/tags/desktop-v') || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/V') || startsWith(github.ref, 'refs/tags/desktop-v') || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -265,7 +279,11 @@ jobs:
           name: ${{ github.event.inputs.release_title || format('Desktop {0}', github.ref_name) }}
           draft: ${{ github.event.inputs.draft == 'true' }}
           prerelease: ${{ github.event.inputs.prerelease == 'true' }}
-          generate_release_notes: true
+          # Use the curated, hand-written notes as the release body (the V2
+          # behaviour). The create-release job checks out github.sha above, so
+          # RELEASE_NOTES.md from that commit is on disk here. generate_release_notes
+          # is intentionally NOT set: it would override this with an auto commit list.
+          body_path: RELEASE_NOTES.md
           files: |
             architecture-validator-desktop-linux.deb
             architecture-validator-desktop-linux.rpm
