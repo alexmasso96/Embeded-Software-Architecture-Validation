@@ -44,10 +44,10 @@ modules:
       - chmod +x /app/bin/architecture-validator
       - install -Dm644 com.architecture.ArchitectureValidator.desktop
           /app/share/applications/com.architecture.ArchitectureValidator.desktop
-      - install -Dm644 icon_1024.png
-          /app/share/icons/hicolor/1024x1024/apps/com.architecture.ArchitectureValidator.png
-      # Scalable icon so `appstreamcli compose` finds a usable icon (the 1024px
-      # raster alone fails with "icon-not-found"); the GNOME SDK renders the SVG.
+      # Scalable SVG only: it satisfies `appstreamcli compose` (the GNOME SDK
+      # renders it) AND flatpak's icon export, which rejects the 1024px raster
+      # with "Image too large (1024x1024). Max. size 512x512". The .deb/.rpm ship
+      # the 1024px PNG instead — they have no such cap.
       - install -Dm644 icon.svg
           /app/share/icons/hicolor/scalable/apps/com.architecture.ArchitectureValidator.svg
       - install -Dm644 com.architecture.ArchitectureValidator.metainfo.xml
